@@ -49,7 +49,10 @@ local function lines_for(proposal)
 
   if not proposal.changes or #proposal.changes == 0 then
     table.insert(lines, "")
-    table.insert(lines, "No patch details are available yet. The app-server request can still be declined or cancelled.")
+    table.insert(
+      lines,
+      "No patch details are available yet. The app-server request can still be declined or cancelled."
+    )
     return lines
   end
 

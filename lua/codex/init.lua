@@ -122,14 +122,18 @@ function M.resume(thread_id)
     return util.notify("usage: :Codex resume <thread-id>", vim.log.levels.WARN)
   end
   ensure_server(function()
-    rpc.request("thread/resume", { threadId = thread_id, excludeTurns = false, persistExtendedHistory = false }, function(err, result)
-      if err then
-        util.notify("thread/resume failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
-        return
+    rpc.request(
+      "thread/resume",
+      { threadId = thread_id, excludeTurns = false, persistExtendedHistory = false },
+      function(err, result)
+        if err then
+          util.notify("thread/resume failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+          return
+        end
+        local thread = state.update_thread_from_payload(result.thread)
+        buffers.open(thread.id)
       end
-      local thread = state.update_thread_from_payload(result.thread)
-      buffers.open(thread.id)
-    end)
+    )
   end)
 end
 

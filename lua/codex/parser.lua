@@ -47,10 +47,7 @@ context_handlers.diagnostics = function()
   end
   local lines = { "Current buffer diagnostics:" }
   for _, diagnostic in ipairs(diagnostics) do
-    table.insert(
-      lines,
-      ("- L%d:C%d %s"):format(diagnostic.lnum + 1, diagnostic.col + 1, diagnostic.message)
-    )
+    table.insert(lines, ("- L%d:C%d %s"):format(diagnostic.lnum + 1, diagnostic.col + 1, diagnostic.message))
   end
   return table.concat(lines, "\n")
 end
