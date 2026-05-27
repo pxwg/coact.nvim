@@ -453,20 +453,12 @@ handlers["item/mcpToolCall/progress"] = function(params)
   schedule(params.threadId)
 end
 
-handlers["mcpServer/startupStatus/updated"] = function(params)
+handlers["mcpServer/startupStatus/updated"] = function()
   require("codex.catalog").invalidate("tools")
-  append_timeline(
-    "mcpServer/startupStatus/updated",
-    params,
-    "MCP server status",
-    "updated",
-    inspect_summary(params, 220)
-  )
 end
 
-handlers["app/list/updated"] = function(params)
+handlers["app/list/updated"] = function()
   require("codex.catalog").invalidate("tools")
-  append_timeline("app/list/updated", params, "App list updated", "updated", inspect_summary(params, 220))
 end
 
 handlers["turn/diff/updated"] = function(params)

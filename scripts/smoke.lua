@@ -136,6 +136,17 @@ core.handle_notification({
   },
 })
 assert(#(thread.timeline_blocks or {}) > 0, "known lifecycle notifications should render as timeline blocks")
+local timeline_count = #(thread.timeline_blocks or {})
+state.set_cache(catalog.cache_key("tools"), { { label = "/stale/tool" } })
+core.handle_notification({
+  method = "mcpServer/startupStatus/updated",
+  params = {
+    name = "smoke",
+    tools = {},
+  },
+})
+assert(#(thread.timeline_blocks or {}) == timeline_count, "MCP startup updates should not render timeline spam")
+assert(#catalog.dynamic("tools") == 0, "MCP startup updates should invalidate tool completion cache")
 core.handle_notification({
   method = "process/outputDelta",
   params = {
