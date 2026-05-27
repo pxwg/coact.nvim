@@ -246,6 +246,20 @@ local function apply_anchor_marks(bufnr, anchors)
 end
 
 local function submit_decision(proposal, action)
+  if proposal.on_decision then
+    local ok, err = pcall(proposal.on_decision, action, proposal)
+    if not ok then
+      util.notify("patch review decision failed: " .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
+    proposal._resolved = true
+    if proposal.bufnr and vim.api.nvim_buf_is_valid(proposal.bufnr) then
+      close_window(proposal.bufnr)
+    end
+    util.notify("patch review: " .. action)
+    return
+  end
+
   local rpc = require("codex.rpc")
   local request = state.pop_pending_request(proposal.request_id)
   if not request then
@@ -312,6 +326,12 @@ function M.open(proposal)
     open_anchor(proposal)
   end, { buffer = bufnr, desc = "Open Codex patch file" })
   vim.keymap.set("n", "q", function()
+    if proposal.on_close and not proposal._resolved then
+      local ok, err = pcall(proposal.on_close, proposal)
+      if not ok then
+        util.notify("patch review close hook failed: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end
     close_window(bufnr)
   end, { buffer = bufnr, desc = "Close patch review" })
 

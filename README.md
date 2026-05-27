@@ -25,6 +25,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
   - `nvim.current_buffer`
   - `nvim.diagnostics`
   - `nvim.quickfix`
+  - `nvim.apply_patch`
 - Source-buffer tracking so prompt context and Neovim tools target the buffer that opened the thread.
 - `blink.cmp` source where `$` and `/` come from Codex app-server skill/tool inventory and `@` expands Neovim context.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
@@ -33,6 +34,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 
 - Neovim 0.10 or newer.
 - A working `codex` executable with `app-server` support.
+- `git` on `$PATH` for the Neovim-owned `nvim.apply_patch` dynamic tool.
 - Optional: `snacks.nvim` for thread picking.
 - Optional: `blink.cmp` for prompt completions.
 
@@ -158,7 +160,7 @@ Review keys:
 - `<CR>` / `o`: open the related file at the hunk location when available
 - `q`: close the review window without answering
 
-The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. For future custom editor tools, the same patch review UI can be reused with Neovim owning the final apply step.
+The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval.
 
 ## Architecture
 
@@ -185,4 +187,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.

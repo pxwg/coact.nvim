@@ -161,7 +161,10 @@ The review buffer indexes file changes and unified-diff hunk headers with
 extmarks so larger patches can be navigated as editor state.
 
 Modern app-server requests use `item/fileChange/requestApproval`. Legacy
-`applyPatchApproval` requests are supported as a fallback.
+`applyPatchApproval` requests are supported as a fallback. The `nvim.apply_patch`
+dynamic tool uses the same review UI, but Neovim owns the final apply step: it
+refuses to overwrite modified loaded buffers, runs `git apply --check`, and
+applies only after approval.
 
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*

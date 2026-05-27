@@ -80,6 +80,27 @@ end
 if vim.api.nvim_buf_is_valid(review_buf) then
   vim.api.nvim_buf_delete(review_buf, { force = true })
 end
+local dynamic_tools = require("codex.dynamic_tools")
+local patch_dir = vim.fn.tempname()
+vim.fn.mkdir(patch_dir, "p")
+vim.fn.writefile({ "one", "two" }, vim.fs.joinpath(patch_dir, "sample.txt"))
+local apply_patch = table.concat({
+  "diff --git a/sample.txt b/sample.txt",
+  "--- a/sample.txt",
+  "+++ b/sample.txt",
+  "@@ -1,2 +1,2 @@",
+  " one",
+  "-two",
+  "+three",
+}, "\n")
+local apply_changes = dynamic_tools._changes_from_unified_patch(apply_patch)
+assert(#apply_changes == 1 and apply_changes[1].path == "sample.txt", "nvim.apply_patch should parse patch files")
+local apply_ok, apply_message = dynamic_tools._apply_unified_patch(patch_dir, apply_patch, apply_changes)
+assert(apply_ok, apply_message)
+assert(
+  vim.fn.readfile(vim.fs.joinpath(patch_dir, "sample.txt"))[2] == "three",
+  "nvim.apply_patch should apply approved patches"
+)
 
 local done = false
 local source = require("codex.completion.blink").new()
