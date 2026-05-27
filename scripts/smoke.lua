@@ -136,6 +136,19 @@ source:get_completions({
   tool_done = true
 end)
 assert(tool_done, "tool completion should run from cached official catalog")
+
+local nvim_tool_done = false
+source:get_completions({
+  line = "/nvim/apply",
+  cursor = { 1, 11 },
+}, function(result)
+  assert(
+    #result.items == 1 and result.items[1].label == "/nvim/apply_patch",
+    "tool completion should include Neovim tools"
+  )
+  nvim_tool_done = true
+end)
+assert(nvim_tool_done, "Neovim tool completion should run from local dynamic tools")
 assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 
 local rpc_done = false
@@ -306,7 +319,20 @@ core.handle_notification({
   },
 })
 assert(#(thread.timeline_blocks or {}) == timeline_count, "MCP startup updates should not render timeline spam")
-assert(#catalog.dynamic("tools") == 0, "MCP startup updates should invalidate tool completion cache")
+local dynamic_tools_after_mcp_update = catalog.dynamic("tools")
+assert(
+  not vim.tbl_contains(
+    vim.tbl_map(function(item)
+      return item.label
+    end, dynamic_tools_after_mcp_update),
+    "/stale/tool"
+  ),
+  "MCP startup updates should invalidate remote tool completion cache"
+)
+assert(
+  #dynamic_tools_after_mcp_update > 0,
+  "local Neovim tool completions should remain available without remote cache"
+)
 core.handle_notification({
   method = "process/outputDelta",
   params = {

@@ -130,6 +130,7 @@ Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-s
 - `$skill:<name>` from Codex app-server `skills/list`
 - `/server/tool` from Codex app-server `mcpServerStatus/list`
 - `/app:<id>` from Codex app-server `app/list`
+- `/nvim/<tool>` from codex.nvim dynamic tools, including `/nvim/apply_patch`
 - `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@file:`
 
 Configure `blink.cmp` with:

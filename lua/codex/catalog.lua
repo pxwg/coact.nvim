@@ -80,6 +80,41 @@ local function normalize_app(app)
   }
 end
 
+local function normalize_dynamic_tool(spec)
+  if type(spec) ~= "table" or not spec.namespace or not spec.name then
+    return nil
+  end
+  local label = "/" .. tostring(spec.namespace) .. "/" .. tostring(spec.name)
+  return {
+    label = label,
+    detail = "Neovim tool: " .. tostring(spec.namespace) .. "." .. tostring(spec.name),
+    documentation = spec.description,
+    filterText = label .. " " .. tostring(spec.namespace) .. " " .. tostring(spec.name) .. " " .. tostring(
+      spec.description or ""
+    ),
+    data = {
+      source = "codex.nvim.dynamic_tools",
+      tool = spec,
+    },
+  }
+end
+
+local function dynamic_tool_items()
+  local ok, dynamic_tools = pcall(require, "codex.dynamic_tools")
+  if not ok then
+    return {}
+  end
+  local specs = dynamic_tools.specs() or {}
+  local items = {}
+  for _, spec in ipairs(specs) do
+    local item = normalize_dynamic_tool(spec)
+    if item then
+      table.insert(items, item)
+    end
+  end
+  return items
+end
+
 function M.static_for_trigger(trigger)
   return vim.deepcopy(static[trigger] or {})
 end
@@ -91,6 +126,14 @@ end
 function M.dynamic(kind)
   if not kind then
     return {}
+  end
+  if kind == "tools" then
+    local tools = vim.deepcopy(cached(kind) or {})
+    vim.list_extend(tools, dynamic_tool_items())
+    table.sort(tools, function(a, b)
+      return a.label < b.label
+    end)
+    return tools
   end
   return cached(kind) or {}
 end
@@ -179,7 +222,7 @@ local function refresh_tools(callback)
         return a.label < b.label
       end)
       state.set_cache(cache_key("tools"), items)
-      callback(items)
+      callback(M.dynamic("tools"))
     end)
   end)
 end
@@ -200,7 +243,7 @@ function M.refresh(kind, callback)
   end
   with_server(function(err)
     if err then
-      done({})
+      done(kind == "tools" and dynamic_tool_items() or {})
       return
     end
     if kind == "skills" then
@@ -236,9 +279,14 @@ function M.items_for_trigger(trigger, prefix, callback)
     callback(M.static_for_trigger(trigger))
     return
   end
+  if kind == "tools" and vim.startswith(prefix or "", "/nvim") then
+    callback(M.dynamic("tools"))
+    M.ensure_refresh("tools")
+    return
+  end
   local current = cached(kind)
   if current then
-    callback(current)
+    callback(M.dynamic(kind))
     return
   end
   M.refresh(kind, callback)
@@ -255,5 +303,7 @@ function M.find_skill(name)
   end
   return nil
 end
+
+M._dynamic_tool_items = dynamic_tool_items
 
 return M

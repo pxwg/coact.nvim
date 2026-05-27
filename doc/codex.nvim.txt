@@ -129,6 +129,7 @@ The blink source and parser recognize these prompt token families:
 
   /server/tool
   /app:<id>
+  /nvim/<tool>
 
   @file:
   @buffer
@@ -142,8 +143,8 @@ The blink source and parser recognize these prompt token families:
 
 `$skill:<name>` candidates come from Codex app-server `skills/list`. `/...`
 candidates come from app-server tool inventory: `mcpServerStatus/list` for MCP
-tools and `app/list` for app connectors. These two trigger families are not
-hard-coded locally.
+tools, `app/list` for app connectors, and codex.nvim dynamic tool specs such
+as `/nvim/apply_patch`.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
 text inputs before the turn is sent. When a thread is opened from another
