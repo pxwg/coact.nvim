@@ -8,8 +8,9 @@ CONTENTS                                                        *codex.nvim*
 3. Commands                                      |codex.nvim-commands|
 4. Prompt tokens                                 |codex.nvim-prompt-tokens|
 5. Patch review                                  |codex.nvim-patch-review|
-6. blink.cmp                                     |codex.nvim-blink|
-7. Lua API                                       |codex.nvim-api|
+6. TUI rendering                                 |codex.nvim-tui|
+7. blink.cmp                                     |codex.nvim-blink|
+8. Lua API                                       |codex.nvim-api|
 
 ==============================================================================
 OVERVIEW                                               *codex.nvim-overview*
@@ -21,7 +22,8 @@ threads as Neovim buffers. A thread buffer is named:
 <
 
 The transcript is rendered above a `## Prompt` section. Type below that prompt
-section and press CTRL-S to submit.
+section and press CTRL-S to submit. Reasoning, tools, patches, plans, raw
+events, and agent timeline items are rendered as extmark placeholder blocks.
 
 File edit approvals are shown as patch proposals in a Neovim review window.
 
@@ -61,6 +63,15 @@ Default options:
       render_delay_ms = 35,
       auto_scroll = true,
     },
+    render = {
+      prompt_marker = "## Prompt",
+      separator = "───",
+      virtual_blocks = {
+        default_expanded = false,
+        max_lines = 80,
+        max_width = 180,
+      },
+    },
     completion = {
       enabled = true,
       ttl_ms = 30000,
@@ -83,6 +94,7 @@ COMMANDS                                               *codex.nvim-commands*
   :Codex list
   :Codex submit
   :Codex stop
+  :Codex detail
   :Codex health
   :Codex restart
 <
@@ -137,6 +149,42 @@ Modern app-server requests use `item/fileChange/requestApproval`. Legacy
 `applyPatchApproval` requests are supported as a fallback.
 
 ==============================================================================
+TUI RENDERING                                          *codex.nvim-tui*
+
+The renderer follows the Alma-style TUI shape:
+>
+  Codex ThreadItem -> Codex block -> rendered buffer lines -> extmark UI
+<
+
+The block types include:
+>
+  UserBlock
+  AssistantBlock
+  ReasoningBlock
+  PlanBlock
+  ToolCallBlock
+  PatchBlock
+  AgentTimelineBlock
+  RawEventBlock
+<
+
+Headers are rendered through overlay extmarks. Reasoning/tool/patch/agent
+blocks are placeholders with virtual body lines. Busy turns show a spinner
+whose label follows the current generation state: thinking, reasoning,
+streaming, tooling, patch review, syncing, or stopping.
+
+Thread buffer keys:
+>
+  CTRL-S    submit prompt
+  za        expand/collapse placeholder block
+  K         open full block detail
+  q         close window
+<
+
+                                                        *:Codex-detail*
+`:Codex detail` opens a scratch detail buffer for the block under cursor.
+
+==============================================================================
 BLINK.CMP                                             *codex.nvim-blink*
 
 Example blink.cmp configuration:
@@ -184,6 +232,10 @@ submit_text({text}, {thread_id})~
                                                         *codex.stop()*
 stop()~
     Interrupt the active turn.
+
+                                                        *codex.detail*
+:Codex detail~
+    Open a detail buffer for the block under cursor.
 
                                                         *codex.list_threads()*
 list_threads({callback})~

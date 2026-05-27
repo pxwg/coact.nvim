@@ -1,4 +1,6 @@
 :Codex	codex.nvim.txt	/*:Codex*
+:Codex-detail	codex.nvim.txt	/*:Codex-detail*
+codex.detail	codex.nvim.txt	/*codex.detail*
 codex.health()	codex.nvim.txt	/*codex.health()*
 codex.list_threads()	codex.nvim.txt	/*codex.list_threads()*
 codex.new_thread()	codex.nvim.txt	/*codex.new_thread()*
@@ -10,6 +12,7 @@ codex.nvim-overview	codex.nvim.txt	/*codex.nvim-overview*
 codex.nvim-patch-review	codex.nvim.txt	/*codex.nvim-patch-review*
 codex.nvim-prompt-tokens	codex.nvim.txt	/*codex.nvim-prompt-tokens*
 codex.nvim-setup	codex.nvim.txt	/*codex.nvim-setup*
+codex.nvim-tui	codex.nvim.txt	/*codex.nvim-tui*
 codex.nvim.txt	codex.nvim.txt	/*codex.nvim.txt*
 codex.open()	codex.nvim.txt	/*codex.open()*
 codex.pick_thread()	codex.nvim.txt	/*codex.pick_thread()*
