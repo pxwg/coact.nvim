@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local catalog = require("codex.catalog")
 
 local M = {}
 
@@ -54,6 +55,19 @@ context_handlers.diagnostics = function()
   return table.concat(lines, "\n")
 end
 
+context_handlers.quickfix = function()
+  local items = vim.fn.getqflist()
+  if #items == 0 then
+    return "Quickfix list: empty"
+  end
+  local lines = { "Quickfix list:" }
+  for _, item in ipairs(items) do
+    local name = item.bufnr and vim.api.nvim_buf_is_valid(item.bufnr) and vim.api.nvim_buf_get_name(item.bufnr) or ""
+    table.insert(lines, ("- %s:%d:%d %s"):format(name, item.lnum or 0, item.col or 0, item.text or ""))
+  end
+  return table.concat(lines, "\n")
+end
+
 function M.parse(text)
   local inputs = {}
   local body = {}
@@ -72,8 +86,14 @@ function M.parse(text)
       else
         table.insert(body, line)
       end
-    elseif token and token:sub(1, 1) == "$" and opts.completion.enabled then
-      table.insert(body, line)
+    elseif token and vim.startswith(token, "$skill:") and opts.completion.enabled then
+      local name = token:sub(8)
+      local skill = catalog.find_skill(name)
+      if skill and skill.path then
+        table.insert(inputs, { type = "skill", name = skill.name, path = skill.path })
+      else
+        table.insert(body, line)
+      end
     else
       table.insert(body, line)
     end

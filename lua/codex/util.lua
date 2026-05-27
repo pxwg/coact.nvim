@@ -6,6 +6,17 @@ function M.notify(message, level)
   end)
 end
 
+function M.present(value)
+  return value ~= nil and value ~= vim.NIL
+end
+
+function M.value(value)
+  if M.present(value) then
+    return value
+  end
+  return nil
+end
+
 function M.tbl_get(tbl, ...)
   local value = tbl
   for _, key in ipairs({ ... }) do

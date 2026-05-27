@@ -152,7 +152,7 @@ local renderers = {
 
 function M.thread(thread, prompt_lines)
   local lines = {}
-  local title = thread.title or util.truncate(thread.id, 18)
+  local title = util.value(thread.title) or util.truncate(thread.id, 18)
   table.insert(lines, "# Codex: " .. title)
   table.insert(lines, "")
   table.insert(lines, ("thread: `%s`"):format(thread.id))

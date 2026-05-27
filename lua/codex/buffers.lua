@@ -74,7 +74,8 @@ function M.open(thread_id)
   local winid = window.open(bufnr)
   state.set_buffer(thread_id, bufnr, winid)
   local start = prompt_start(bufnr)
-  vim.api.nvim_win_set_cursor(winid, { math.max(1, start + 1), 0 })
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  vim.api.nvim_win_set_cursor(winid, { math.min(math.max(1, start + 1), line_count), 0 })
   return bufnr, winid
 end
 

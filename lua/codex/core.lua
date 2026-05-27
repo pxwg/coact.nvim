@@ -45,7 +45,7 @@ end
 handlers["thread/name/updated"] = function(params)
   local thread = state.get_thread(params.threadId)
   if thread then
-    thread.title = params.name
+    thread.title = util.value(params.name)
     schedule(params.threadId)
   end
 end

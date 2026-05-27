@@ -19,7 +19,7 @@ local specs = {
     deferLoading = true,
     inputSchema = {
       type = "object",
-      properties = {},
+      properties = vim.empty_dict(),
       additionalProperties = false,
     },
   },
@@ -30,7 +30,7 @@ local specs = {
     deferLoading = true,
     inputSchema = {
       type = "object",
-      properties = {},
+      properties = vim.empty_dict(),
       additionalProperties = false,
     },
   },
@@ -41,7 +41,7 @@ local specs = {
     deferLoading = true,
     inputSchema = {
       type = "object",
-      properties = {},
+      properties = vim.empty_dict(),
       additionalProperties = false,
     },
   },

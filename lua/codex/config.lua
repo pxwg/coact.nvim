@@ -28,6 +28,7 @@ local defaults = {
   },
   completion = {
     enabled = true,
+    ttl_ms = 30000,
   },
   dynamic_tools = {
     enabled = true,

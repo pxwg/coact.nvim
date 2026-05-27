@@ -1,9 +1,11 @@
 local M = {}
+local util = require("codex.util")
 
 M.threads = {}
 M.active_thread_id = nil
 M.pending_server_requests = {}
 M.render_timers = {}
+M.cache = {}
 
 local function append_unique(list, value)
   for _, existing in ipairs(list) do
@@ -57,9 +59,9 @@ function M.update_thread_from_payload(payload)
   end
   local thread = M.ensure_thread(payload.id, {
     thread = payload,
-    cwd = payload.cwd,
-    status = payload.status,
-    title = payload.name or payload.preview,
+    cwd = util.value(payload.cwd),
+    status = util.value(payload.status),
+    title = util.value(payload.name) or util.value(payload.preview),
   })
   if payload.turns then
     for _, turn in ipairs(payload.turns) do
@@ -129,6 +131,25 @@ function M.pop_pending_request(request_id)
   local request = M.pending_server_requests[key]
   M.pending_server_requests[key] = nil
   return request
+end
+
+function M.set_cache(key, value)
+  M.cache[key] = {
+    value = value,
+    time = vim.uv.now(),
+  }
+end
+
+function M.get_cache(key, ttl_ms)
+  local entry = M.cache[key]
+  if not entry then
+    return nil
+  end
+  if ttl_ms and ttl_ms > 0 and vim.uv.now() - entry.time > ttl_ms then
+    M.cache[key] = nil
+    return nil
+  end
+  return entry.value
 end
 
 return M
