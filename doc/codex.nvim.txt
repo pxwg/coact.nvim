@@ -6,11 +6,12 @@ CONTENTS                                                        *codex.nvim*
 1. Overview                                      |codex.nvim-overview|
 2. Setup                                         |codex.nvim-setup|
 3. Commands                                      |codex.nvim-commands|
-4. Prompt tokens                                 |codex.nvim-prompt-tokens|
-5. Patch review                                  |codex.nvim-patch-review|
-6. TUI rendering                                 |codex.nvim-tui|
-7. blink.cmp                                     |codex.nvim-blink|
-8. Lua API                                       |codex.nvim-api|
+4. Health                                        |codex.nvim-health|
+5. Prompt tokens                                 |codex.nvim-prompt-tokens|
+6. Patch review                                  |codex.nvim-patch-review|
+7. TUI rendering                                 |codex.nvim-tui|
+8. blink.cmp                                     |codex.nvim-blink|
+9. Lua API                                       |codex.nvim-api|
 
 ==============================================================================
 OVERVIEW                                               *codex.nvim-overview*
@@ -105,6 +106,19 @@ COMMANDS                                               *codex.nvim-commands*
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
+
+==============================================================================
+HEALTH                                                   *codex.nvim-health*
+
+Run:
+>
+  :checkhealth codex
+<
+
+The health provider checks the Neovim version, `codex` executable,
+app-server command shape, `git` for `nvim.apply_patch`, optional picker and
+completion integrations, and dynamic tool registration. `:Codex health`
+performs the runtime app-server initialization check.
 
 ==============================================================================
 PROMPT TOKENS                                    *codex.nvim-prompt-tokens*

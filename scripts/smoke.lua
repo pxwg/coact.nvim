@@ -2,6 +2,10 @@ vim.opt.runtimepath:append(".")
 
 local codex = require("codex")
 codex.setup()
+local health = require("codex.health")
+assert(health._executable({ "codex", "app-server" }) == "codex", "health should resolve table commands")
+assert(health._executable("codex app-server") == "codex", "health should resolve string commands")
+health.check()
 
 local parser = require("codex.parser")
 local parsed = parser.parse("hello\n>diagnostics")

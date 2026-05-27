@@ -8,6 +8,7 @@ codex.nvim	codex.nvim.txt	/*codex.nvim*
 codex.nvim-api	codex.nvim.txt	/*codex.nvim-api*
 codex.nvim-blink	codex.nvim.txt	/*codex.nvim-blink*
 codex.nvim-commands	codex.nvim.txt	/*codex.nvim-commands*
+codex.nvim-health	codex.nvim.txt	/*codex.nvim-health*
 codex.nvim-overview	codex.nvim.txt	/*codex.nvim-overview*
 codex.nvim-patch-review	codex.nvim.txt	/*codex.nvim-patch-review*
 codex.nvim-prompt-tokens	codex.nvim.txt	/*codex.nvim-prompt-tokens*

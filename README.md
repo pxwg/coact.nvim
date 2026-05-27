@@ -119,6 +119,10 @@ require("codex").setup({
 
 Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, windows near the prompt keep following the composer; scrolling away suspends that follow state for the window.
 
+## Health
+
+Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server command shape, `git` for `nvim.apply_patch`, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
+
 ## Prompt Tokens
 
 `codex.nvim` treats the chat buffer as the main UI surface. Prompt token completions are available through the `blink.cmp` source:
@@ -178,6 +182,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/codex/patch_review.lua`: patch proposal review UI.
 - `lua/codex/completion/blink.lua`: `blink.cmp` source.
 - `lua/codex/dynamic_tools.lua`: Neovim-backed dynamic tools.
+- `lua/codex/health.lua`: `:checkhealth codex` provider.
 
 ## Verification
 
@@ -187,4 +192,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises health helpers, parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
