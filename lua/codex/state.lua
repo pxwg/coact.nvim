@@ -1,0 +1,134 @@
+local M = {}
+
+M.threads = {}
+M.active_thread_id = nil
+M.pending_server_requests = {}
+M.render_timers = {}
+
+local function append_unique(list, value)
+  for _, existing in ipairs(list) do
+    if existing == value then
+      return
+    end
+  end
+  table.insert(list, value)
+end
+
+function M.get_thread(thread_id)
+  return thread_id and M.threads[thread_id] or nil
+end
+
+function M.ensure_thread(thread_id, attrs)
+  if not thread_id or thread_id == "" then
+    error("codex.nvim: missing thread id")
+  end
+  local thread = M.threads[thread_id]
+  if not thread then
+    thread = {
+      id = thread_id,
+      thread = nil,
+      bufnr = nil,
+      winid = nil,
+      cwd = nil,
+      status = "unknown",
+      title = nil,
+      turns = {},
+      turn_order = {},
+      items = {},
+      item_order = {},
+      item_turns = {},
+      pending_approvals = {},
+      last_error = nil,
+    }
+    M.threads[thread_id] = thread
+  end
+  if attrs then
+    for key, value in pairs(attrs) do
+      thread[key] = value
+    end
+  end
+  M.active_thread_id = thread_id
+  return thread
+end
+
+function M.update_thread_from_payload(payload)
+  if not payload then
+    return nil
+  end
+  local thread = M.ensure_thread(payload.id, {
+    thread = payload,
+    cwd = payload.cwd,
+    status = payload.status,
+    title = payload.name or payload.preview,
+  })
+  if payload.turns then
+    for _, turn in ipairs(payload.turns) do
+      M.add_turn(payload.id, turn)
+    end
+  end
+  return thread
+end
+
+function M.add_turn(thread_id, turn)
+  local thread = M.ensure_thread(thread_id)
+  thread.turns[turn.id] = turn
+  append_unique(thread.turn_order, turn.id)
+  if turn.items then
+    for _, item in ipairs(turn.items) do
+      M.upsert_item(thread_id, turn.id, item)
+    end
+  end
+  return turn
+end
+
+function M.upsert_item(thread_id, turn_id, item)
+  local thread = M.ensure_thread(thread_id)
+  if not item.id then
+    return nil
+  end
+  local existing = thread.items[item.id] or {}
+  for key, value in pairs(item) do
+    existing[key] = value
+  end
+  existing.id = item.id
+  existing.type = item.type or existing.type or "unknown"
+  thread.items[item.id] = existing
+  thread.item_turns[item.id] = turn_id
+  append_unique(thread.item_order, item.id)
+  return existing
+end
+
+function M.ensure_item(thread_id, turn_id, item_id, item_type)
+  local thread = M.ensure_thread(thread_id)
+  local item = thread.items[item_id]
+  if not item then
+    item = { id = item_id, type = item_type or "unknown" }
+    thread.items[item_id] = item
+    thread.item_turns[item_id] = turn_id
+    append_unique(thread.item_order, item_id)
+  end
+  if item_type and (item.type == "unknown" or not item.type) then
+    item.type = item_type
+  end
+  return item
+end
+
+function M.set_buffer(thread_id, bufnr, winid)
+  local thread = M.ensure_thread(thread_id)
+  thread.bufnr = bufnr
+  thread.winid = winid
+  return thread
+end
+
+function M.set_pending_request(request_id, request)
+  M.pending_server_requests[tostring(request_id)] = request
+end
+
+function M.pop_pending_request(request_id)
+  local key = tostring(request_id)
+  local request = M.pending_server_requests[key]
+  M.pending_server_requests[key] = nil
+  return request
+end
+
+return M
