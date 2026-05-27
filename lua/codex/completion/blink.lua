@@ -14,14 +14,14 @@ function Source:enabled()
 end
 
 function Source:get_trigger_characters()
-  return { "/", "@", "$", ">", ":" }
+  return { "/", "@", "$", ":" }
 end
 
 local function prefix_at_cursor(ctx)
   local line = ctx.line or ""
   local cursor_col = ctx.cursor and ctx.cursor[2] or vim.api.nvim_win_get_cursor(0)[2]
   local before = line:sub(1, cursor_col)
-  return before:match("([/@$>][%w%-%._:%/%~]*)$")
+  return before:match("([/@$][%w%-%._:%/%~]*)$")
 end
 
 local function completion_kind()
@@ -40,8 +40,30 @@ local function to_item(item)
     kind = item.kind or kinds.Keyword or 14,
     detail = item.detail,
     documentation = item.documentation,
+    filterText = item.filterText,
     data = item.data,
   }
+end
+
+local function item_matches(item, prefix)
+  local label = tostring(item.label or "")
+  local lower = prefix:lower()
+  if vim.startswith(label:lower(), lower) then
+    return true
+  end
+  local query = lower:sub(2)
+  if query == "" then
+    return true
+  end
+  local haystack = table
+    .concat({
+      label,
+      item.filterText or "",
+      item.detail or "",
+      item.documentation or "",
+    }, " ")
+    :lower()
+  return haystack:find(vim.pesc(query)) ~= nil
 end
 
 function Source:get_completions(ctx, callback)
@@ -52,25 +74,20 @@ function Source:get_completions(ctx, callback)
   end
 
   local trigger = prefix:sub(1, 1)
-  local kind = catalog.kind_for_trigger(trigger, prefix)
-  catalog.ensure_refresh(kind)
-
-  local candidates = catalog.static_for_trigger(trigger)
-  vim.list_extend(candidates, catalog.dynamic(kind))
-
-  local out = {}
-  local lower = prefix:lower()
-  for _, item in ipairs(candidates) do
-    if item.label and vim.startswith(item.label:lower(), lower) then
-      table.insert(out, to_item(item))
+  catalog.items_for_trigger(trigger, prefix, function(candidates)
+    local out = {}
+    for _, item in ipairs(candidates or {}) do
+      if item.label and item_matches(item, prefix) then
+        table.insert(out, to_item(item))
+      end
     end
-  end
 
-  callback({
-    items = out,
-    is_incomplete_forward = false,
-    is_incomplete_backward = false,
-  })
+    callback({
+      items = out,
+      is_incomplete_forward = false,
+      is_incomplete_backward = false,
+    })
+  end)
 end
 
 function M.new(opts)

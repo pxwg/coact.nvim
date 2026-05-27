@@ -108,31 +108,31 @@ PROMPT TOKENS                                    *codex.nvim-prompt-tokens*
 
 The blink source and parser recognize these prompt token families:
 >
-  /new
-  /pick
-  /resume
-  /stop
-  /submit
-
-  $model:<id>
   $skill:<name>
-  $reasoning:low
-  $reasoning:medium
-  $reasoning:high
+
+  /server/tool
+  /app:<id>
 
   @file:
   @buffer
+  @selection
+  @cursor
   @diagnostics
-
-  >buffer
-  >selection
-  >diagnostics
-  >quickfix
+  @quickfix
+  @buffers
+  @cwd
 <
 
-`>buffer`, `>diagnostics`, and `>quickfix` are expanded into additional text
-inputs. `$skill:<name>` becomes a Codex skill input when the skill is present in
-the local skill catalog.
+`$skill:<name>` candidates come from Codex app-server `skills/list`. `/...`
+candidates come from app-server tool inventory: `mcpServerStatus/list` for MCP
+tools and `app/list` for app connectors. These two trigger families are not
+hard-coded locally.
+
+`@...` candidates are Neovim context shortcuts. They expand into additional
+text inputs before the turn is sent. `@buffer` includes buffer RPC metadata
+such as bufnr, path, filetype, line count, cursor, modified state, and buffer
+text. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
+aliases, but new completions use `@`.
 
 ==============================================================================
 PATCH REVIEW                                      *codex.nvim-patch-review*

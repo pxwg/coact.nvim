@@ -264,6 +264,10 @@ handlers["thread/tokenUsage/updated"] = function(params)
   end
 end
 
+handlers["skills/changed"] = function()
+  require("codex.catalog").invalidate("skills")
+end
+
 handlers["turn/started"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
@@ -447,6 +451,22 @@ handlers["item/mcpToolCall/progress"] = function(params)
   item.progress = params
   set_generation(state.get_thread(params.threadId), "tool_running", "Codex is using an MCP tool...")
   schedule(params.threadId)
+end
+
+handlers["mcpServer/startupStatus/updated"] = function(params)
+  require("codex.catalog").invalidate("tools")
+  append_timeline(
+    "mcpServer/startupStatus/updated",
+    params,
+    "MCP server status",
+    "updated",
+    inspect_summary(params, 220)
+  )
+end
+
+handlers["app/list/updated"] = function(params)
+  require("codex.catalog").invalidate("tools")
+  append_timeline("app/list/updated", params, "App list updated", "updated", inspect_summary(params, 220))
 end
 
 handlers["turn/diff/updated"] = function(params)

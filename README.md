@@ -25,7 +25,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
   - `nvim.current_buffer`
   - `nvim.diagnostics`
   - `nvim.quickfix`
-- `blink.cmp` source for `/`, `$`, `@`, and `>` prompt tokens.
+- `blink.cmp` source where `$` and `/` come from Codex app-server skill/tool inventory and `@` expands Neovim context.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
 
 ## Requirements
@@ -120,10 +120,10 @@ Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submi
 
 `codex.nvim` treats the chat buffer as the main UI surface. Prompt token completions are available through the `blink.cmp` source:
 
-- `/new`, `/pick`, `/resume`, `/stop`, `/submit`
-- `$model:<id>`, `$skill:<name>`, `$reasoning:high`
-- `@file:`, `@buffer`, `@diagnostics`
-- `>buffer`, `>selection`, `>diagnostics`, `>quickfix`
+- `$skill:<name>` from Codex app-server `skills/list`
+- `/server/tool` from Codex app-server `mcpServerStatus/list`
+- `/app:<id>` from Codex app-server `app/list`
+- `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@file:`
 
 Configure `blink.cmp` with:
 
@@ -141,7 +141,7 @@ require("blink.cmp").setup({
 })
 ```
 
-`>buffer`, `>diagnostics`, and `>quickfix` are expanded into extra Codex text inputs. `$skill:<name>` is converted to a Codex skill input when the skill has been loaded into the local catalog.
+`@...` tokens are expanded by Neovim into extra Codex text inputs. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
 ## Patch Review
 

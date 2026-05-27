@@ -7,15 +7,51 @@ local parser = require("codex.parser")
 local parsed = parser.parse("hello\n>diagnostics")
 assert(#parsed >= 1, "parser should produce user input")
 
+local state = require("codex.state")
+local catalog = require("codex.catalog")
+state.set_cache(catalog.cache_key("skills"), {
+  { label = "$skill:smoke", detail = "Smoke skill", data = { name = "smoke", path = "/tmp/smoke" } },
+})
+state.set_cache(catalog.cache_key("tools"), {
+  { label = "/smoke/read", detail = "Smoke MCP tool", filterText = "/read smoke" },
+})
+local context_parsed = parser.parse("@cwd")
+assert(context_parsed[1] and context_parsed[1].text:match("Neovim context: workspace"), "@cwd should expand context")
+local buffer_context = parser.parse("@buffer")
+assert(buffer_context[1] and buffer_context[1].text:match("bufnr:"), "@buffer should include Neovim buffer metadata")
+local skill_parsed = parser.parse("$skill:smoke")
+assert(skill_parsed[1] and skill_parsed[1].type == "skill", "$skill should expand to a skill input")
+
 local done = false
-require("codex.completion.blink").new():get_completions({
-  line = ">dia",
+local source = require("codex.completion.blink").new()
+source:get_completions({
+  line = "@dia",
   cursor = { 1, 4 },
 }, function(result)
-  assert(#result.items == 1, "completion should return >diagnostics")
+  assert(#result.items == 1 and result.items[1].label == "@diagnostics", "completion should return @diagnostics")
   done = true
 end)
-assert(done, "completion callback should run synchronously for static items")
+assert(done, "completion callback should run synchronously for Neovim context items")
+
+local skill_done = false
+source:get_completions({
+  line = "$",
+  cursor = { 1, 1 },
+}, function(result)
+  assert(#result.items == 1 and result.items[1].label == "$skill:smoke", "skill completion should use catalog cache")
+  skill_done = true
+end)
+assert(skill_done, "skill completion should run from cached official catalog")
+
+local tool_done = false
+source:get_completions({
+  line = "/read",
+  cursor = { 1, 5 },
+}, function(result)
+  assert(#result.items == 1 and result.items[1].label == "/smoke/read", "tool completion should use catalog cache")
+  tool_done = true
+end)
+assert(tool_done, "tool completion should run from cached official catalog")
 assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 
 local rpc_done = false
@@ -36,7 +72,6 @@ vim.wait(3000, function()
 end, 20)
 assert(thread_done, "thread/start timed out")
 
-local state = require("codex.state")
 local buffers = require("codex.buffers")
 local thread = state.ensure_thread("smoke-extmarks", {
   title = "Smoke extmarks",
