@@ -17,6 +17,8 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 - Alma-style TUI render: Codex items are normalized into blocks, then drawn with extmark headers, placeholders, virtual lines, stream gutters, composer token highlights, and a busy spinner.
 - Streaming render for agent messages, reasoning, plans, command output, MCP calls, dynamic tool calls, collab-agent calls, web search, image events, and file changes.
 - Expandable reasoning/tool/agent/patch placeholders with `za`; detail scratch views with `K` or `:Codex detail`.
+- Prompt-anchor window following that keeps the composer stable while Codex streams, but suspends auto-follow when you scroll away.
+- App-server lifecycle notifications are preserved as timeline blocks; unknown notifications are retained as raw blocks and can be shown for debugging.
 - Patch review window for `item/fileChange/requestApproval` and legacy `applyPatchApproval`.
 - Basic command and permission approval prompts.
 - Optional dynamic tools exposed to Codex under the `nvim` namespace:
@@ -80,6 +82,7 @@ require("codex").setup({
   render = {
     prompt_marker = "## Prompt",
     separator = "───",
+    show_raw_events = false,
     virtual_blocks = {
       default_expanded = false,
       max_lines = 80,
@@ -111,7 +114,7 @@ require("codex").setup({
 :Codex restart
 ```
 
-Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer.
+Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, windows near the prompt keep following the composer; scrolling away suspends that follow state for the window.
 
 ## Prompt Tokens
 
@@ -159,11 +162,11 @@ For modern app-server file changes, Codex still owns the final patch application
 The plugin follows the same shape as a native Neovim chat client:
 
 - `lua/codex/rpc.lua`: stdio JSONL app-server client.
-- `lua/codex/state.lua`: thread, turn, item, pending-request, render-index, expansion, and cache state.
-- `lua/codex/core.lua`: app-server notification and server-request reducer; maps Codex lifecycle events to UI generation states.
+- `lua/codex/state.lua`: thread, turn, item, pending-request, render-index, expansion, view, timeline/raw, and cache state.
+- `lua/codex/core.lua`: app-server notification and server-request reducer; maps Codex lifecycle events to UI generation states and timeline/raw blocks.
 - `lua/codex/events.lua`: Codex `ThreadItem` to Alma-style block normalization.
 - `lua/codex/buffers.lua`: `codex://thread/<id>` buffers, window option management, prompt collection, and block keymaps.
-- `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, and composer tokens.
+- `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, prompt-anchor follow, and foldexpr ranges.
 - `lua/codex/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
 - `lua/codex/ui/detail.lua`: scratch detail buffers for the block under cursor.
 - `lua/codex/patch_review.lua`: patch proposal review UI.
@@ -178,4 +181,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises parser/completion behavior, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, detail output, and a busy spinner.
+The smoke test loads the plugin, exercises parser/completion behavior, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.

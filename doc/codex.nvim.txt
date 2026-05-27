@@ -22,8 +22,9 @@ threads as Neovim buffers. A thread buffer is named:
 <
 
 The transcript is rendered above a `## Prompt` section. Type below that prompt
-section and press CTRL-S to submit. Reasoning, tools, patches, plans, raw
-events, and agent timeline items are rendered as extmark placeholder blocks.
+section and press CTRL-S to submit. Reasoning, tools, patches, plans, and agent
+timeline items are rendered as extmark placeholder blocks. Unknown app-server
+events are retained as raw event blocks and can be shown for debugging.
 
 File edit approvals are shown as patch proposals in a Neovim review window.
 
@@ -66,6 +67,7 @@ Default options:
     render = {
       prompt_marker = "## Prompt",
       separator = "───",
+      show_raw_events = false,
       virtual_blocks = {
         default_expanded = false,
         max_lines = 80,
@@ -172,6 +174,20 @@ Headers are rendered through overlay extmarks. Reasoning/tool/patch/agent
 blocks are placeholders with virtual body lines. Busy turns show a spinner
 whose label follows the current generation state: thinking, reasoning,
 streaming, tooling, patch review, syncing, or stopping.
+
+The renderer tracks per-window view state. A window near the prompt follows the
+composer while Codex streams. Cursor movement or scrolling away suspends that
+follow state for that window. The prompt line is restored by anchor instead of
+raw line number so streamed output does not shove the composer out of view.
+
+Rendered user/assistant/error sections populate Vim fold ranges through
+`v:lua.CodexFoldExpr(v:lnum)`. Codex windows keep `foldlevel` high by default,
+so the folds are available without collapsing the transcript on open.
+
+App-server lifecycle notifications such as hooks, auto-approval reviews,
+server-request resolution, context compaction, and model reroutes become
+timeline blocks. Set `render.show_raw_events = true` to also show retained raw
+notification blocks.
 
 Thread buffer keys:
 >

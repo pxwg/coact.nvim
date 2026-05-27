@@ -190,6 +190,10 @@ function M.submit()
   if text == "" then
     return util.notify("prompt is empty", vim.log.levels.WARN)
   end
+  local thread = state.get_thread(thread_id)
+  if thread then
+    require("codex.ui.render").prepare_submit_follow(thread, vim.api.nvim_get_current_win())
+  end
   buffers.clear_prompt(bufnr)
   M.submit_text(text, thread_id)
 end

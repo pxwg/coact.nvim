@@ -11,6 +11,12 @@ local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
 
+local foldable_types = {
+  UserBlock = true,
+  AssistantBlock = true,
+  ErrorBlock = true,
+}
+
 local placeholder_types = {
   ReasoningBlock = true,
   ToolCallBlock = true,
@@ -690,6 +696,48 @@ local function valid_window_for_buffer(win, bufnr)
   return win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr
 end
 
+local function ensure_view_state(thread)
+  thread.view_state = thread.view_state or {}
+  return thread.view_state
+end
+
+local function view_state_for_win(thread, win)
+  local states = ensure_view_state(thread)
+  states[win] = states[win]
+    or {
+      follow = nil,
+      suspended_by_user = false,
+      programmatic = 0,
+      last_programmatic = false,
+    }
+  return states[win]
+end
+
+local function window_info(win)
+  local ok, info = pcall(vim.fn.getwininfo, win)
+  if ok and info and info[1] then
+    return info[1]
+  end
+  return nil
+end
+
+local function cursor_line(win)
+  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
+  if ok and cursor then
+    return cursor[1]
+  end
+  return 1
+end
+
+local function clamp_lnum(lnum, line_count_value)
+  return math.min(math.max(tonumber(lnum) or 1, 1), math.max(1, line_count_value))
+end
+
+local function line_col(bufnr, lnum, col)
+  local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
+  return math.min(tonumber(col) or 0, #line)
+end
+
 local function save_window_view(win)
   local ok, view = pcall(vim.api.nvim_win_call, win, function()
     return vim.fn.winsaveview()
@@ -697,39 +745,223 @@ local function save_window_view(win)
   return ok and view or nil
 end
 
+local function with_programmatic_view(thread, win, fn)
+  local state = view_state_for_win(thread, win)
+  state.programmatic = (state.programmatic or 0) + 1
+  state.last_programmatic = true
+  local ok, err = pcall(fn)
+  state.programmatic = math.max((state.programmatic or 1) - 1, 0)
+  if not ok then
+    error(err)
+  end
+end
+
+local function restore_window_view(thread, win, snapshot)
+  local bufnr = thread.bufnr
+  if not snapshot or not snapshot.view or not valid_window_for_buffer(win, bufnr) then
+    return
+  end
+  local line_count_value = vim.api.nvim_buf_line_count(bufnr)
+  local view = vim.deepcopy(snapshot.view)
+  view.lnum = clamp_lnum(view.lnum, line_count_value)
+  view.topline = clamp_lnum(view.topline, line_count_value)
+  view.col = line_col(bufnr, view.lnum, view.col)
+  view.curswant = view.curswant or view.col
+  with_programmatic_view(thread, win, function()
+    vim.api.nvim_win_call(win, function()
+      vim.fn.winrestview(view)
+    end)
+  end)
+end
+
+local function follow_cursor_line(thread, line_count_value)
+  if thread.prompt_start then
+    return clamp_lnum(thread.prompt_start + 1, line_count_value)
+  end
+  return line_count_value
+end
+
+local function anchor_follow_window(thread, win)
+  local bufnr = thread.bufnr
+  if not valid_window_for_buffer(win, bufnr) then
+    return
+  end
+  local line_count_value = vim.api.nvim_buf_line_count(bufnr)
+  local lnum = follow_cursor_line(thread, line_count_value)
+  local col = line_col(bufnr, lnum, 0)
+  local height = math.max(1, vim.api.nvim_win_get_height(win))
+  local topline = math.max(1, line_count_value - height + 1)
+  with_programmatic_view(thread, win, function()
+    vim.api.nvim_win_set_cursor(win, { lnum, col })
+    vim.api.nvim_win_call(win, function()
+      vim.fn.winrestview({
+        lnum = lnum,
+        col = col,
+        curswant = col,
+        topline = topline,
+        leftcol = 0,
+        skipcol = 0,
+      })
+    end)
+    vim.api.nvim_win_set_cursor(win, { lnum, col })
+  end)
+  local state = view_state_for_win(thread, win)
+  state.follow = true
+  state.suspended_by_user = false
+end
+
+local function cursor_near_bottom(thread, win)
+  if not thread or not thread.bufnr or not valid_window_for_buffer(win, thread.bufnr) then
+    return false
+  end
+  local line_count_value = vim.api.nvim_buf_line_count(thread.bufnr)
+  local lnum = cursor_line(win)
+  if line_count_value - lnum <= follow_threshold then
+    return true
+  end
+  if thread.prompt_start and lnum >= math.max(1, thread.prompt_start - follow_threshold) then
+    return true
+  end
+  return false
+end
+
+local function viewport_near_bottom(thread, win)
+  if not thread or not thread.bufnr or not valid_window_for_buffer(win, thread.bufnr) then
+    return false
+  end
+  local line_count_value = vim.api.nvim_buf_line_count(thread.bufnr)
+  local info = window_info(win)
+  local botline = info and info.botline or cursor_line(win)
+  return line_count_value - botline <= follow_threshold
+end
+
+function M.window_near_bottom(thread, win)
+  return cursor_near_bottom(thread, win) or viewport_near_bottom(thread, win)
+end
+
+function M.prepare_submit_follow(thread, win)
+  if not thread or not thread.bufnr or not valid_window_for_buffer(win, thread.bufnr) then
+    return
+  end
+  local state = view_state_for_win(thread, win)
+  local follow = M.window_near_bottom(thread, win)
+  state.follow = follow
+  state.suspended_by_user = not follow
+end
+
+function M.on_user_view_changed(thread, win, source)
+  if not thread or not thread.bufnr or not valid_window_for_buffer(win, thread.bufnr) then
+    return
+  end
+  local state = view_state_for_win(thread, win)
+  if (state.programmatic or 0) > 0 then
+    return
+  end
+  local follow = source == "viewport" and viewport_near_bottom(thread, win) or cursor_near_bottom(thread, win)
+  state.follow = follow
+  state.suspended_by_user = not follow
+end
+
+local function capture_prompt_anchor(thread, win)
+  if not thread.prompt_start then
+    return nil
+  end
+  local info = window_info(win)
+  if not info then
+    return nil
+  end
+  local top = info.topline or 1
+  local bottom = info.botline or top + vim.api.nvim_win_get_height(win) - 1
+  local prompt_line = thread.prompt_start
+  if prompt_line < top or prompt_line > bottom then
+    return nil
+  end
+  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
+  cursor = ok and cursor or { prompt_line + 1, 0 }
+  return {
+    prompt_row = prompt_line - top,
+    cursor_delta = cursor[1] - prompt_line,
+    cursor_col = cursor[2] or 0,
+  }
+end
+
+local function restore_prompt_anchor(thread, win, snapshot)
+  if not snapshot or not snapshot.prompt_anchor or not thread.prompt_start then
+    restore_window_view(thread, win, snapshot)
+    return
+  end
+  local bufnr = thread.bufnr
+  if not valid_window_for_buffer(win, bufnr) then
+    return
+  end
+  local line_count_value = vim.api.nvim_buf_line_count(bufnr)
+  local anchor = snapshot.prompt_anchor
+  local view = vim.deepcopy(snapshot.view or {})
+  local lnum = clamp_lnum(thread.prompt_start + anchor.cursor_delta, line_count_value)
+  local col = line_col(bufnr, lnum, anchor.cursor_col)
+  view.lnum = lnum
+  view.col = col
+  view.curswant = col
+  view.topline = clamp_lnum(thread.prompt_start - anchor.prompt_row, line_count_value)
+  view.leftcol = view.leftcol or 0
+  view.skipcol = view.skipcol or 0
+  with_programmatic_view(thread, win, function()
+    vim.api.nvim_win_set_cursor(win, { lnum, col })
+    vim.api.nvim_win_call(win, function()
+      vim.fn.winrestview(view)
+    end)
+    vim.api.nvim_win_set_cursor(win, { lnum, col })
+  end)
+end
+
 local function capture_window_views(thread, bufnr)
   local snapshots = {}
   for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
     if valid_window_for_buffer(win, bufnr) then
-      snapshots[win] = { view = save_window_view(win) }
+      local prompt_anchor = capture_prompt_anchor(thread, win)
+      local state = view_state_for_win(thread, win)
+      if prompt_anchor then
+        state.follow = true
+        state.suspended_by_user = false
+      elseif state.follow == nil then
+        state.follow = M.window_near_bottom(thread, win)
+        state.suspended_by_user = not state.follow
+      end
+      snapshots[win] = {
+        view = save_window_view(win),
+        prompt_anchor = prompt_anchor,
+      }
     end
   end
   return snapshots
 end
 
-local function restore_window_view(thread, win, snapshot)
-  if not snapshot or not snapshot.view or not valid_window_for_buffer(win, thread.bufnr) then
-    return
-  end
-  local line_count_value = vim.api.nvim_buf_line_count(thread.bufnr)
-  local view = vim.deepcopy(snapshot.view)
-  view.lnum = math.min(math.max(view.lnum or 1, 1), line_count_value)
-  view.topline = math.min(math.max(view.topline or 1, 1), line_count_value)
-  vim.api.nvim_win_call(win, function()
-    vim.fn.winrestview(view)
-  end)
-end
-
 local function apply_window_views(thread, bufnr, snapshots)
   for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
     if valid_window_for_buffer(win, bufnr) then
+      local snapshot = snapshots[win]
+      local view_state = view_state_for_win(thread, win)
       require("codex.buffers").apply_window_options(win, bufnr)
-      if config.get().ui.auto_scroll and thread_busy(thread) and thread.prompt_start then
-        local line_count_value = vim.api.nvim_buf_line_count(bufnr)
-        vim.api.nvim_win_set_cursor(win, { math.min(thread.prompt_start + 1, line_count_value), 0 })
-      else
-        restore_window_view(thread, win, snapshots[win])
+      if snapshot and snapshot.prompt_anchor then
+        restore_prompt_anchor(thread, win, snapshot)
+      elseif
+        config.get().ui.auto_scroll
+        and thread_busy(thread)
+        and view_state.follow
+        and not view_state.suspended_by_user
+      then
+        anchor_follow_window(thread, win)
+      elseif snapshot then
+        restore_window_view(thread, win, snapshot)
       end
+    end
+  end
+end
+
+local function prune_view_states(thread, bufnr)
+  for win, _ in pairs(thread.view_state or {}) do
+    if not valid_window_for_buffer(win, bufnr) then
+      thread.view_state[win] = nil
     end
   end
 end
@@ -766,10 +998,27 @@ local function replace_buffer_lines(bufnr, lines)
   if not start_line then
     return false
   end
+  local fold_snapshots = {}
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+      fold_snapshots[win] = {
+        foldmethod = vim.wo[win].foldmethod,
+        foldenable = vim.wo[win].foldenable,
+      }
+      vim.wo[win].foldmethod = "manual"
+      vim.wo[win].foldenable = false
+    end
+  end
   local previous_undolevels = vim.bo[bufnr].undolevels
   vim.bo[bufnr].undolevels = -1
   local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, start_line, end_line, false, replacement)
   vim.bo[bufnr].undolevels = previous_undolevels
+  for win, snapshot in pairs(fold_snapshots) do
+    if vim.api.nvim_win_is_valid(win) then
+      vim.wo[win].foldmethod = snapshot.foldmethod
+      vim.wo[win].foldenable = snapshot.foldenable
+    end
+  end
   if not ok then
     error(err)
   end
@@ -785,14 +1034,28 @@ function _G.CodexFoldExpr(lnum)
 end
 
 local function build_fold_levels(thread)
-  thread.fold_levels = {}
+  local levels = {}
+  for _, fold in ipairs(thread.folds or {}) do
+    if fold.finish and fold.start and fold.finish > fold.start then
+      levels[fold.start] = ">1"
+      for lnum = fold.start + 1, fold.finish - 1 do
+        levels[lnum] = "1"
+      end
+      levels[fold.finish] = "<1"
+    end
+  end
+  thread.fold_levels = levels
 end
 
 function M.select_render_tree(thread)
   local blocks = {}
   util.list_extend(blocks, events.normalize_thread(thread))
+  util.list_extend(blocks, thread.timeline_blocks or {})
   util.list_extend(blocks, events.pending_blocks(thread))
   util.list_extend(blocks, thread.local_blocks or {})
+  if config.get().render.show_raw_events then
+    util.list_extend(blocks, thread.raw_blocks or {})
+  end
   return blocks
 end
 
@@ -877,6 +1140,9 @@ render_block = function(thread, lines, block, opts)
   if block.type == "ReasoningBlock" and finish > start then
     mark_reasoning_lines(thread, start, finish)
   end
+  if foldable_types[block.type] and finish > start then
+    table.insert(thread.folds, { start = start, finish = finish })
+  end
   local decoration = stream_decoration_for_block(block)
   if decoration and not placeholder_types[block.type] then
     local decoration_start = finish > start and start + 1 or start
@@ -915,6 +1181,7 @@ function M.render(thread)
   thread.reasoning_marks = {}
   thread.stream_decoration_marks = {}
   thread.spinner_mark = nil
+  thread.folds = {}
   thread.fold_levels = {}
 
   local lines = {}
@@ -973,6 +1240,7 @@ function M.render(thread)
   end
 
   apply_window_views(thread, bufnr, snapshots)
+  prune_view_states(thread, bufnr)
   if thread_busy(thread) then
     schedule_spinner_tick(thread)
   end

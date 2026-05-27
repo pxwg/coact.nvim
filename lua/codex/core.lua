@@ -11,6 +11,127 @@ local function schedule(thread_id)
   end
 end
 
+local function append_limited(list, value, limit)
+  table.insert(list, value)
+  limit = limit or 100
+  while #list > limit do
+    table.remove(list, 1)
+  end
+end
+
+local function extract_thread_id(params)
+  if type(params) ~= "table" then
+    return state.active_thread_id
+  end
+  return params.threadId
+    or params.thread_id
+    or params.conversationId
+    or (type(params.thread) == "table" and params.thread.id)
+    or state.active_thread_id
+end
+
+local function thread_for_params(params)
+  local thread_id = extract_thread_id(params)
+  return thread_id and state.ensure_thread(thread_id) or nil
+end
+
+local function inspect_summary(value, limit)
+  local ok, text = pcall(vim.inspect, value)
+  return util.truncate(ok and text or tostring(value), limit or 160)
+end
+
+local function append_timeline(method, params, title, state_value, text)
+  local thread = thread_for_params(params)
+  if not thread then
+    return
+  end
+  local block = {
+    type = "AgentTimelineBlock",
+    message_id = params and params.turnId,
+    item_id = tostring(
+      (params and (params.reviewId or params.requestId)) or (params and params.run and params.run.id) or method
+    ),
+    title = title,
+    state = state_value,
+    text = text or inspect_summary(params),
+    metadata = { source = method },
+    raw = params,
+    local_only = true,
+  }
+  append_limited(thread.timeline_blocks, block)
+  schedule(thread.id)
+end
+
+local function append_raw_event(method, params)
+  local thread = thread_for_params(params)
+  if not thread then
+    return
+  end
+  append_limited(thread.raw_blocks, {
+    type = "RawEventBlock",
+    title = method,
+    text = inspect_summary(params, 400),
+    raw = {
+      method = method,
+      params = params,
+    },
+    local_only = true,
+  }, 200)
+  schedule(thread.id)
+end
+
+local function process_key(params)
+  return tostring(params.processId or params.processHandle or "process")
+end
+
+local function decode_output_delta(params)
+  if type(params) ~= "table" then
+    return ""
+  end
+  if params.delta and params.delta ~= "" then
+    return params.delta
+  end
+  if not params.deltaBase64 or params.deltaBase64 == "" then
+    return ""
+  end
+  if vim.base64 and vim.base64.decode then
+    local ok, decoded = pcall(vim.base64.decode, params.deltaBase64)
+    if ok then
+      return decoded
+    end
+  end
+  return "[base64 output: " .. util.truncate(params.deltaBase64, 80) .. "]"
+end
+
+local function process_output_block(method, params, tool_name)
+  local thread = thread_for_params(params)
+  if not thread then
+    return nil
+  end
+  thread.process_blocks_by_id = thread.process_blocks_by_id or {}
+  local key = tool_name .. ":" .. process_key(params)
+  local block = thread.process_blocks_by_id[key]
+  if not block then
+    block = {
+      type = "ToolCallBlock",
+      item_id = key,
+      tool = tool_name,
+      state = "running",
+      input = {
+        process = process_key(params),
+        stream = params.stream,
+      },
+      output = "",
+      metadata = { source = method },
+      raw = params,
+      local_only = true,
+    }
+    thread.process_blocks_by_id[key] = block
+    append_limited(thread.local_blocks, block)
+  end
+  return block, thread
+end
+
 local function append_field(item, field, delta)
   item[field] = (item[field] or "") .. (delta or "")
 end
@@ -86,6 +207,55 @@ handlers["thread/status/changed"] = function(params)
   end
 end
 
+handlers["thread/archived"] = function(params)
+  local thread = state.get_thread(params.threadId)
+  if thread then
+    thread.status = "archived"
+    schedule(params.threadId)
+  end
+end
+
+handlers["thread/unarchived"] = function(params)
+  local thread = state.get_thread(params.threadId)
+  if thread then
+    thread.status = "active"
+    schedule(params.threadId)
+  end
+end
+
+handlers["thread/closed"] = function(params)
+  local thread = state.get_thread(params.threadId)
+  if thread then
+    thread.lifecycle = "closed"
+    set_generation(thread, "idle", nil)
+    schedule(params.threadId)
+  end
+end
+
+handlers["thread/goal/updated"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.goal = params.goal
+  append_timeline("thread/goal/updated", params, "Goal updated", "updated", inspect_summary(params.goal or params, 200))
+end
+
+handlers["thread/goal/cleared"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.goal = nil
+  append_timeline("thread/goal/cleared", params, "Goal cleared", "cleared", "Thread goal cleared.")
+end
+
+handlers["thread/settings/updated"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.settings = params.settings or params
+  append_timeline(
+    "thread/settings/updated",
+    params,
+    "Settings updated",
+    "updated",
+    inspect_summary(thread.settings, 200)
+  )
+end
+
 handlers["thread/tokenUsage/updated"] = function(params)
   local thread = state.get_thread(params.threadId)
   if thread then
@@ -102,6 +272,17 @@ handlers["turn/started"] = function(params)
   schedule(params.threadId)
 end
 
+handlers["hook/started"] = function(params)
+  local run = params.run or {}
+  append_timeline(
+    "hook/started",
+    params,
+    "Hook: " .. tostring(run.eventName or run.id or "started"),
+    "running",
+    inspect_summary(run, 220)
+  )
+end
+
 handlers["turn/completed"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
@@ -114,12 +295,47 @@ handlers["turn/completed"] = function(params)
   schedule(params.threadId)
 end
 
+handlers["hook/completed"] = function(params)
+  local run = params.run or {}
+  append_timeline(
+    "hook/completed",
+    params,
+    "Hook: " .. tostring(run.eventName or run.id or "completed"),
+    tostring(run.status or "completed"),
+    inspect_summary(run, 220)
+  )
+end
+
 handlers["item/started"] = function(params)
   handle_item(params, false)
 end
 
+handlers["item/autoApprovalReview/started"] = function(params)
+  append_timeline(
+    "item/autoApprovalReview/started",
+    params,
+    "Auto approval review",
+    "running",
+    inspect_summary(params.review or params.action or params, 220)
+  )
+end
+
+handlers["item/autoApprovalReview/completed"] = function(params)
+  append_timeline(
+    "item/autoApprovalReview/completed",
+    params,
+    "Auto approval review",
+    tostring(params.decisionSource or "completed"),
+    inspect_summary(params.review or params.action or params, 220)
+  )
+end
+
 handlers["item/completed"] = function(params)
   handle_item(params, true)
+end
+
+handlers["rawResponseItem/completed"] = function(params)
+  append_raw_event("rawResponseItem/completed", params)
 end
 
 handlers["item/agentMessage/delta"] = function(params)
@@ -168,6 +384,50 @@ handlers["item/commandExecution/outputDelta"] = function(params)
   schedule(params.threadId)
 end
 
+handlers["command/exec/outputDelta"] = function(params)
+  local block, thread = process_output_block("command/exec/outputDelta", params, "command/exec")
+  if block and thread then
+    block.output = (block.output or "") .. decode_output_delta(params)
+    block.state = params.capReached and "truncated" or "running"
+    block.raw = params
+    set_generation(thread, "tool_running", "Codex is streaming command output...")
+    schedule(thread.id)
+  end
+end
+
+handlers["process/outputDelta"] = function(params)
+  local block, thread = process_output_block("process/outputDelta", params, "process/spawn")
+  if block and thread then
+    block.output = (block.output or "") .. decode_output_delta(params)
+    block.state = params.capReached and "truncated" or "running"
+    block.raw = params
+    set_generation(thread, "tool_running", "Codex is streaming process output...")
+    schedule(thread.id)
+  end
+end
+
+handlers["process/exited"] = function(params)
+  local block, thread = process_output_block("process/exited", params, "process/spawn")
+  if block and thread then
+    local stdout = params.stdout and params.stdout ~= "" and ("\nstdout:\n" .. params.stdout) or ""
+    local stderr = params.stderr and params.stderr ~= "" and ("\nstderr:\n" .. params.stderr) or ""
+    if stdout ~= "" or stderr ~= "" then
+      block.output = (block.output or "") .. stdout .. stderr
+    end
+    block.state = "exit " .. tostring(params.exitCode)
+    block.raw = params
+    set_generation(thread, "idle", nil)
+    schedule(thread.id)
+  end
+end
+
+handlers["item/commandExecution/terminalInteraction"] = function(params)
+  local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
+  item.terminal_interaction = params
+  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is waiting for terminal interaction...")
+  schedule(params.threadId)
+end
+
 handlers["item/fileChange/outputDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "fileChange")
   append_field(item, "output", params.delta)
@@ -196,11 +456,45 @@ handlers["turn/diff/updated"] = function(params)
   schedule(params.threadId)
 end
 
+handlers["serverRequest/resolved"] = function(params)
+  append_timeline(
+    "serverRequest/resolved",
+    params,
+    "Server request resolved",
+    "resolved",
+    "requestId: " .. tostring(params.requestId)
+  )
+end
+
 handlers["turn/plan/updated"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   thread.turn_plan = params
   set_generation(thread, "streaming", "Codex is planning...")
   schedule(params.threadId)
+end
+
+handlers["thread/compacted"] = function(params)
+  append_timeline("thread/compacted", params, "Context compacted", "completed", "Context was compacted.")
+end
+
+handlers["model/rerouted"] = function(params)
+  append_timeline(
+    "model/rerouted",
+    params,
+    "Model rerouted",
+    "rerouted",
+    tostring(params.fromModel) .. " -> " .. tostring(params.toModel) .. " (" .. tostring(params.reason) .. ")"
+  )
+end
+
+handlers["model/verification"] = function(params)
+  append_timeline(
+    "model/verification",
+    params,
+    "Model verification",
+    "checked",
+    inspect_summary(params.verifications or params, 220)
+  )
 end
 
 handlers["warning"] = function(params)
@@ -215,6 +509,8 @@ function M.handle_notification(message)
   local handler = handlers[message.method]
   if handler then
     handler(message.params or {})
+  else
+    append_raw_event(message.method or "notification", message.params or {})
   end
 end
 

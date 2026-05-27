@@ -29,6 +29,7 @@ local defaults = {
   render = {
     prompt_marker = "## Prompt",
     separator = "───",
+    show_raw_events = false,
     virtual_blocks = {
       default_expanded = false,
       max_lines = 80,

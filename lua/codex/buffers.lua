@@ -6,6 +6,7 @@ local window = require("codex.ui.window")
 local M = {}
 
 local group = vim.api.nvim_create_augroup("codex.nvim.buffers", { clear = true })
+local view_autocmds_setup = false
 local window_snapshots = {}
 
 local restorable_window_options = {
@@ -30,8 +31,36 @@ local codex_window_options = {
   linebreak = true,
   foldmethod = "expr",
   foldexpr = "v:lua.CodexFoldExpr(v:lnum)",
-  foldlevel = 0,
+  foldlevel = 99,
 }
+
+local function setup_view_autocmds()
+  if view_autocmds_setup then
+    return
+  end
+  view_autocmds_setup = true
+  vim.api.nvim_create_autocmd("WinScrolled", {
+    group = group,
+    callback = function(event)
+      local data = event.data or {}
+      local v_event = vim.v.event or {}
+      local win = tonumber(data.winid or v_event.winid or event.match)
+      if not win or not vim.api.nvim_win_is_valid(win) then
+        return
+      end
+      local thread = state.thread_for_buf(vim.api.nvim_win_get_buf(win))
+      if thread then
+        render.on_user_view_changed(thread, win, "viewport")
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    callback = function(event)
+      window_snapshots[tonumber(event.match)] = nil
+    end,
+  })
+end
 
 local function configure_buffer(bufnr, thread_id)
   vim.bo[bufnr].buftype = "nofile"
@@ -109,6 +138,7 @@ function M.restore_window_options(win)
 end
 
 local function setup_buffer_autocmds(bufnr)
+  setup_view_autocmds()
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
     group = group,
     buffer = bufnr,
@@ -130,6 +160,17 @@ local function setup_buffer_autocmds(bufnr)
       local thread = state.thread_for_buf(bufnr)
       if thread then
         thread.bufnr = nil
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      local thread = state.thread_for_buf(bufnr)
+      if thread and vim.api.nvim_win_get_buf(win) == bufnr then
+        render.on_user_view_changed(thread, win, "cursor")
       end
     end,
   })
