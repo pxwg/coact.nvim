@@ -9,19 +9,36 @@ local state = require("codex.state")
 local util = require("codex.util")
 
 local did_setup = false
+local did_setup_lifecycle = false
+
+local function count(tbl)
+  local total = 0
+  for _ in pairs(tbl or {}) do
+    total = total + 1
+  end
+  return total
+end
+
+local function setup_lifecycle()
+  if did_setup_lifecycle then
+    return
+  end
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = vim.api.nvim_create_augroup("CodexNvimLifecycle", { clear = true }),
+    callback = function()
+      rpc.stop()
+    end,
+  })
+  did_setup_lifecycle = true
+end
 
 local function setup_once()
   if not did_setup then
     config.setup()
     core.setup()
-    vim.api.nvim_create_autocmd("VimLeavePre", {
-      group = vim.api.nvim_create_augroup("CodexNvimLifecycle", { clear = true }),
-      callback = function()
-        rpc.stop()
-      end,
-    })
     did_setup = true
   end
+  setup_lifecycle()
 end
 
 local function ensure_server(callback)
@@ -78,6 +95,7 @@ end
 function M.setup(opts)
   config.setup(opts)
   core.setup()
+  setup_lifecycle()
   did_setup = true
 end
 
@@ -250,6 +268,65 @@ function M.health()
   end)
 end
 
+function M.status()
+  setup_once()
+  local current_thread = state.thread_for_buf(0)
+  local active_thread = state.get_thread(state.active_thread_id)
+  local thread = current_thread or active_thread
+  return {
+    server_running = rpc.is_running(),
+    server_initialized = rpc.initialized,
+    pending_rpc_requests = count(rpc.pending),
+    pending_server_requests = count(state.pending_server_requests),
+    current_thread_id = current_thread and current_thread.id or nil,
+    active_thread_id = state.active_thread_id,
+    thread_id = thread and thread.id or nil,
+    title = thread and thread.title or nil,
+    cwd = thread and thread.cwd or nil,
+    status = thread and thread.status or nil,
+    generation = thread and thread.generation or nil,
+    lifecycle = thread and thread.lifecycle or nil,
+    sync = thread and thread.sync or nil,
+    active_turn_id = thread and thread.active_turn_id or nil,
+    status_message = thread and thread.status_message or nil,
+    last_error = thread and thread.last_error or nil,
+  }
+end
+
+function M.show_status()
+  local status = M.status()
+  local lines = {
+    "server: " .. (status.server_running and "running" or "stopped"),
+    "initialized: " .. tostring(status.server_initialized),
+    "pending rpc: " .. tostring(status.pending_rpc_requests),
+    "pending approvals: " .. tostring(status.pending_server_requests),
+    "active thread: " .. tostring(status.active_thread_id or "none"),
+  }
+  if status.current_thread_id then
+    table.insert(lines, "current thread: " .. tostring(status.current_thread_id))
+  end
+  if status.title then
+    table.insert(lines, "title: " .. tostring(status.title))
+  end
+  if status.cwd then
+    table.insert(lines, "cwd: " .. tostring(status.cwd))
+  end
+  if status.status then
+    table.insert(lines, "status: " .. tostring(status.status))
+  end
+  if status.generation then
+    table.insert(lines, "generation: " .. tostring(status.generation))
+  end
+  if status.status_message then
+    table.insert(lines, "message: " .. tostring(status.status_message))
+  end
+  if status.last_error then
+    table.insert(lines, "last error: " .. tostring(status.last_error))
+  end
+  util.notify(table.concat(lines, "\n"))
+  return status
+end
+
 function M.restart()
   rpc.stop()
   M.health()
@@ -283,6 +360,9 @@ local commands = {
   health = function()
     M.health()
   end,
+  status = function()
+    M.show_status()
+  end,
   restart = function()
     M.restart()
   end,
@@ -301,7 +381,9 @@ function M.command(opts)
 end
 
 function M.complete_command()
-  return vim.tbl_keys(commands)
+  local names = vim.tbl_keys(commands)
+  table.sort(names)
+  return names
 end
 
 return M

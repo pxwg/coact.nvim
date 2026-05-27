@@ -19,6 +19,7 @@ codex.open()	codex.nvim.txt	/*codex.open()*
 codex.pick_thread()	codex.nvim.txt	/*codex.pick_thread()*
 codex.resume()	codex.nvim.txt	/*codex.resume()*
 codex.setup()	codex.nvim.txt	/*codex.setup()*
+codex.status()	codex.nvim.txt	/*codex.status()*
 codex.stop()	codex.nvim.txt	/*codex.stop()*
 codex.submit()	codex.nvim.txt	/*codex.submit()*
 codex.submit_text()	codex.nvim.txt	/*codex.submit_text()*

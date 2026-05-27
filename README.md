@@ -14,6 +14,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 
 - Buffer-per-thread chat UI at `codex://thread/<id>`.
 - `:Codex new`, `:Codex pick`, `:Codex resume`, `:Codex submit`, and `:Codex stop`.
+- `:Codex status` and `require("codex").status()` for lightweight runtime state.
 - Alma-style TUI render: Codex items are normalized into blocks, then drawn with extmark headers, placeholders, virtual lines, stream gutters, composer token highlights, and a busy spinner.
 - Streaming render for agent messages, reasoning, plans, command output, MCP calls, dynamic tool calls, collab-agent calls, web search, image events, and file changes.
 - Expandable reasoning/tool/agent/patch placeholders with `za`; detail scratch views with `K` or `:Codex detail`.
@@ -114,10 +115,13 @@ require("codex").setup({
 :Codex stop
 :Codex detail
 :Codex health
+:Codex status
 :Codex restart
 ```
 
 Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, windows near the prompt keep following the composer; scrolling away suspends that follow state for the window.
+
+`:Codex status` reports whether app-server is running, current and active thread ids, pending request counts, and the current thread generation/status. The same data is available programmatically through `require("codex").status()` for statuslines or custom integrations.
 
 ## Health
 
@@ -193,4 +197,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises health helpers, parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises health and status helpers, parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.

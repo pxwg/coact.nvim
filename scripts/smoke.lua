@@ -2,6 +2,18 @@ vim.opt.runtimepath:append(".")
 
 local codex = require("codex")
 codex.setup()
+assert(
+  #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
+  "explicit setup should register lifecycle cleanup"
+)
+codex.setup()
+assert(
+  #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
+  "repeated setup should not duplicate lifecycle cleanup"
+)
+local initial_status = codex.status()
+assert(initial_status.server_running == false, "status should report stopped server before startup")
+assert(type(initial_status.pending_rpc_requests) == "number", "status should expose pending rpc count")
 local health = require("codex.health")
 assert(health._executable({ "codex", "app-server" }) == "codex", "health should resolve table commands")
 assert(health._executable("codex app-server") == "codex", "health should resolve string commands")
@@ -160,6 +172,9 @@ vim.wait(3000, function()
   return rpc_done
 end, 20)
 assert(rpc_done, "app-server initialize timed out")
+local running_status = codex.status()
+assert(running_status.server_running == true, "status should report running server after startup")
+assert(running_status.server_initialized == true, "status should report initialized server after startup")
 
 local thread_done = false
 codex.new_thread()
@@ -168,6 +183,7 @@ vim.wait(3000, function()
   return thread_done
 end, 20)
 assert(thread_done, "thread/start timed out")
+assert(codex.status().active_thread_id ~= nil, "status should expose the active thread")
 
 local thread = state.ensure_thread("smoke-extmarks", {
   title = "Smoke extmarks",

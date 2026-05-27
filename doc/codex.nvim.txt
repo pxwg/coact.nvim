@@ -102,10 +102,13 @@ COMMANDS                                               *codex.nvim-commands*
   :Codex stop
   :Codex detail
   :Codex health
+  :Codex status
   :Codex restart
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
+`:Codex status` reports app-server state, active/current thread ids, pending
+request counts, and the current thread generation/status.
 
 ==============================================================================
 HEALTH                                                   *codex.nvim-health*
@@ -295,5 +298,9 @@ pick_thread()~
                                                         *codex.health()*
 health()~
     Start app-server if necessary and report whether it initialized.
+
+                                                        *codex.status()*
+status()~
+    Return lightweight runtime state for statuslines and integrations.
 
 vim:tw=78:ts=8:ft=help:norl:
