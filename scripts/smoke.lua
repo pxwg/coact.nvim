@@ -35,4 +35,40 @@ vim.wait(3000, function()
 end, 20)
 assert(thread_done, "thread/start timed out")
 
+local state = require("codex.state")
+local buffers = require("codex.buffers")
+local thread = state.ensure_thread("smoke-extmarks", {
+  title = "Smoke extmarks",
+  cwd = vim.fn.getcwd(),
+  generation = "tool_running",
+})
+state.upsert_item("smoke-extmarks", "turn-1", {
+  id = "user-1",
+  type = "userMessage",
+  content = {
+    { type = "text", text = "hello", text_elements = {} },
+  },
+})
+state.upsert_item("smoke-extmarks", "turn-1", {
+  id = "reasoning-1",
+  type = "reasoning",
+  summary = { "thinking" },
+  content = { "step 1" },
+  status = "inProgress",
+})
+state.upsert_item("smoke-extmarks", "turn-1", {
+  id = "tool-1",
+  type = "commandExecution",
+  command = "echo hello",
+  cwd = vim.fn.getcwd(),
+  status = "inProgress",
+  aggregatedOutput = "hello",
+})
+buffers.ensure("smoke-extmarks")
+local extmarks =
+  vim.api.nvim_buf_get_extmarks(thread.bufnr, require("codex.ui.render").namespace(), 0, -1, { details = true })
+assert(#extmarks > 0, "render should create extmarks")
+assert(#(thread.placeholder_marks or {}) >= 2, "reasoning and tool blocks should be placeholders")
+assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
+
 require("codex.rpc").stop()

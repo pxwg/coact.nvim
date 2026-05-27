@@ -6,6 +6,10 @@ function M.notify(message, level)
   end)
 end
 
+function M.now_ms()
+  return math.floor(vim.uv.hrtime() / 1000000)
+end
+
 function M.present(value)
   return value ~= nil and value ~= vim.NIL
 end
@@ -15,6 +19,32 @@ function M.value(value)
     return value
   end
   return nil
+end
+
+function M.trim(value)
+  return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function M.is_blank(value)
+  return M.trim(value) == ""
+end
+
+function M.list_extend(dst, src)
+  if type(src) ~= "table" then
+    return dst
+  end
+  for _, value in ipairs(src) do
+    table.insert(dst, value)
+  end
+  return dst
+end
+
+function M.short_id(value)
+  value = tostring(value or "")
+  if #value <= 10 then
+    return value
+  end
+  return value:sub(1, 6)
 end
 
 function M.tbl_get(tbl, ...)

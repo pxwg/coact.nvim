@@ -148,11 +148,24 @@ function M.submit_text(text, thread_id)
       M.new_thread({ prompt = text })
       return
     end
+    local thread = state.get_thread(thread_id)
+    if thread then
+      thread.pending_request = {
+        prompt = text,
+        input = input,
+        created_at = util.now_ms(),
+      }
+      thread.generation = "submitted"
+      thread.status_message = "Codex is thinking..."
+      buffers.schedule_render(thread_id)
+    end
     rpc.request("turn/start", turn_start_params(thread_id, input), function(err, result)
       if err then
-        local thread = state.get_thread(thread_id)
-        if thread then
-          thread.last_error = tostring(err.message or err)
+        local failed_thread = state.get_thread(thread_id)
+        if failed_thread then
+          failed_thread.last_error = tostring(err.message or err)
+          failed_thread.pending_request = nil
+          failed_thread.generation = "idle"
           buffers.schedule_render(thread_id)
         end
         util.notify("turn/start failed: " .. tostring(err.message or err), vim.log.levels.ERROR)

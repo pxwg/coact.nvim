@@ -26,6 +26,20 @@ local defaults = {
     render_delay_ms = 35,
     auto_scroll = true,
   },
+  render = {
+    prompt_marker = "## Prompt",
+    separator = "───",
+    virtual_blocks = {
+      default_expanded = false,
+      max_lines = 80,
+      max_width = 180,
+    },
+    tool_outputs = {
+      mode = "smart",
+      fallback = "raw",
+      renderers = {},
+    },
+  },
   completion = {
     enabled = true,
     ttl_ms = 30000,

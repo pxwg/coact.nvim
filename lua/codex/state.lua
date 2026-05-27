@@ -34,12 +34,21 @@ function M.ensure_thread(thread_id, attrs)
       cwd = nil,
       status = "unknown",
       title = nil,
+      config = {},
       turns = {},
       turn_order = {},
       items = {},
       item_order = {},
       item_turns = {},
       pending_approvals = {},
+      generation = "idle",
+      sync = "clean",
+      lifecycle = "ready",
+      local_blocks = {},
+      expanded_blocks = {},
+      render_index = {},
+      pending_request = nil,
+      status_message = nil,
       last_error = nil,
     }
     M.threads[thread_id] = thread
@@ -63,6 +72,8 @@ function M.update_thread_from_payload(payload)
     status = util.value(payload.status),
     title = util.value(payload.name) or util.value(payload.preview),
   })
+  thread.config.model = util.value(payload.model) or thread.config.model
+  thread.config.model_provider = util.value(payload.modelProvider) or thread.config.model_provider
   if payload.turns then
     for _, turn in ipairs(payload.turns) do
       M.add_turn(payload.id, turn)
@@ -120,6 +131,17 @@ function M.set_buffer(thread_id, bufnr, winid)
   thread.bufnr = bufnr
   thread.winid = winid
   return thread
+end
+
+function M.bind_buffer(thread, bufnr)
+  thread.bufnr = bufnr
+  vim.b[bufnr].codex_thread_id = thread.id
+end
+
+function M.thread_for_buf(bufnr)
+  bufnr = bufnr == 0 and vim.api.nvim_get_current_buf() or bufnr
+  local thread_id = vim.b[bufnr].codex_thread_id
+  return thread_id and M.get_thread(thread_id) or nil
 end
 
 function M.set_pending_request(request_id, request)
