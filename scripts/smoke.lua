@@ -40,6 +40,47 @@ assert(codex_context_text:match("Neovim context: target buffer"), "@buffer shoul
 assert(codex_context_text:match("codex%-context%-smoke"), "@buffer should use the pre-chat source buffer")
 assert(codex_context_text:match("cursor: L2:C8"), "@buffer should preserve the source window cursor")
 
+local patch_review = require("codex.patch_review")
+local hunk = patch_review._parse_hunk_header("@@ -3,2 +3,3 @@")
+assert(hunk and hunk.old_start == 3 and hunk.new_start == 3, "patch review should parse unified diff hunks")
+local review_proposal = {
+  protocol = "modern",
+  source = "smoke",
+  request_id = "smoke-review",
+  thread_id = "smoke-context",
+  cwd = "/tmp",
+  changes = {
+    {
+      kind = "update",
+      path = "codex-context-smoke.lua",
+      diff = table.concat({
+        "--- a/codex-context-smoke.lua",
+        "+++ b/codex-context-smoke.lua",
+        "@@ -1,2 +1,3 @@",
+        " local codex_context_smoke = true",
+        "+local review_anchor = true",
+        " return codex_context_smoke",
+      }, "\n"),
+    },
+  },
+}
+local review_lines, review_anchors = patch_review._document(review_proposal)
+assert(table.concat(review_lines, "\n"):match("%[c/%]c jump"), "patch review should document jump keys")
+assert(#review_anchors == 1 and review_anchors[1].old_start == 1, "patch review should index hunk anchors")
+local review_buf = patch_review.open(review_proposal)
+assert(
+  vim.b[review_buf].codex_patch_review_anchors[1].path == "codex-context-smoke.lua",
+  "review buffer should store anchors"
+)
+for _, winid in ipairs(vim.fn.win_findbuf(review_buf)) do
+  if vim.api.nvim_win_is_valid(winid) then
+    vim.api.nvim_win_close(winid, true)
+  end
+end
+if vim.api.nvim_buf_is_valid(review_buf) then
+  vim.api.nvim_buf_delete(review_buf, { force = true })
+end
+
 local done = false
 local source = require("codex.completion.blink").new()
 source:get_completions({

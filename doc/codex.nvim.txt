@@ -150,8 +150,15 @@ The review window supports:
   A     accept for session
   d     decline
   c     cancel
+  [c    jump to previous file change or diff hunk
+  ]c    jump to next file change or diff hunk
+  <CR>  open related file at the hunk location when available
+  o     open related file at the hunk location when available
   q     close window without answering
 <
+
+The review buffer indexes file changes and unified-diff hunk headers with
+extmarks so larger patches can be navigated as editor state.
 
 Modern app-server requests use `item/fileChange/requestApproval`. Legacy
 `applyPatchApproval` requests are supported as a fallback.

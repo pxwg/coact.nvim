@@ -154,9 +154,11 @@ Review keys:
 - `A`: accept for session
 - `d`: decline
 - `c`: cancel
+- `[c` / `]c`: jump between indexed file changes or diff hunks
+- `<CR>` / `o`: open the related file at the hunk location when available
 - `q`: close the review window without answering
 
-For modern app-server file changes, Codex still owns the final patch application after approval. For future custom editor tools, the same patch review UI can be reused with Neovim owning the final apply step.
+The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. For future custom editor tools, the same patch review UI can be reused with Neovim owning the final apply step.
 
 ## Architecture
 
@@ -183,4 +185,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
