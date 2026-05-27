@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local context = require("codex.context")
 local render = require("codex.ui.render")
 local state = require("codex.state")
 local window = require("codex.ui.window")
@@ -222,6 +223,11 @@ end
 
 function M.open(thread_id)
   local bufnr = M.ensure(thread_id)
+  context.capture_thread_buffer(
+    state.get_thread(thread_id),
+    vim.api.nvim_get_current_buf(),
+    vim.api.nvim_get_current_win()
+  )
   local winid = window.open(bufnr)
   state.set_buffer(thread_id, bufnr, winid)
   M.apply_window_options(winid, bufnr)

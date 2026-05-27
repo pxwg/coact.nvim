@@ -22,6 +22,24 @@ assert(buffer_context[1] and buffer_context[1].text:match("bufnr:"), "@buffer sh
 local skill_parsed = parser.parse("$skill:smoke")
 assert(skill_parsed[1] and skill_parsed[1].type == "skill", "$skill should expand to a skill input")
 
+local buffers = require("codex.buffers")
+local source_buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_name(source_buf, "/tmp/codex-context-smoke.lua")
+vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, {
+  "local codex_context_smoke = true",
+  "return codex_context_smoke",
+})
+vim.bo[source_buf].filetype = "lua"
+vim.api.nvim_set_current_buf(source_buf)
+vim.api.nvim_win_set_cursor(0, { 2, 7 })
+local context_thread_buf = buffers.open("smoke-context")
+assert(vim.api.nvim_get_current_buf() == context_thread_buf, "opening a Codex thread should focus its buffer")
+local codex_buffer_context = parser.parse("@buffer")
+local codex_context_text = codex_buffer_context[1] and codex_buffer_context[1].text or ""
+assert(codex_context_text:match("Neovim context: target buffer"), "@buffer should describe the target buffer")
+assert(codex_context_text:match("codex%-context%-smoke"), "@buffer should use the pre-chat source buffer")
+assert(codex_context_text:match("cursor: L2:C8"), "@buffer should preserve the source window cursor")
+
 local done = false
 local source = require("codex.completion.blink").new()
 source:get_completions({
@@ -72,7 +90,6 @@ vim.wait(3000, function()
 end, 20)
 assert(thread_done, "thread/start timed out")
 
-local buffers = require("codex.buffers")
 local thread = state.ensure_thread("smoke-extmarks", {
   title = "Smoke extmarks",
   cwd = vim.fn.getcwd(),

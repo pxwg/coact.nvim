@@ -1,14 +1,10 @@
 local config = require("codex.config")
+local context = require("codex.context")
 local catalog = require("codex.catalog")
 
 local M = {}
 
 local context_handlers = {}
-
-local function buffer_label(bufnr)
-  local name = vim.api.nvim_buf_get_name(bufnr)
-  return name ~= "" and name or "[No Name]"
-end
 
 local function project_root()
   local cwd = vim.fn.getcwd()
@@ -33,13 +29,14 @@ local function current_selection()
 end
 
 context_handlers.buffer = function()
-  local bufnr = vim.api.nvim_get_current_buf()
+  local thread = require("codex.state").thread_for_buf(0)
+  local bufnr = context.target_buffer(thread)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local cursor = vim.api.nvim_win_get_cursor(0)
+  local cursor = context.cursor_for_buffer(bufnr, thread)
   return table.concat({
-    "Neovim context: current buffer",
+    "Neovim context: target buffer",
     ("- bufnr: %d"):format(bufnr),
-    ("- name: %s"):format(buffer_label(bufnr)),
+    ("- name: %s"):format(context.buffer_label(bufnr)),
     ("- filetype: %s"):format(vim.bo[bufnr].filetype ~= "" and vim.bo[bufnr].filetype or "none"),
     ("- line_count: %d"):format(vim.api.nvim_buf_line_count(bufnr)),
     ("- cursor: L%d:C%d"):format(cursor[1], cursor[2] + 1),
@@ -60,14 +57,15 @@ context_handlers.selection = function()
 end
 
 context_handlers.cursor = function()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cursor = vim.api.nvim_win_get_cursor(0)
+  local thread = require("codex.state").thread_for_buf(0)
+  local bufnr = context.target_buffer(thread)
+  local cursor = context.cursor_for_buffer(bufnr, thread)
   local start_line = math.max(1, cursor[1] - 20)
   local end_line = math.min(vim.api.nvim_buf_line_count(bufnr), cursor[1] + 20)
   local lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
   local out = {
     "Neovim context: cursor",
-    ("- buffer: %s"):format(buffer_label(bufnr)),
+    ("- buffer: %s"):format(context.buffer_label(bufnr)),
     ("- cursor: L%d:C%d"):format(cursor[1], cursor[2] + 1),
     ("- range: L%d-L%d"):format(start_line, end_line),
     "",
@@ -82,11 +80,12 @@ context_handlers.cursor = function()
 end
 
 context_handlers.diagnostics = function()
-  local diagnostics = vim.diagnostic.get(0)
+  local bufnr = context.target_buffer(require("codex.state").thread_for_buf(0))
+  local diagnostics = vim.diagnostic.get(bufnr)
   if vim.tbl_isempty(diagnostics) then
-    return "Current buffer diagnostics: none"
+    return "Target buffer diagnostics: none"
   end
-  local lines = { "Current buffer diagnostics:" }
+  local lines = { "Target buffer diagnostics:" }
   for _, diagnostic in ipairs(diagnostics) do
     local severity = vim.diagnostic.severity[diagnostic.severity] or "UNKNOWN"
     table.insert(
@@ -118,7 +117,7 @@ context_handlers.buffers = function()
         lines,
         ("- #%d %s ft=%s modified=%s"):format(
           bufnr,
-          buffer_label(bufnr),
+          context.buffer_label(bufnr),
           vim.bo[bufnr].filetype ~= "" and vim.bo[bufnr].filetype or "none",
           vim.bo[bufnr].modified and "true" or "false"
         )

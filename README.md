@@ -25,6 +25,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
   - `nvim.current_buffer`
   - `nvim.diagnostics`
   - `nvim.quickfix`
+- Source-buffer tracking so prompt context and Neovim tools target the buffer that opened the thread.
 - `blink.cmp` source where `$` and `/` come from Codex app-server skill/tool inventory and `@` expands Neovim context.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
 
@@ -141,7 +142,7 @@ require("blink.cmp").setup({
 })
 ```
 
-`@...` tokens are expanded by Neovim into extra Codex text inputs. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
+`@...` tokens are expanded by Neovim into extra Codex text inputs. When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
 ## Patch Review
 
@@ -164,6 +165,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/codex/rpc.lua`: stdio JSONL app-server client.
 - `lua/codex/state.lua`: thread, turn, item, pending-request, render-index, expansion, view, timeline/raw, and cache state.
 - `lua/codex/core.lua`: app-server notification and server-request reducer; maps Codex lifecycle events to UI generation states and timeline/raw blocks.
+- `lua/codex/context.lua`: source-buffer tracking for prompt context and Neovim dynamic tools.
 - `lua/codex/events.lua`: Codex `ThreadItem` to Alma-style block normalization.
 - `lua/codex/buffers.lua`: `codex://thread/<id>` buffers, window option management, prompt collection, and block keymaps.
 - `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, prompt-anchor follow, and foldexpr ranges.
@@ -181,4 +183,4 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises parser/completion behavior, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises parser/completion behavior, verifies source-buffer context tracking, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.

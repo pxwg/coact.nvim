@@ -26,6 +26,9 @@ section and press CTRL-S to submit. Reasoning, tools, patches, plans, and agent
 timeline items are rendered as extmark placeholder blocks. Unknown app-server
 events are retained as raw event blocks and can be shown for debugging.
 
+When a thread is opened from another buffer, codex.nvim tracks that source
+buffer as the thread target for prompt context and Neovim dynamic tools.
+
 File edit approvals are shown as patch proposals in a Neovim review window.
 
 ==============================================================================
@@ -129,9 +132,12 @@ tools and `app/list` for app connectors. These two trigger families are not
 hard-coded locally.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
-text inputs before the turn is sent. `@buffer` includes buffer RPC metadata
-such as bufnr, path, filetype, line count, cursor, modified state, and buffer
-text. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
+text inputs before the turn is sent. When a thread is opened from another
+window, codex.nvim remembers that source buffer as the thread target, so
+`@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not read the
+chat buffer itself. `@buffer` includes buffer RPC metadata such as bufnr, path,
+filetype, line count, cursor, modified state, and buffer text.
+Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
 aliases, but new completions use `@`.
 
 ==============================================================================

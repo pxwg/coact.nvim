@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local context = require("codex.context")
 
 local M = {}
 
@@ -15,7 +16,7 @@ local specs = {
   {
     namespace = "nvim",
     name = "current_buffer",
-    description = "Return the current Neovim buffer path, filetype, and text.",
+    description = "Return the target Neovim buffer path, filetype, and text.",
     deferLoading = true,
     inputSchema = {
       type = "object",
@@ -26,7 +27,7 @@ local specs = {
   {
     namespace = "nvim",
     name = "diagnostics",
-    description = "Return diagnostics for the current Neovim buffer.",
+    description = "Return diagnostics for the target Neovim buffer.",
     deferLoading = true,
     inputSchema = {
       type = "object",
@@ -56,19 +57,19 @@ end
 
 local handlers = {}
 
-handlers.current_buffer = function()
-  local bufnr = vim.api.nvim_get_current_buf()
+handlers.current_buffer = function(_, thread)
+  local bufnr = context.target_buffer(thread)
   local name = vim.api.nvim_buf_get_name(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local text = table.concat(lines, "\n")
   return text_response(("path: %s\nfiletype: %s\n\n%s"):format(name, vim.bo[bufnr].filetype, text))
 end
 
-handlers.diagnostics = function()
-  local bufnr = vim.api.nvim_get_current_buf()
+handlers.diagnostics = function(_, thread)
+  local bufnr = context.target_buffer(thread)
   local diagnostics = vim.diagnostic.get(bufnr)
   if #diagnostics == 0 then
-    return text_response("No diagnostics in the current buffer.")
+    return text_response("No diagnostics in the target buffer.")
   end
   local lines = {}
   for _, diagnostic in ipairs(diagnostics) do
@@ -102,7 +103,9 @@ function M.handle_call(message)
     rpc.respond(message.id, text_response("Unsupported Neovim tool: " .. tostring(params.tool), false))
     return
   end
-  local ok, result = pcall(handler, params.arguments or {})
+  local thread_id = params.threadId or params.thread_id
+  local thread = thread_id and require("codex.state").get_thread(thread_id) or nil
+  local ok, result = pcall(handler, params.arguments or {}, thread)
   if ok then
     rpc.respond(message.id, result)
   else
