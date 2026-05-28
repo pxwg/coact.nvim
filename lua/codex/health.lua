@@ -89,10 +89,13 @@ function M.check()
     vim.health.warn(("App-server command does not visibly include app-server: %s"):format(command_label(app_command)))
   end
 
+  local nvim_apply_patch_enabled = opts.dynamic_tools
+    and opts.dynamic_tools.enabled ~= false
+    and config.edit_mode() == "pair"
   if vim.fn.executable("git") == 1 then
     vim.health.ok("git is available for nvim.apply_patch")
-  elseif opts.dynamic_tools and opts.dynamic_tools.enabled then
-    vim.health.error("git is required when nvim.apply_patch is enabled")
+  elseif nvim_apply_patch_enabled then
+    vim.health.error("git is required when nvim.apply_patch is enabled in pair edit mode")
   else
     vim.health.warn("git is not available; nvim.apply_patch will not work")
   end
@@ -117,7 +120,7 @@ function M.check()
 
   if opts.dynamic_tools and opts.dynamic_tools.enabled then
     local specs = require("codex.dynamic_tools").specs() or {}
-    vim.health.ok(("Neovim dynamic tools enabled: %d tools"):format(#specs))
+    vim.health.ok(("Neovim dynamic tools enabled: %d tools (edit mode: %s)"):format(#specs, config.edit_mode()))
   else
     vim.health.info("Neovim dynamic tools are disabled")
   end

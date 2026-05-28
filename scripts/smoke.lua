@@ -11,9 +11,67 @@ assert(
   type(start_params.developerInstructions) == "string" and start_params.developerInstructions:match("nvim%.apply_patch"),
   "thread/start should instruct Codex to prefer Neovim patch review"
 )
+assert(
+  start_params.developerInstructions:match("small, focused unified diffs"),
+  "thread/start should include strict nvim.apply_patch diff sizing protocol"
+)
+assert(
+  start_params.developerInstructions:match("Do not repeatedly retry failed patches against stale context"),
+  "thread/start should forbid stale failed patch retries"
+)
 local composed_instructions = codex._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
 assert(composed_instructions:match("nvim%.apply_patch"), "default edit instruction should mention nvim.apply_patch")
+local dynamic_tools_for_config = require("codex.dynamic_tools")
+local pair_specs = dynamic_tools_for_config.specs() or {}
+assert(
+  vim.iter(pair_specs):any(function(spec)
+    return spec.namespace == "nvim" and spec.name == "apply_patch"
+  end),
+  "pair edit mode should expose nvim.apply_patch"
+)
+assert(
+  dynamic_tools_for_config._apply_patch_protocol_text():match("small, focused unified diffs"),
+  "nvim.apply_patch tool description should include strict diff protocol"
+)
+assert(
+  dynamic_tools_for_config._stale_patch_retry_message():match("Re%-read the current buffer"),
+  "nvim.apply_patch failure guidance should require refreshing buffer state"
+)
+codex.setup({ edit = { mode = "yolo" } })
+local yolo_start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
+assert(
+  yolo_start_params.developerInstructions:match("native apply_patch tool directly"),
+  "yolo edit mode should instruct Codex to use native apply_patch directly"
+)
+assert(not vim.iter(dynamic_tools_for_config.specs() or {}):any(function(spec)
+  return spec.namespace == "nvim" and spec.name == "apply_patch"
+end), "yolo edit mode should not expose nvim.apply_patch")
+local rpc = require("codex.rpc")
+local original_rpc_respond_for_mode = rpc.respond
+local rejected_disabled_tool = nil
+rpc.respond = function(_, result)
+  rejected_disabled_tool = result
+end
+dynamic_tools_for_config.handle_call({
+  id = "disabled-apply-patch",
+  params = {
+    namespace = "nvim",
+    tool = "apply_patch",
+    arguments = { patch = "diff --git a/x b/x\n--- a/x\n+++ b/x" },
+  },
+})
+rpc.respond = original_rpc_respond_for_mode
+assert(
+  rejected_disabled_tool and rejected_disabled_tool.success == false,
+  "disabled nvim.apply_patch calls should fail"
+)
+assert(
+  rejected_disabled_tool.contentItems[1].text:match("not exposed"),
+  "disabled nvim.apply_patch calls should explain exposure gating"
+)
+codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = false } })
+assert(require("codex.config").edit_mode() == "yolo", "legacy prefer_nvim_apply_patch=false should select yolo mode")
 codex.setup()
 assert(
   #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,

@@ -56,14 +56,23 @@ end
 
 local function edit_tool_instruction()
   local dynamic = config.get().dynamic_tools or {}
-  if dynamic.enabled == false or dynamic.prefer_nvim_apply_patch == false then
+  local mode = config.edit_mode()
+  if mode == "yolo" then
+    return table.concat({
+      "codex.nvim edit mode is yolo.",
+      "The nvim.apply_patch review tool is disabled and is not exposed in this mode.",
+      "For workspace file edits, use the native apply_patch tool directly.",
+      "Do not call nvim.apply_patch in yolo mode.",
+    }, " ")
+  end
+  if dynamic.enabled == false then
     return nil
   end
   return table.concat({
-    "When changing workspace files from codex.nvim, prefer the nvim.apply_patch dynamic tool for edits.",
-    "Provide a unified diff in the tool's patch argument. Neovim will show the diff for user review and will only apply it after approval.",
-    "If nvim.apply_patch reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for the remaining edits in that turn.",
-    "Use native file-change tools only when nvim.apply_patch is unavailable or unsuitable for the requested edit.",
+    "codex.nvim edit mode is pair.",
+    "When changing workspace files from codex.nvim, use the nvim.apply_patch dynamic tool for edits.",
+    "Do not use the native apply_patch tool directly unless nvim.apply_patch reports that native apply_patch fallback is approved for the current turn.",
+    require("codex.dynamic_tools")._apply_patch_protocol_text(),
   }, " ")
 end
 

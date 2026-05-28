@@ -6,6 +6,25 @@ local M = {}
 local async_response = {}
 local native_apply_patch_fallback = {}
 
+local function apply_patch_protocol_text()
+  return table.concat({
+    "Review a unified diff in Neovim and apply it only after user approval.",
+    "Protocol constraints: submit small, focused unified diffs; prefer one logical edit per call.",
+    "Before patching, read the current buffer or relevant current file content and build the diff from that exact content.",
+    "Avoid large hunks with manually guessed line counts; use short, stable context.",
+    "If a patch fails, re-read the current buffer or file before trying again.",
+    "Do not repeatedly retry failed patches against stale context.",
+    "If this tool reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for all remaining edits.",
+  }, " ")
+end
+
+local function stale_patch_retry_message()
+  return table.concat({
+    "Do not retry this patch against stale context.",
+    "Re-read the current buffer or relevant file content before producing another diff.",
+  }, " ")
+end
+
 local function text_response(text, success)
   return {
     success = success ~= false,
@@ -52,7 +71,7 @@ local specs = {
   {
     namespace = "nvim",
     name = "apply_patch",
-    description = "Review a unified diff in Neovim and apply it only after user approval.",
+    description = apply_patch_protocol_text(),
     deferLoading = true,
     inputSchema = {
       type = "object",
@@ -76,11 +95,22 @@ local specs = {
   },
 }
 
+local function nvim_apply_patch_enabled()
+  local opts = config.get()
+  return opts.dynamic_tools.enabled ~= false and config.edit_mode() == "pair"
+end
+
 function M.specs()
   if not config.get().dynamic_tools.enabled then
     return nil
   end
-  return specs
+  local out = {}
+  for _, spec in ipairs(specs) do
+    if spec.name ~= "apply_patch" or nvim_apply_patch_enabled() then
+      table.insert(out, spec)
+    end
+  end
+  return out
 end
 
 local handlers = {}
@@ -367,7 +397,7 @@ handlers.apply_patch = function(arguments, thread, message)
 
   local valid, validation_message = validate_unified_patch(cwd, patch, changes)
   if not valid then
-    respond(validation_message, false)
+    respond(validation_message .. "\n\n" .. stale_patch_retry_message(), false)
     return async_response
   end
 
@@ -399,6 +429,16 @@ function M.handle_call(message)
     rpc.respond(message.id, text_response("Unsupported dynamic tool namespace: " .. tostring(params.namespace), false))
     return
   end
+  if params.tool == "apply_patch" and not nvim_apply_patch_enabled() then
+    rpc.respond(
+      message.id,
+      text_response(
+        "nvim.apply_patch is not exposed in the current codex.nvim edit mode. Use native apply_patch directly only when edit.mode is yolo or when nvim.apply_patch fallback has been approved for this turn.",
+        false
+      )
+    )
+    return
+  end
   local handler = handlers[params.tool]
   if not handler then
     rpc.respond(message.id, text_response("Unsupported Neovim tool: " .. tostring(params.tool), false))
@@ -427,6 +467,9 @@ M._validate_unified_patch = validate_unified_patch
 M._mark_native_apply_patch_fallback = mark_native_apply_patch_fallback
 M._native_apply_patch_fallback_active = native_apply_patch_fallback_active
 M._native_apply_patch_fallback_message = native_apply_patch_fallback_message
+M._nvim_apply_patch_enabled = nvim_apply_patch_enabled
+M._apply_patch_protocol_text = apply_patch_protocol_text
+M._stale_patch_retry_message = stale_patch_retry_message
 M._text_response = text_response
 
 return M

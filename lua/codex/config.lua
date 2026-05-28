@@ -51,6 +51,9 @@ local defaults = {
     enabled = true,
     ttl_ms = 30000,
   },
+  edit = {
+    mode = "pair",
+  },
   dynamic_tools = {
     enabled = true,
     prefer_nvim_apply_patch = true,
@@ -58,6 +61,10 @@ local defaults = {
 }
 
 local options = vim.deepcopy(defaults)
+local edit_modes = {
+  pair = true,
+  yolo = true,
+}
 
 local function merge(dst, src)
   if type(src) ~= "table" then
@@ -73,13 +80,42 @@ local function merge(dst, src)
   return dst
 end
 
+local function normalize_edit_mode(resolved, user_options)
+  resolved.edit = resolved.edit or {}
+  local dynamic = resolved.dynamic_tools or {}
+  local user_dynamic = type(user_options) == "table" and user_options.dynamic_tools or nil
+  local user_edit = type(user_options) == "table" and user_options.edit or nil
+
+  if type(user_dynamic) == "table" and (user_edit == nil or user_edit.mode == nil) then
+    if type(user_dynamic.mode) == "string" then
+      resolved.edit.mode = user_dynamic.mode
+    elseif type(user_dynamic.edit_mode) == "string" then
+      resolved.edit.mode = user_dynamic.edit_mode
+    elseif user_dynamic.prefer_nvim_apply_patch == false then
+      resolved.edit.mode = "yolo"
+    end
+  end
+
+  if not edit_modes[resolved.edit.mode] then
+    resolved.edit.mode = "pair"
+  end
+
+  dynamic.prefer_nvim_apply_patch = resolved.edit.mode == "pair"
+end
+
 function M.setup(user_options)
   options = merge(vim.deepcopy(defaults), user_options or {})
+  normalize_edit_mode(options, user_options or {})
   return options
 end
 
 function M.get()
   return options
+end
+
+function M.edit_mode()
+  local edit = options.edit or {}
+  return edit_modes[edit.mode] and edit.mode or "pair"
 end
 
 function M.cwd()
