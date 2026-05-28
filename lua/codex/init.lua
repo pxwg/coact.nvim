@@ -249,7 +249,15 @@ function M.submit_text(text, thread_id)
         util.notify("turn/start failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
         return
       end
-      state.add_turn(thread_id, result.turn)
+      local turn = type(result) == "table" and result.turn or nil
+      if type(turn) ~= "table" then
+        return util.notify("turn/start returned no turn", vim.log.levels.ERROR)
+      end
+      state.add_turn(thread_id, turn)
+      local submitted_thread = state.get_thread(thread_id)
+      if submitted_thread and submitted_thread.pending_request and turn.id then
+        submitted_thread.pending_request.turn_id = turn.id
+      end
       buffers.schedule_render(thread_id)
     end)
   end)

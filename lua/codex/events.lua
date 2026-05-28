@@ -382,18 +382,15 @@ local function pending_turn_id(thread, request)
 end
 
 local function pending_user_already_rendered(thread, request)
-  local candidates = pending_candidates(request)
   local turn_id = pending_turn_id(thread, request)
-  if #candidates == 0 or not turn_id then
+  if not turn_id then
     return false
   end
+  -- App-server may canonicalize image/file inputs differently; turn identity is the stable echo marker.
   for _, item_id in ipairs(thread.item_order or {}) do
     local item = thread.items and thread.items[item_id]
     if item and item.type == "userMessage" and thread.item_turns and thread.item_turns[item_id] == turn_id then
-      local item_text = util.trim(user_text(item.content))
-      if vim.tbl_contains(candidates, item_text) then
-        return true
-      end
+      return true
     end
   end
   return false

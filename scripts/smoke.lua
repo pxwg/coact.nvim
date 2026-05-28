@@ -504,6 +504,23 @@ assert(
   #events.pending_blocks(asset_pending_thread) == 0,
   "pending asset prompt should hide after canonical userMessage echo"
 )
+local server_echo_thread = state.ensure_thread("smoke-pending-server-echo", {
+  title = "Smoke pending server echo",
+  cwd = vim.fn.getcwd(),
+})
+server_echo_thread.active_turn_id = "turn-server-echo"
+server_echo_thread.pending_request = { prompt = asset_prompt, input = asset_input, created_at = vim.uv.now() }
+state.upsert_item("smoke-pending-server-echo", "turn-server-echo", {
+  id = "user-server-echo",
+  type = "userMessage",
+  content = {
+    { type = "text", text = "server canonicalized this prompt differently", text_elements = {} },
+  },
+})
+assert(
+  #events.pending_blocks(server_echo_thread) == 0,
+  "pending asset prompt should hide once the same turn has a userMessage echo"
+)
 local core_pending_thread = state.ensure_thread("smoke-core-pending", {
   title = "Smoke core pending",
   cwd = vim.fn.getcwd(),
