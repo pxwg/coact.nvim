@@ -39,6 +39,22 @@ local parsed = parser.parse("hello\n>diagnostics")
 assert(#parsed >= 1, "parser should produce user input")
 
 local state = require("codex.state")
+local status_thread = state.update_thread_from_payload({
+  id = "smoke-status-object",
+  status = { type = "active", activeFlags = {} },
+})
+assert(status_thread.status == "active", "thread payload status objects should normalize to labels")
+local metadata = require("codex.ui.metadata")
+local status_labels = metadata.composer_labels({ config = {}, status = { type = "active", activeFlags = {} } })
+assert(#status_labels == 1 and status_labels[1] == "active", "composer metadata should not stringify tables")
+require("codex.core").handle_notification({
+  method = "thread/status/changed",
+  params = {
+    threadId = "smoke-status-object",
+    status = { type = "active", activeFlags = { network = true } },
+  },
+})
+assert(status_thread.status == "active (network)", "status change objects should normalize to labels")
 local catalog = require("codex.catalog")
 state.set_cache(catalog.cache_key("skills"), {
   { label = "$skill:smoke", detail = "Smoke skill", data = { name = "smoke", path = "/tmp/smoke" } },

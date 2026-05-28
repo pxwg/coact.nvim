@@ -1,8 +1,11 @@
+local util = require("codex.util")
+
 local M = {}
 
 local function add(labels, value)
-  if value and value ~= "" and value ~= vim.NIL then
-    table.insert(labels, tostring(value))
+  local label = util.label(value)
+  if label then
+    table.insert(labels, label)
   end
 end
 

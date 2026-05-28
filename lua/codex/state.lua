@@ -74,7 +74,8 @@ function M.update_thread_from_payload(payload)
   local thread = M.ensure_thread(payload.id, {
     thread = payload,
     cwd = util.value(payload.cwd),
-    status = util.value(payload.status),
+    status = util.status_label(payload.status),
+    status_payload = util.value(payload.status),
     title = util.value(payload.name) or util.value(payload.preview),
   })
   thread.config.model = util.value(payload.model) or thread.config.model

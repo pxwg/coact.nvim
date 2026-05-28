@@ -21,6 +21,48 @@ function M.value(value)
   return nil
 end
 
+function M.label(value)
+  if not M.present(value) or value == "" then
+    return nil
+  end
+  if type(value) == "table" then
+    return M.label(
+      value.text or value.label or value.name or value.title or value.status or value.state or value.phase or value.type
+    )
+  end
+  return tostring(value)
+end
+
+function M.status_label(value)
+  local label = M.label(value)
+  if not label then
+    return nil
+  end
+  if type(value) ~= "table" then
+    return label
+  end
+  local flags = value.activeFlags or value.active_flags
+  if type(flags) ~= "table" then
+    return label
+  end
+  local flag_labels = {}
+  for key, flag in pairs(flags) do
+    if type(key) == "number" then
+      local flag_label = M.label(flag)
+      if flag_label then
+        table.insert(flag_labels, flag_label)
+      end
+    elseif flag == true then
+      table.insert(flag_labels, tostring(key))
+    end
+  end
+  table.sort(flag_labels)
+  if #flag_labels == 0 then
+    return label
+  end
+  return label .. " (" .. table.concat(flag_labels, ", ") .. ")"
+end
+
 function M.trim(value)
   return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end

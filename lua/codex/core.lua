@@ -217,7 +217,8 @@ end
 handlers["thread/status/changed"] = function(params)
   local thread = state.get_thread(params.threadId)
   if thread then
-    thread.status = params.status
+    thread.status = util.status_label(params.status) or thread.status
+    thread.status_payload = util.value(params.status)
     schedule(params.threadId)
   end
 end
