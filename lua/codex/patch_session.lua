@@ -33,12 +33,62 @@ local function parse_hunk_header(line)
   }
 end
 
+local function changed_blocks(lines)
+  local blocks = {}
+  local current = nil
+  local old_offset = 0
+  local new_offset = 0
+
+  local function ensure_block()
+    if not current then
+      current = {
+        old_start = old_offset,
+        new_start = new_offset,
+        old_lines = {},
+        new_lines = {},
+      }
+    end
+    return current
+  end
+
+  local function flush()
+    if current and (#current.old_lines > 0 or #current.new_lines > 0) then
+      current.old_count = #current.old_lines
+      current.new_count = #current.new_lines
+      table.insert(blocks, current)
+    end
+    current = nil
+  end
+
+  for _, line in ipairs(lines or {}) do
+    local prefix = line:sub(1, 1)
+    local body = line:sub(2)
+    if prefix == " " then
+      flush()
+      old_offset = old_offset + 1
+      new_offset = new_offset + 1
+    elseif prefix == "-" then
+      table.insert(ensure_block().old_lines, body)
+      old_offset = old_offset + 1
+    elseif prefix == "+" then
+      table.insert(ensure_block().new_lines, body)
+      new_offset = new_offset + 1
+    elseif prefix == "\\" then
+      -- "\ No newline at end of file" is metadata, not buffer content.
+    end
+  end
+  flush()
+
+  return blocks
+end
+
 local function parse_change_hunks(change)
   local hunks = {}
   local current = nil
 
   local function flush()
     if current then
+      current.changed_blocks = changed_blocks(current.lines)
       table.insert(hunks, current)
     end
     current = nil
@@ -221,19 +271,33 @@ local function remove_hunk_marks(hunk)
     pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, hunk.old_extmark_id)
     hunk.old_extmark_id = nil
   end
+  for _, id in ipairs(hunk.display_extmark_ids or {}) do
+    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, id)
+  end
+  hunk.display_extmark_ids = nil
+  for _, id in ipairs(hunk.old_extmark_ids or {}) do
+    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, id)
+  end
+  hunk.old_extmark_ids = nil
 end
 
-local function old_virtual_lines(hunk)
-  local old_lines = hunk.old_lines or {}
+local function old_virtual_lines(hunk, block)
+  local old_lines = block.old_lines or {}
   if #old_lines == 0 then
     return {}
   end
   local virt_lines = {}
-  table.insert(virt_lines, { { ("--- before %s"):format(hunk_label(hunk)), "DiffDelete" } })
+  local suffix = #(hunk.changed_blocks or {}) > 1 and (" block %d"):format(block.index or 0) or ""
+  table.insert(virt_lines, { { ("--- before %s%s"):format(hunk_label(hunk), suffix), "DiffDelete" } })
   for _, line in ipairs(old_lines) do
     table.insert(virt_lines, { { "- " .. line, "DiffDelete" } })
   end
   return virt_lines
+end
+
+local function clamp_extmark_row(bufnr, row)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  return math.max(0, math.min(row or 0, line_count))
 end
 
 local function mark_hunk(hunk)
@@ -242,33 +306,54 @@ local function mark_hunk(hunk)
     return
   end
 
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
-  local start_row = math.max(0, math.min(hunk.applied_start_row or 0, math.max(0, line_count - 1)))
-  if #(hunk.new_lines or {}) > 0 then
-    hunk.extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, start_row, 0, {
-      end_row = start_row + #hunk.new_lines,
-      hl_group = "DiffAdd",
-      hl_eol = true,
-      hl_mode = "combine",
-      priority = 20000,
-    })
-  else
-    hunk.extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, start_row, 0, {
-      virt_text = {
-        { ("[deleted %d line%s]"):format(#hunk.old_lines, #hunk.old_lines == 1 and "" or "s"), "DiffDelete" },
-      },
-      virt_text_pos = "right_align",
-      priority = 20000,
-    })
-  end
+  hunk.display_extmark_ids = {}
+  hunk.old_extmark_ids = {}
 
-  local virt_lines = old_virtual_lines(hunk)
-  if #virt_lines > 0 then
-    hunk.old_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, start_row, 0, {
-      virt_lines = virt_lines,
-      virt_lines_above = start_row > 0,
-      priority = 19999,
-    })
+  local start_row = clamp_extmark_row(bufnr, hunk.applied_start_row or 0)
+  hunk.extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, start_row, 0, {
+    end_row = clamp_extmark_row(bufnr, start_row + #(hunk.new_lines or {})),
+    right_gravity = false,
+    end_right_gravity = true,
+  })
+
+  for index, block in ipairs(hunk.changed_blocks or {}) do
+    block.index = index
+    local block_start = clamp_extmark_row(bufnr, (hunk.applied_start_row or 0) + (block.new_start or 0))
+    if #(block.new_lines or {}) > 0 then
+      table.insert(
+        hunk.display_extmark_ids,
+        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+          end_row = clamp_extmark_row(bufnr, block_start + #block.new_lines),
+          hl_group = "DiffAdd",
+          hl_eol = true,
+          hl_mode = "combine",
+          priority = 20000,
+        })
+      )
+    else
+      table.insert(
+        hunk.display_extmark_ids,
+        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+          virt_text = {
+            { ("[deleted %d line%s]"):format(#block.old_lines, #block.old_lines == 1 and "" or "s"), "DiffDelete" },
+          },
+          virt_text_pos = "right_align",
+          priority = 20000,
+        })
+      )
+    end
+
+    local virt_lines = old_virtual_lines(hunk, block)
+    if #virt_lines > 0 then
+      table.insert(
+        hunk.old_extmark_ids,
+        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+          virt_lines = virt_lines,
+          virt_lines_above = true,
+          priority = 19999,
+        })
+      )
+    end
   end
 end
 

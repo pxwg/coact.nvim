@@ -594,11 +594,116 @@ assert(
   "nvim.apply_patch review should open directly in the edited file buffer"
 )
 assert(patch_session._active_session(0) == session, "patch session should track active edited buffers")
+local diff_ns = vim.api.nvim_get_namespaces()["codex.patch_session.diff"]
+local session_hunk = session.hunks[1]
+assert(
+  #session_hunk.changed_blocks == 1
+    and #session_hunk.changed_blocks[1].old_lines == 1
+    and #session_hunk.changed_blocks[1].new_lines == 1,
+  "patch session should distinguish changed lines from hunk context"
+)
+local session_add_mark = vim.api.nvim_buf_get_extmark_by_id(
+  session_hunk.bufnr,
+  diff_ns,
+  session_hunk.display_extmark_ids[1],
+  { details = true }
+)
+assert(
+  session_add_mark[1] == 1 and session_add_mark[3].end_row == 2,
+  "patch session should highlight only the changed replacement line"
+)
+local session_old_mark =
+  vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_extmark_ids[1], { details = true })
+local session_old_virtual = vim.inspect(session_old_mark[3].virt_lines)
+assert(
+  session_old_virtual:match("%- beta")
+    and not session_old_virtual:match("alpha")
+    and not session_old_virtual:match("gamma"),
+  "patch session should show only deleted lines as old virtual diff content"
+)
 patch_session._reject_hunk(session, session.hunks[1], "keep beta")
 vim.wait(1000, function()
   return session_done
 end, 20)
 assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch hunk should restore original file content")
+local delete_only_file = vim.fs.joinpath(session_dir, "delete-only.txt")
+vim.fn.writefile({ "left context", "remove this", "right context" }, delete_only_file)
+local delete_only_patch = table.concat({
+  "diff --git a/delete-only.txt b/delete-only.txt",
+  "--- a/delete-only.txt",
+  "+++ b/delete-only.txt",
+  "@@ -1,3 +1,2 @@",
+  " left context",
+  "-remove this",
+  " right context",
+}, "\n")
+local delete_only_session = patch_session.open({
+  cwd = session_dir,
+  changes = dynamic_tools._changes_from_unified_patch(delete_only_patch),
+})
+local delete_only_hunk = delete_only_session.hunks[1]
+local delete_only_mark = vim.api.nvim_buf_get_extmark_by_id(
+  delete_only_hunk.bufnr,
+  diff_ns,
+  delete_only_hunk.display_extmark_ids[1],
+  { details = true }
+)
+local delete_only_old_mark = vim.api.nvim_buf_get_extmark_by_id(
+  delete_only_hunk.bufnr,
+  diff_ns,
+  delete_only_hunk.old_extmark_ids[1],
+  { details = true }
+)
+local delete_only_virtual = vim.inspect(delete_only_old_mark[3].virt_lines)
+assert(
+  #delete_only_hunk.display_extmark_ids == 1
+    and delete_only_mark[1] == 1
+    and delete_only_mark[3].virt_text[1][1]:match("%[deleted 1 line%]")
+    and delete_only_virtual:match("%- remove this")
+    and not delete_only_virtual:match("left context")
+    and not delete_only_virtual:match("right context"),
+  "patch session should render deletion-only blocks without context lines"
+)
+patch_session._accept_hunk(delete_only_session, delete_only_hunk)
+local multi_file = vim.fs.joinpath(session_dir, "multi.txt")
+vim.fn.writefile({ "top", "old one", "middle", "old two", "bottom" }, multi_file)
+local multi_patch = table.concat({
+  "diff --git a/multi.txt b/multi.txt",
+  "--- a/multi.txt",
+  "+++ b/multi.txt",
+  "@@ -1,5 +1,5 @@",
+  " top",
+  "-old one",
+  "+new one",
+  " middle",
+  "-old two",
+  "+new two",
+  " bottom",
+}, "\n")
+local multi_session = patch_session.open({
+  cwd = session_dir,
+  changes = dynamic_tools._changes_from_unified_patch(multi_patch),
+})
+local multi_hunk = multi_session.hunks[1]
+assert(
+  #multi_session.hunks == 1
+    and #multi_hunk.changed_blocks == 2
+    and #multi_hunk.display_extmark_ids == 2
+    and #multi_hunk.old_extmark_ids == 2,
+  "patch session should keep one review hunk while rendering multiple changed blocks"
+)
+local first_multi_mark =
+  vim.api.nvim_buf_get_extmark_by_id(multi_hunk.bufnr, diff_ns, multi_hunk.display_extmark_ids[1], { details = true })
+local second_multi_mark =
+  vim.api.nvim_buf_get_extmark_by_id(multi_hunk.bufnr, diff_ns, multi_hunk.display_extmark_ids[2], { details = true })
+assert(
+  first_multi_mark[1] == 1
+    and first_multi_mark[3].end_row == 2
+    and second_multi_mark[1] == 3
+    and second_multi_mark[3].end_row == 4,
+  "patch session should render each changed block without highlighting intervening context"
+)
+patch_session._accept_hunk(multi_session, multi_hunk)
 local tool_dir = vim.fn.tempname()
 vim.fn.mkdir(tool_dir, "p")
 local tool_file = vim.fs.joinpath(tool_dir, "tool.txt")
