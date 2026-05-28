@@ -19,6 +19,16 @@ assert(
   start_params.developerInstructions:match("Do not repeatedly retry failed patches against stale context"),
   "thread/start should forbid stale failed patch retries"
 )
+assert(
+  start_params.developerInstructions:match("nvim%.diagnostics")
+    and start_params.developerInstructions:match("user hunk feedback")
+    and start_params.developerInstructions:match("pair%-coding feedback"),
+  "thread/start should treat diagnostics and hunk feedback as pair-coding feedback"
+)
+assert(
+  start_params.developerInstructions:match("handle errors and warnings before reporting completion"),
+  "thread/start should require resolving reported errors and warnings before completion"
+)
 local composed_instructions = codex._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
 assert(composed_instructions:match("nvim%.apply_patch"), "default edit instruction should mention nvim.apply_patch")
@@ -35,6 +45,10 @@ assert(
   "nvim.apply_patch tool description should include native patch protocol"
 )
 assert(
+  dynamic_tools_for_config._apply_patch_protocol_text():match("pair%-coding feedback"),
+  "nvim.apply_patch tool description should frame returned feedback as edit guidance"
+)
+assert(
   dynamic_tools_for_config._stale_patch_retry_message():match("Re%-read the current buffer"),
   "nvim.apply_patch failure guidance should require refreshing buffer state"
 )
@@ -43,6 +57,10 @@ local yolo_start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
 assert(
   yolo_start_params.developerInstructions:match("native apply_patch tool directly"),
   "yolo edit mode should instruct Codex to use native apply_patch directly"
+)
+assert(
+  not yolo_start_params.developerInstructions:match("pair%-coding feedback"),
+  "yolo edit mode should not include pair-mode feedback protocol"
 )
 assert(not vim.iter(dynamic_tools_for_config.specs() or {}):any(function(spec)
   return spec.namespace == "nvim" and spec.name == "apply_patch"
@@ -536,6 +554,52 @@ assert(
     and tool_response.contentItems[1].text:match("smoke target diagnostic"),
   "dynamic nvim.apply_patch response should include target buffer diagnostics"
 )
+local accept_tool_file = vim.fs.joinpath(tool_dir, "accepted.txt")
+vim.fn.writefile({ "cyan", "magenta", "yellow" }, accept_tool_file)
+local accept_tool_patch = table.concat({
+  "*** Begin Patch",
+  "*** Update File: accepted.txt",
+  "@@",
+  " cyan",
+  "-magenta",
+  "+violet",
+  " yellow",
+  "*** End Patch",
+}, "\n")
+local accept_tool_response = nil
+rpc.respond = function(id, result)
+  assert(id == "tool-apply-accept", "accepted dynamic tool should respond to the original request id")
+  accept_tool_response = result
+end
+dynamic_tools.handle_call({
+  id = "tool-apply-accept",
+  params = {
+    namespace = "nvim",
+    tool = "apply_patch",
+    threadId = "smoke-context",
+    arguments = {
+      cwd = tool_dir,
+      patch = accept_tool_patch,
+    },
+  },
+})
+local accept_tool_session = patch_session._active_session(0)
+assert(accept_tool_session and accept_tool_session.hunks[1], "accepted nvim.apply_patch should open a patch session")
+patch_session._accept_hunk(accept_tool_session, accept_tool_session.hunks[1])
+vim.wait(1000, function()
+  return accept_tool_response ~= nil
+end, 20)
+rpc.respond = original_rpc_respond
+assert(
+  accept_tool_response and accept_tool_response.success == true,
+  "accepted dynamic patch should respond as successful"
+)
+assert(
+  accept_tool_response.contentItems[1].text:match("## nvim%.diagnostics")
+    and accept_tool_response.contentItems[1].text:match("smoke target diagnostic"),
+  "successful dynamic nvim.apply_patch response should include target buffer diagnostics"
+)
+assert(vim.fn.readfile(accept_tool_file)[2] == "violet", "accepted dynamic patch should write accepted file content")
 vim.diagnostic.reset(smoke_diag_ns, source_buf)
 assert(vim.fn.readfile(tool_file)[2] == "green", "dynamic patch rejection should preserve original file content")
 local fallback_thread = { id = "thread-fallback", active_turn_id = "turn-fallback" }

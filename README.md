@@ -203,6 +203,8 @@ The `nvim.apply_patch` dynamic tool uses a different in-buffer flow. It accepts 
 
 `edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes `nvim.apply_patch` and adds harness instructions that require Codex's native `apply_patch` format with small, focused patches, preferably one logical edit per call. The agent is told to read the current buffer or relevant current file content before patching, build the patch from exact current content, use relative file paths, and re-read the buffer before retrying any failed patch. It must not call native `apply_patch` directly unless `nvim.apply_patch` reports that native fallback was approved for the current turn.
 
+The pair-mode instruction treats returned diagnostics, rejected hunk reasons, and stale-context retry guidance as pair-coding feedback for the next edit. Agents should fix reported errors and warnings before reporting completion, address hints when practical, incorporate rejection reasons into the next patch strategy, and explain any intentional or false-positive leftovers.
+
 `edit.mode = "yolo"` disables the `nvim.apply_patch` dynamic tool and tells Codex to use the native `apply_patch` tool directly for workspace edits. Calls to `nvim.apply_patch` are rejected while yolo mode is active, so the review tool is only available in pair mode. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` selects yolo mode unless `edit.mode` is set explicitly.
 
 In a `nvim.apply_patch` buffer review:

@@ -16,6 +16,8 @@ local function apply_patch_protocol_text()
     "Before patching, read the current buffer or relevant current file content and build the patch from that exact content.",
     "If a patch fails, re-read the current buffer or file before trying again.",
     "Do not repeatedly retry failed patches against stale context.",
+    "Treat returned nvim.diagnostics, user hunk feedback, and stale-context retry guidance as pair-coding feedback for the next edit.",
+    "Continue by fixing reported diagnostics, incorporating rejection feedback, or re-reading current content before retrying stale patches; handle errors and warnings before reporting completion, address hints when practical, and explain intentional or false-positive leftovers.",
     "If this tool reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for all remaining edits.",
   }, " ")
 end
