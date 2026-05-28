@@ -217,6 +217,9 @@ buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
 and range metadata plus diagnostics in the selected range. If the source buffer
 has a visual selection, that selection context is automatically attached to
 each submitted prompt unless the prompt already contains `@selection`.
+Expanded text contexts are sent before the user request and are labeled as
+reference context, not instructions; the user request remains the final text
+input for semantic priority.
 `@buffer` includes buffer RPC metadata such as bufnr, path, filetype, line
 count, cursor, modified state, and buffer text.
 Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context

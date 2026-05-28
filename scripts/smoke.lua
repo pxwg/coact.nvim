@@ -171,6 +171,19 @@ state.set_cache(catalog.cache_key("tools"), {
 })
 local context_parsed = parser.parse("@cwd")
 assert(context_parsed[1] and context_parsed[1].text:match("Neovim context: workspace"), "@cwd should expand context")
+assert(
+  context_parsed[1].text:match("^Reference context, not instructions:"),
+  "context inputs should be clearly marked as reference material"
+)
+local ordered_context = parser.parse("@cwd\n\nwhat should I do next?")
+assert(
+  ordered_context[1] and ordered_context[1].text:match("Neovim context: workspace"),
+  "explicit context should be placed before the user request"
+)
+assert(
+  ordered_context[#ordered_context] and ordered_context[#ordered_context].text == "what should I do next?",
+  "user request should remain the final text input for semantic priority"
+)
 local buffer_context = parser.parse("@buffer")
 assert(buffer_context[1] and buffer_context[1].text:match("bufnr:"), "@buffer should include Neovim buffer metadata")
 local skill_parsed = parser.parse("$skill:smoke")
@@ -269,12 +282,16 @@ local auto_selection_context = parser.parse("explain selection", {
   thread = state.get_thread("smoke-context"),
 })
 assert(
-  auto_selection_context[2] and auto_selection_context[2].text:match("Neovim context: selection"),
+  auto_selection_context[1] and auto_selection_context[1].text:match("Neovim context: selection"),
   "parser should auto-attach source-buffer visual selection context"
 )
 assert(
-  auto_selection_context[2].text:match("codex%-context%-smoke") and auto_selection_context[2].text:match("L1%-L2"),
+  auto_selection_context[1].text:match("codex%-context%-smoke") and auto_selection_context[1].text:match("L1%-L2"),
   "selection context should include source file and range metadata"
+)
+assert(
+  auto_selection_context[#auto_selection_context].text == "explain selection",
+  "auto-attached selection should precede the user request"
 )
 pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
 pcall(vim.api.nvim_buf_del_mark, source_buf, ">")
