@@ -32,7 +32,6 @@ local assistant_content_types = {
   ToolCallBlock = true,
   PatchBlock = true,
   RawEventBlock = true,
-  AgentTimelineBlock = true,
   PlanBlock = true,
   ErrorBlock = true,
 }
@@ -138,6 +137,13 @@ end
 
 local function default_expanded()
   return virtual_block_config().default_expanded == true
+end
+
+local function default_block_expanded(block)
+  if block and block.type == "AgentTimelineBlock" and block.state == "cleared" then
+    return false
+  end
+  return default_expanded()
 end
 
 local function max_virtual_lines()
@@ -256,10 +262,10 @@ local function block_key(block, opts)
   }, ":")
 end
 
-local function placeholder_expanded(thread, key)
+local function placeholder_expanded(thread, key, block)
   local expanded = thread.expanded_blocks and thread.expanded_blocks[key]
   if expanded == nil then
-    return default_expanded()
+    return default_block_expanded(block)
   end
   return expanded == true
 end
@@ -344,7 +350,7 @@ local function placeholder_body_lines(block)
 end
 
 local function mark_placeholder(thread, line, key, block, body_lines)
-  local expanded = placeholder_expanded(thread, key)
+  local expanded = placeholder_expanded(thread, key, block)
   local mark = {
     line = line,
     key = key,
@@ -1097,7 +1103,7 @@ local render_block
 
 local function render_placeholder(thread, lines, block, opts)
   local key = block_key(block, opts)
-  local expanded = placeholder_expanded(thread, key)
+  local expanded = placeholder_expanded(thread, key, block)
   local body_lines = expanded and placeholder_body_lines(block) or {}
   local line = add(lines, " ")
   local mark = mark_placeholder(thread, line, key, block, body_lines)
@@ -1259,7 +1265,7 @@ function M.toggle_under_cursor()
     return
   end
   thread.expanded_blocks = thread.expanded_blocks or {}
-  thread.expanded_blocks[mark.key] = not placeholder_expanded(thread, mark.key)
+  thread.expanded_blocks[mark.key] = not placeholder_expanded(thread, mark.key, mark.block)
   M.render(thread)
 end
 

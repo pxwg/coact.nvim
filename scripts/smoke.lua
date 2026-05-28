@@ -521,6 +521,31 @@ assert(
   #events.pending_blocks(server_echo_thread) == 0,
   "pending asset prompt should hide once the same turn has a userMessage echo"
 )
+local render = require("codex.ui.render")
+local cleared_event_thread = state.ensure_thread("smoke-cleared-event", {
+  title = "Smoke cleared event",
+  cwd = vim.fn.getcwd(),
+})
+local cleared_event_buf = vim.api.nvim_create_buf(false, true)
+state.bind_buffer(cleared_event_thread, cleared_event_buf)
+cleared_event_thread.timeline_blocks = {
+  {
+    type = "AgentTimelineBlock",
+    title = "Goal cleared",
+    state = "cleared",
+    text = "Thread goal cleared.",
+    local_only = true,
+  },
+}
+codex.setup({ render = { virtual_blocks = { default_expanded = true } } })
+render.render(cleared_event_thread)
+local cleared_event_lines = vim.api.nvim_buf_get_lines(cleared_event_buf, 0, -1, false)
+assert(not vim.tbl_contains(cleared_event_lines, "## Codex"), "cleared agent events should not open a Codex group")
+assert(
+  cleared_event_thread.placeholder_marks[1] and cleared_event_thread.placeholder_marks[1].expanded == false,
+  "cleared agent events should default to collapsed"
+)
+codex.setup()
 local core_pending_thread = state.ensure_thread("smoke-core-pending", {
   title = "Smoke core pending",
   cwd = vim.fn.getcwd(),
