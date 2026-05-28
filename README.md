@@ -225,3 +225,7 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
 The smoke test loads the plugin, exercises health and status helpers, parser/completion behavior, verifies source-buffer context tracking, verifies patch-review hunk indexing, verifies Neovim-owned patch application, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
