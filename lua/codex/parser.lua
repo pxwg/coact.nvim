@@ -47,20 +47,20 @@ local function project_root()
   return ok and root or nil
 end
 
-local function current_selection()
-  local mode = vim.fn.mode()
-  if not mode:match("[vV\22]") then
-    return nil
+local function diagnostics_text(bufnr, start_line, end_line)
+  local diagnostics = vim.diagnostic.get(bufnr)
+  if vim.tbl_isempty(diagnostics) then
+    return ""
   end
-  local start_pos = vim.fn.getpos("v")
-  local end_pos = vim.fn.getpos(".")
-  local start_line = math.min(start_pos[2], end_pos[2])
-  local end_line = math.max(start_pos[2], end_pos[2])
-  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
-  if #lines == 0 then
-    return nil
+  local out = {}
+  for _, diagnostic in ipairs(diagnostics) do
+    local lnum = diagnostic.lnum + 1
+    if lnum >= start_line and lnum <= end_line then
+      local severity = vim.diagnostic.severity[diagnostic.severity] or "UNKNOWN"
+      table.insert(out, ("- %s L%d:C%d %s"):format(severity, lnum, diagnostic.col + 1, diagnostic.message))
+    end
   end
-  return table.concat(lines, "\n")
+  return table.concat(out, "\n")
 end
 
 context_handlers.buffer = function()
@@ -83,12 +83,30 @@ context_handlers.buffer = function()
   }, "\n")
 end
 
-context_handlers.selection = function()
-  local selected = current_selection()
-  if not selected or selected == "" then
+context_handlers.selection = function(_, opts)
+  opts = opts or {}
+  local thread = opts.thread or require("codex.state").thread_for_buf(0)
+  local bufnr = context.target_buffer(thread)
+  local selected = context.selection_for_buffer(bufnr)
+  if not selected then
     return nil
   end
-  return "Current selection:\n\n```\n" .. selected .. "\n```"
+  local out = {
+    "Neovim context: selection",
+    ("- file: %s"):format(selected.filename),
+    ("- range: L%d-L%d"):format(selected.start_line, selected.end_line),
+    "",
+    "```" .. (selected.filetype or ""),
+    selected.content,
+    "```",
+  }
+  local diagnostics = diagnostics_text(selected.bufnr, selected.start_line, selected.end_line)
+  if diagnostics ~= "" then
+    table.insert(out, "")
+    table.insert(out, "Diagnostics in selection:")
+    table.insert(out, diagnostics)
+  end
+  return table.concat(out, "\n")
 end
 
 context_handlers.cursor = function()
@@ -216,12 +234,16 @@ local function parse_context_token(token)
   end
 
   local body = token:sub(2)
-  local name, arg = body:match("^([%w_.%-/]+):(.*)$")
+  if body:sub(1, 1) == "`" and body:sub(-1) == "`" then
+    return { name = unquote_arg(body), has_arg = false, path_token = true }
+  end
+
+  local name, arg = body:match("^([%w_./~%-]+):(.*)$")
   if name then
     return { name = name, arg = arg, has_arg = true }
   end
 
-  name = body:match("^([%w_.%-/]+)$")
+  name = body:match("^([%w_./~%-]+)$")
   if name then
     return { name = name, has_arg = false }
   end
@@ -254,19 +276,25 @@ local function normalize_context_result(value)
   return #inputs > 0 and inputs or nil
 end
 
-local function resolve_context_token(token)
+local function resolve_context_token(token, opts)
   local parsed = parse_context_token(token)
   if not parsed then
     return nil
   end
 
   local resolver = parsed.has_arg and context_providers[parsed.name] or context_handlers[parsed.name]
-  if not resolver then
-    return nil
+  if resolver then
+    local ok, value = pcall(resolver, parsed.arg, opts or {})
+    return ok and normalize_context_result(value) or nil
   end
 
-  local ok, value = pcall(resolver, parsed.arg)
-  return ok and normalize_context_result(value) or nil
+  if not parsed.has_arg then
+    local value = file_context(parsed.name)
+    if value then
+      return normalize_context_result(value)
+    end
+  end
+  return nil
 end
 
 local function prompt_token(line)
@@ -274,10 +302,25 @@ local function prompt_token(line)
   if line == "" then
     return nil
   end
-  return line:match("^([>@][%w_.%-/]+:.*)$") or line:match("^([>@][%w_.%-/]+)$") or line:match("^([%$][%w_./:~%-]+)$")
+  return line:match("^([>@]`.+`)$")
+    or line:match("^([>@][%w_./~%-]+:.*)$")
+    or line:match("^([>@][%w_./~%-]+)$")
+    or line:match("^([%$][%w_./:~%-]+)$")
 end
 
-function M.parse(text)
+local function contains_selection_token(text)
+  for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
+    local token = prompt_token(line)
+    local parsed = token and parse_context_token(token)
+    if parsed and parsed.name == "selection" and not parsed.has_arg then
+      return true
+    end
+  end
+  return false
+end
+
+function M.parse(text, parse_opts)
+  parse_opts = parse_opts or {}
   local inputs = {}
   local body = {}
   local opts = config.get()
@@ -285,7 +328,7 @@ function M.parse(text)
   for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
     local token = prompt_token(line)
     if token and (token:sub(1, 1) == "@" or token:sub(1, 1) == ">") then
-      local context_inputs = resolve_context_token(token)
+      local context_inputs = resolve_context_token(token, parse_opts)
       if context_inputs then
         vim.list_extend(inputs, context_inputs)
       else
@@ -316,9 +359,16 @@ function M.parse(text)
   if input then
     table.insert(inputs, 1, input)
   end
+  if parse_opts.auto_selection ~= false and not contains_selection_token(text) then
+    local selection_inputs = resolve_context_token("@selection", parse_opts)
+    if selection_inputs then
+      vim.list_extend(inputs, selection_inputs)
+    end
+  end
   return inputs
 end
 
 M._parse_context_token = parse_context_token
+M._resolve_context_token = resolve_context_token
 
 return M

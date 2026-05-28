@@ -75,6 +75,15 @@ local function configure_buffer(bufnr, thread_id)
   vim.keymap.set({ "n", "i" }, "<C-s>", function()
     require("codex").submit()
   end, { buffer = bufnr, desc = "Submit Codex prompt" })
+  vim.keymap.set("i", "<Tab>", function()
+    if vim.fn.pumvisible() == 1 then
+      return "<C-n>"
+    end
+    if require("codex.context").trigger_hook() then
+      return ""
+    end
+    return "\t"
+  end, { buffer = bufnr, expr = true, desc = "Trigger Codex context hook" })
   vim.keymap.set("n", "q", function()
     local winid = vim.api.nvim_get_current_win()
     vim.api.nvim_win_close(winid, true)
@@ -241,6 +250,19 @@ function M.clear_prompt(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local start = prompt_start(bufnr)
   vim.api.nvim_buf_set_lines(bufnr, start, -1, false, {})
+end
+
+function M.append_prompt_line(bufnr, line)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local start = prompt_start(bufnr)
+  local prompt_lines = vim.api.nvim_buf_get_lines(bufnr, start, -1, false)
+  line = tostring(line or "")
+  if #prompt_lines == 0 or (#prompt_lines == 1 and prompt_lines[1] == "") then
+    vim.api.nvim_buf_set_lines(bufnr, start, -1, false, { line })
+    return
+  end
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, { line })
 end
 
 function M.get_thread_id(bufnr)

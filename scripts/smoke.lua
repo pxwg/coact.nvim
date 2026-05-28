@@ -53,6 +53,24 @@ assert(
   vim.deep_equal(configured_composer_labels, { "gpt-5", "effort high", "active" }),
   "composer metadata should include configured model and reasoning effort"
 )
+local stale_header_thread = state.ensure_thread("smoke-thread-settings-header", {
+  config = { model = "gpt-5-codex", reasoning_effort = "xhigh" },
+  status = "active",
+})
+stale_header_thread.settings = { effort = "medium" }
+state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
+assert(
+  vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "effort medium", "active" }),
+  "composer metadata should prefer updated thread effort over stale defaults"
+)
+local effective_turn_params = codex._turn_start_params("smoke-thread-settings-header", {})
+assert(effective_turn_params.effort == "medium", "turn/start should use updated thread reasoning effort")
+stale_header_thread.settings = { effort = vim.NIL }
+state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
+assert(
+  vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "active" }),
+  "composer metadata should not resurrect a stale effort after selecting default"
+)
 local active_user_labels = metadata.user_labels(nil, {
   state = "active",
   raw = { settings = { model = "gpt-5-codex", reasoning_effort = "medium" } },
@@ -70,6 +88,22 @@ require("codex.core").handle_notification({
   },
 })
 assert(status_thread.status == "active (network)", "status change objects should normalize to labels")
+local settings_event_thread = state.ensure_thread("smoke-settings-event", {
+  config = { model = "gpt-5-codex", reasoning_effort = "xhigh" },
+  status = "active",
+})
+require("codex.core").handle_notification({
+  method = "thread/settings/updated",
+  params = {
+    threadId = "smoke-settings-event",
+    threadSettings = { effort = "medium" },
+  },
+})
+assert(settings_event_thread.config.reasoning_effort == "medium", "settings events should update thread config")
+assert(
+  vim.deep_equal(metadata.composer_labels(settings_event_thread), { "gpt-5-codex", "effort medium", "active" }),
+  "settings events should refresh composer reasoning effort"
+)
 local catalog = require("codex.catalog")
 state.set_cache(catalog.cache_key("skills"), {
   { label = "$skill:smoke", detail = "Smoke skill", data = { name = "smoke", path = "/tmp/smoke" } },
@@ -93,6 +127,13 @@ local file_asset_parsed = parser.parse("@file:`" .. text_asset .. "`")
 assert(
   file_asset_parsed[1] and file_asset_parsed[1].text:match("text asset with spaces"),
   "@file should accept backtick-quoted paths with spaces"
+)
+local official_file_parsed = parser.parse("@" .. require("codex.context").display_path(text_asset), {
+  auto_selection = false,
+})
+assert(
+  official_file_parsed[1] and official_file_parsed[1].text:match("text asset with spaces"),
+  "@path should expand Codex official file context syntax"
 )
 local image_asset_parsed = parser.parse("@image:`" .. image_asset .. "`")
 assert(image_asset_parsed[1] and image_asset_parsed[1].type == "localImage", "@image should attach local images")
@@ -164,6 +205,72 @@ local codex_context_text = codex_buffer_context[1] and codex_buffer_context[1].t
 assert(codex_context_text:match("Neovim context: target buffer"), "@buffer should describe the target buffer")
 assert(codex_context_text:match("codex%-context%-smoke"), "@buffer should use the pre-chat source buffer")
 assert(codex_context_text:match("cursor: L2:C8"), "@buffer should preserve the source window cursor")
+vim.api.nvim_buf_set_mark(source_buf, "<", 1, 0, {})
+vim.api.nvim_buf_set_mark(source_buf, ">", 2, 0, {})
+local auto_selection_context = parser.parse("explain selection", {
+  thread = state.get_thread("smoke-context"),
+})
+assert(
+  auto_selection_context[2] and auto_selection_context[2].text:match("Neovim context: selection"),
+  "parser should auto-attach source-buffer visual selection context"
+)
+assert(
+  auto_selection_context[2].text:match("codex%-context%-smoke") and auto_selection_context[2].text:match("L1%-L2"),
+  "selection context should include source file and range metadata"
+)
+pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
+pcall(vim.api.nvim_buf_del_mark, source_buf, ">")
+
+local original_ui_select_for_context = vim.ui.select
+local original_snacks_for_context = package.loaded["snacks"]
+local hook_buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(hook_buf)
+vim.api.nvim_buf_set_lines(hook_buf, 0, -1, false, { "@file:" })
+vim.api.nvim_win_set_cursor(0, { 1, 6 })
+vim.ui.select = function()
+  error("snacks file picker should be used before vim.ui.select fallback")
+end
+local snacks_file_picker_called = false
+package.loaded["snacks"] = {
+  picker = {
+    files = function(opts)
+      snacks_file_picker_called = true
+      assert(opts.title == "Codex File Context", "file context hook should use snacks file picker title")
+      assert(opts.hidden == true, "file context hook should include hidden workspace files")
+      opts.confirm({
+        close = function() end,
+      }, {
+        file = "README.md",
+        cwd = opts.cwd,
+      })
+    end,
+  },
+}
+package.loaded["snacks.picker.util"] = {
+  path = function(item)
+    return vim.fs.joinpath(item.cwd, item.file)
+  end,
+}
+assert(require("codex.context").trigger_hook(), "@file: should trigger context hook")
+vim.wait(1000, function()
+  return vim.api.nvim_buf_get_lines(hook_buf, 0, 1, false)[1] == "@README.md"
+end, 20)
+vim.ui.select = original_ui_select_for_context
+package.loaded["snacks"] = original_snacks_for_context
+package.loaded["snacks.picker.util"] = nil
+assert(snacks_file_picker_called, "@file: hook should reuse snacks file picker when available")
+assert(
+  vim.api.nvim_buf_get_lines(hook_buf, 0, 1, false)[1] == "@README.md",
+  "@file: hook should replace provider syntax with official @path syntax"
+)
+vim.api.nvim_set_current_buf(source_buf)
+codex.add_current_buffer()
+local added_context_prompt = buffers.collect_prompt(context_thread_buf)
+assert(
+  added_context_prompt:match("@.*codex%-context%-smoke%.lua"),
+  "Codex add-buffer should append the current source buffer path to the chat prompt"
+)
+buffers.clear_prompt(context_thread_buf)
 
 local patch_review = require("codex.patch_review")
 local hunk = patch_review._parse_hunk_header("@@ -3,2 +3,3 @@")
@@ -226,6 +333,87 @@ assert(
   vim.fn.readfile(vim.fs.joinpath(patch_dir, "sample.txt"))[2] == "three",
   "nvim.apply_patch should apply approved patches"
 )
+local session_dir = vim.fn.tempname()
+vim.fn.mkdir(session_dir, "p")
+local session_file = vim.fs.joinpath(session_dir, "session.txt")
+vim.fn.writefile({ "alpha", "beta", "gamma" }, session_file)
+local session_patch = table.concat({
+  "diff --git a/session.txt b/session.txt",
+  "--- a/session.txt",
+  "+++ b/session.txt",
+  "@@ -1,3 +1,3 @@",
+  " alpha",
+  "-beta",
+  "+bravo",
+  " gamma",
+}, "\n")
+local session_done = false
+local patch_session = require("codex.patch_session")
+local session = patch_session.open({
+  cwd = session_dir,
+  changes = dynamic_tools._changes_from_unified_patch(session_patch),
+  on_complete = function(summary, success)
+    assert(not success, "rejected hunk should report a failed/partial patch review")
+    assert(summary:match("keep beta"), "patch review summary should include rejection feedback")
+    session_done = true
+  end,
+})
+assert(
+  vim.uv.fs_realpath(vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())) == vim.uv.fs_realpath(session_file),
+  "nvim.apply_patch review should open directly in the edited file buffer"
+)
+assert(patch_session._active_session(0) == session, "patch session should track active edited buffers")
+patch_session._reject_hunk(session, session.hunks[1], "keep beta")
+vim.wait(1000, function()
+  return session_done
+end, 20)
+assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch hunk should restore original file content")
+local tool_dir = vim.fn.tempname()
+vim.fn.mkdir(tool_dir, "p")
+local tool_file = vim.fs.joinpath(tool_dir, "tool.txt")
+vim.fn.writefile({ "red", "green", "blue" }, tool_file)
+local tool_patch = table.concat({
+  "diff --git a/tool.txt b/tool.txt",
+  "--- a/tool.txt",
+  "+++ b/tool.txt",
+  "@@ -1,3 +1,3 @@",
+  " red",
+  "-green",
+  "+emerald",
+  " blue",
+}, "\n")
+local rpc = require("codex.rpc")
+local original_rpc_respond = rpc.respond
+local tool_response = nil
+rpc.respond = function(id, result)
+  assert(id == "tool-apply-review", "dynamic tool should respond to the original request id")
+  tool_response = result
+end
+dynamic_tools.handle_call({
+  id = "tool-apply-review",
+  params = {
+    namespace = "nvim",
+    tool = "apply_patch",
+    threadId = "smoke-context",
+    arguments = {
+      cwd = tool_dir,
+      patch = tool_patch,
+    },
+  },
+})
+local tool_session = patch_session._active_session(0)
+assert(tool_session and tool_session.hunks[1], "nvim.apply_patch dynamic tool should open an in-buffer patch session")
+patch_session._reject_hunk(tool_session, tool_session.hunks[1], "not this color")
+vim.wait(1000, function()
+  return tool_response ~= nil
+end, 20)
+rpc.respond = original_rpc_respond
+assert(tool_response and tool_response.success == false, "rejected dynamic patch should respond as unsuccessful")
+assert(
+  tool_response.contentItems[1].text:match("not this color"),
+  "dynamic nvim.apply_patch response should include rejection feedback"
+)
+assert(vim.fn.readfile(tool_file)[2] == "green", "dynamic patch rejection should preserve original file content")
 local fallback_thread = { id = "thread-fallback", active_turn_id = "turn-fallback" }
 local fallback_params = { threadId = "thread-fallback", turnId = "turn-fallback" }
 assert(

@@ -16,30 +16,81 @@ local function append_unique(list, value)
   table.insert(list, value)
 end
 
-local function first_value(...)
+local setting_keys = {
+  "model",
+  "model_provider",
+  "service_tier",
+  "reasoning_effort",
+  "reasoning_summary",
+  "personality",
+}
+
+local function first_present(...)
   for index = 1, select("#", ...) do
-    local value = util.value(select(index, ...))
-    if value ~= nil and value ~= "" then
-      return value
+    local raw = select(index, ...)
+    if raw ~= nil and raw ~= "" then
+      return util.value(raw), true
     end
   end
-  return nil
+  return nil, false
+end
+
+local function setting_value(settings, key)
+  if type(settings) ~= "table" then
+    return nil, false
+  end
+  local reasoning = type(settings.reasoning) == "table" and settings.reasoning or {}
+  if key == "model" then
+    return first_present(settings.model, settings.modelId, settings.modelName)
+  end
+  if key == "model_provider" then
+    return first_present(settings.model_provider, settings.modelProvider)
+  end
+  if key == "service_tier" then
+    return first_present(settings.service_tier, settings.serviceTier)
+  end
+  if key == "reasoning_effort" then
+    return first_present(settings.reasoning_effort, settings.reasoningEffort, settings.effort, reasoning.effort)
+  end
+  if key == "reasoning_summary" then
+    return first_present(settings.reasoning_summary, settings.reasoningSummary, settings.summary, reasoning.summary)
+  end
+  if key == "personality" then
+    return first_present(settings.personality)
+  end
+  return nil, false
+end
+
+local function normalize_settings(settings)
+  local normalized = {}
+  local present = {}
+  local any = false
+  for _, key in ipairs(setting_keys) do
+    local value, has_value = setting_value(settings, key)
+    if has_value then
+      normalized[key] = value
+      present[key] = true
+      any = true
+    end
+  end
+  if not any then
+    return nil, nil
+  end
+  return normalized, present
 end
 
 local function normalize_turn_settings(settings)
-  if type(settings) ~= "table" then
+  local settings_values, present = normalize_settings(settings)
+  if not settings_values or not present then
     return nil
   end
-  local reasoning = type(settings.reasoning) == "table" and settings.reasoning or {}
-  local normalized = {
-    model = first_value(settings.model, settings.modelId, settings.modelName),
-    reasoning_effort = first_value(
-      settings.reasoning_effort,
-      settings.reasoningEffort,
-      settings.effort,
-      reasoning.effort
-    ),
-  }
+  local normalized = {}
+  if present.model and settings_values.model then
+    normalized.model = settings_values.model
+  end
+  if present.reasoning_effort and settings_values.reasoning_effort then
+    normalized.reasoning_effort = settings_values.reasoning_effort
+  end
   if not normalized.model and not normalized.reasoning_effort then
     return nil
   end
@@ -79,6 +130,7 @@ function M.ensure_thread(thread_id, attrs)
       status = "unknown",
       title = nil,
       config = {},
+      setting_clears = {},
       turns = {},
       turn_settings = {},
       turn_order = {},
@@ -112,6 +164,56 @@ function M.ensure_thread(thread_id, attrs)
   return thread
 end
 
+function M.normalize_settings(settings)
+  return normalize_settings(settings)
+end
+
+function M.apply_thread_settings(thread_or_id, settings)
+  local thread = type(thread_or_id) == "table" and thread_or_id or M.ensure_thread(thread_or_id)
+  local normalized, present = normalize_settings(settings)
+  if not normalized or not present then
+    return nil
+  end
+  thread.config = thread.config or {}
+  thread.setting_clears = thread.setting_clears or {}
+  for key in pairs(present) do
+    thread.config[key] = normalized[key]
+    if normalized[key] == nil then
+      thread.setting_clears[key] = true
+    else
+      thread.setting_clears[key] = nil
+    end
+  end
+  return thread.config
+end
+
+function M.effective_thread_settings(thread, base)
+  local effective = {}
+  local function overlay(settings)
+    local normalized, present = normalize_settings(settings)
+    if not normalized or not present then
+      return
+    end
+    for key in pairs(present) do
+      effective[key] = normalized[key]
+    end
+  end
+
+  overlay(base)
+  if type(thread) == "table" then
+    overlay(thread.config)
+    if thread.setting_clears then
+      for _, key in ipairs(setting_keys) do
+        if thread.setting_clears[key] then
+          effective[key] = nil
+        end
+      end
+    end
+    overlay(thread.settings)
+  end
+  return effective
+end
+
 function M.update_thread_from_payload(payload)
   if not payload then
     return nil
@@ -123,11 +225,7 @@ function M.update_thread_from_payload(payload)
     status_payload = util.value(payload.status),
     title = util.value(payload.name) or util.value(payload.preview),
   })
-  thread.config.model = util.value(payload.model) or thread.config.model
-  thread.config.model_provider = util.value(payload.modelProvider) or thread.config.model_provider
-  thread.config.service_tier = util.value(payload.serviceTier) or thread.config.service_tier
-  thread.config.reasoning_effort = first_value(payload.reasoningEffort, payload.reasoning_effort, payload.effort)
-    or thread.config.reasoning_effort
+  M.apply_thread_settings(thread, payload)
   if payload.turns then
     for _, turn in ipairs(payload.turns) do
       M.add_turn(payload.id, turn)

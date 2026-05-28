@@ -2,6 +2,7 @@ local M = {}
 
 local buffers = require("codex.buffers")
 local config = require("codex.config")
+local context = require("codex.context")
 local core = require("codex.core")
 local hooks = require("codex.hooks")
 local parser = require("codex.parser")
@@ -113,6 +114,7 @@ end
 
 local function turn_start_params(thread_id, input)
   local cfg = config.get().thread
+  local effective = state.effective_thread_settings(state.get_thread(thread_id), cfg)
   local params = {
     threadId = thread_id,
     input = input,
@@ -120,11 +122,11 @@ local function turn_start_params(thread_id, input)
     runtimeWorkspaceRoots = { config.cwd() },
     approvalPolicy = cfg.approval_policy,
     approvalsReviewer = cfg.approvals_reviewer,
-    model = cfg.model,
-    serviceTier = cfg.service_tier,
-    effort = cfg.reasoning_effort,
-    summary = cfg.reasoning_summary,
-    personality = cfg.personality,
+    model = effective.model,
+    serviceTier = effective.service_tier,
+    effort = effective.reasoning_effort,
+    summary = effective.reasoning_summary,
+    personality = effective.personality,
   }
   if cfg.permissions then
     params.permissions = cfg.permissions
@@ -223,17 +225,18 @@ function M.submit_text(text, thread_id)
   then
     return
   end
-  local input = parser.parse(text)
+  thread_id = thread_id or state.active_thread_id
+  local thread = thread_id and state.get_thread(thread_id) or nil
+  local input = parser.parse(text, { thread = thread })
   if #input == 0 then
     return util.notify("prompt is empty", vim.log.levels.WARN)
   end
   ensure_server(function()
-    thread_id = thread_id or state.active_thread_id
     if not thread_id then
       M.new_thread({ prompt = text })
       return
     end
-    local thread = state.get_thread(thread_id)
+    thread = state.get_thread(thread_id)
     local params = turn_start_params(thread_id, input)
     if thread then
       local settings = turn_settings_from_params(params, thread)
@@ -417,6 +420,50 @@ function M.on(event, callback)
   return hooks.on(event, callback)
 end
 
+local function active_or_current_thread()
+  return state.thread_for_buf(0) or state.get_thread(state.active_thread_id)
+end
+
+local function open_thread_for_prompt(thread)
+  if not thread then
+    util.notify("open a Codex thread before adding context", vim.log.levels.WARN)
+    return nil
+  end
+  local bufnr = buffers.open(thread.id)
+  return bufnr
+end
+
+local function append_prompt_context(line)
+  local thread = active_or_current_thread()
+  local bufnr = open_thread_for_prompt(thread)
+  if not bufnr then
+    return false
+  end
+  buffers.append_prompt_line(bufnr, line)
+  return true
+end
+
+function M.add_current_buffer()
+  setup_once()
+  local thread = active_or_current_thread()
+  local source_bufnr = state.thread_for_buf(0) and context.target_buffer(thread) or vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(source_bufnr)
+  if path == "" then
+    return util.notify("current buffer has no file path", vim.log.levels.WARN)
+  end
+  append_prompt_context("@" .. context.display_path(path))
+end
+
+function M.add_selection()
+  setup_once()
+  local thread = active_or_current_thread()
+  local source_bufnr = state.thread_for_buf(0) and context.target_buffer(thread) or vim.api.nvim_get_current_buf()
+  if not context.selection_for_buffer(source_bufnr) then
+    return util.notify("no visual selection found in the source buffer", vim.log.levels.WARN)
+  end
+  append_prompt_context("@selection")
+end
+
 local commands = {
   new = function(args)
     M.new_thread({ prompt = table.concat(args, " ") })
@@ -462,6 +509,12 @@ local commands = {
     if not M.attach_buffer(bufnr) then
       util.notify("current buffer is not a Codex thread buffer", vim.log.levels.WARN)
     end
+  end,
+  ["add-buffer"] = function()
+    M.add_current_buffer()
+  end,
+  ["add-selection"] = function()
+    M.add_selection()
   end,
 }
 
@@ -546,6 +599,7 @@ function M.complete_command(arglead, line)
 end
 
 M._thread_start_params = thread_start_params
+M._turn_start_params = turn_start_params
 M._compose_developer_instructions = compose_developer_instructions
 
 return M

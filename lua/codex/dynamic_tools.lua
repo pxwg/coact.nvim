@@ -279,6 +279,32 @@ local function apply_unified_patch(cwd, patch, changes)
   return true, "Patch applied by Neovim."
 end
 
+local function validate_unified_patch(cwd, patch, changes)
+  patch = tostring(patch or "")
+  if util.trim(patch) == "" then
+    return false, "nvim.apply_patch requires a non-empty unified diff."
+  end
+
+  cwd = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
+  if vim.fn.isdirectory(cwd) ~= 1 then
+    return false, "Patch cwd is not a directory: " .. cwd
+  end
+
+  local conflicts = modified_buffer_conflicts(cwd, changes)
+  if #conflicts > 0 then
+    return false, "Refusing to apply patch over modified loaded buffers:\n" .. table.concat(conflicts, "\n")
+  end
+
+  local patch_file = vim.fn.tempname()
+  vim.fn.writefile(vim.split(patch, "\n", { plain = true }), patch_file)
+  local check = system_result({ "git", "-C", cwd, "apply", "--check", patch_file })
+  vim.fn.delete(patch_file)
+  if check.code ~= 0 then
+    return false, util.trim(check.stderr ~= "" and check.stderr or check.stdout)
+  end
+  return true, "Patch can be applied."
+end
+
 local function turn_id_for(params, thread)
   return params.turnId or params.turn_id or (thread and thread.active_turn_id)
 end
@@ -339,29 +365,29 @@ handlers.apply_patch = function(arguments, thread, message)
     rpc.respond(message.id, text_response(text, success))
   end
 
-  require("codex.patch_review").open({
-    protocol = "local",
-    source = "nvim_apply_patch",
+  local valid, validation_message = validate_unified_patch(cwd, patch, changes)
+  if not valid then
+    respond(validation_message, false)
+    return async_response
+  end
+
+  local session, err = require("codex.patch_session").open({
     request_id = message.id,
     thread_id = params.threadId or params.thread_id or (thread and thread.id),
     cwd = cwd,
     reason = arguments.reason,
     changes = changes,
-    on_decision = function(action)
-      if action == "accept" then
-        local ok, result = apply_unified_patch(cwd, patch, changes)
-        respond(result, ok)
-      elseif action == "accept_session" then
-        mark_native_apply_patch_fallback(params, thread)
-        respond(native_apply_patch_fallback_message(), false)
-      else
-        respond("Patch " .. action .. " by user.", false)
-      end
+    on_complete = function(summary, success)
+      respond(summary, success)
     end,
-    on_close = function()
-      respond("Patch review closed without approval.", false)
+    on_fallback = function()
+      mark_native_apply_patch_fallback(params, thread)
+      respond(native_apply_patch_fallback_message(), false)
     end,
   })
+  if not session then
+    respond(err or "Patch review could not be opened.", false)
+  end
 
   return async_response
 end
@@ -397,6 +423,7 @@ end
 
 M._apply_unified_patch = apply_unified_patch
 M._changes_from_unified_patch = changes_from_unified_patch
+M._validate_unified_patch = validate_unified_patch
 M._mark_native_apply_patch_fallback = mark_native_apply_patch_fallback
 M._native_apply_patch_fallback_active = native_apply_patch_fallback_active
 M._native_apply_patch_fallback_message = native_apply_patch_fallback_message

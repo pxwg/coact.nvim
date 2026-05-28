@@ -1,5 +1,6 @@
 local util = require("codex.util")
 local config = require("codex.config")
+local state = require("codex.state")
 
 local M = {}
 
@@ -52,7 +53,7 @@ end
 function M.composer_labels(thread)
   local labels = {}
   local cfg = config.get().thread or {}
-  add_settings_labels(labels, cfg, thread and thread.settings, thread and thread.config)
+  add_settings_labels(labels, state.effective_thread_settings(thread, cfg))
   if thread and thread.status then
     add(labels, thread.status)
   end

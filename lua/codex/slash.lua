@@ -397,6 +397,13 @@ local function current_cfg()
   return config.get().thread
 end
 
+local function schedule_thread_render(thread_id)
+  local ok, buffers = pcall(require, "codex.buffers")
+  if ok and buffers.schedule_render then
+    buffers.schedule_render(thread_id)
+  end
+end
+
 local function sandbox_policy(mode)
   if mode == "danger-full-access" then
     return { type = "dangerFullAccess" }
@@ -419,10 +426,28 @@ local function apply_thread_settings(thread_id, params, message, actions)
     present_result(notify_result(message .. " for future Codex turns"))
     return
   end
+  params.threadId = id
+  local thread = state.get_thread(id)
+  local previous
+  if thread then
+    previous = {
+      settings = vim.deepcopy(thread.settings),
+      config = vim.deepcopy(thread.config),
+      setting_clears = vim.deepcopy(thread.setting_clears),
+    }
+    thread.settings = params
+    state.apply_thread_settings(thread, params)
+    schedule_thread_render(id)
+  end
   ensure_server(actions, function()
-    params.threadId = id
     rpc.request("thread/settings/update", params, function(err)
       if err then
+        if thread and previous then
+          thread.settings = previous.settings
+          thread.config = previous.config or {}
+          thread.setting_clears = previous.setting_clears or {}
+          schedule_thread_render(id)
+        end
         present_result(
           notify_result("thread/settings/update failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
         )
@@ -922,15 +947,16 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
     table.insert(lines, "active turn: " .. tostring(thread.active_turn_id or "none"))
   end
   table.insert(lines, "")
-  table.insert(lines, "model: " .. setting_value(cfg.model or (thread and thread.config and thread.config.model)))
-  table.insert(lines, "service tier: " .. setting_value(cfg.service_tier))
+  local effective = state.effective_thread_settings(thread, cfg)
+  table.insert(lines, "model: " .. setting_value(effective.model))
+  table.insert(lines, "service tier: " .. setting_value(effective.service_tier))
   table.insert(lines, "approval policy: " .. setting_value(cfg.approval_policy))
   table.insert(lines, "approvals reviewer: " .. setting_value(cfg.approvals_reviewer))
   table.insert(lines, "sandbox: " .. setting_value(cfg.sandbox))
   table.insert(lines, "permission profile: " .. setting_value(cfg.permissions))
-  table.insert(lines, "reasoning effort: " .. setting_value(cfg.reasoning_effort))
-  table.insert(lines, "reasoning summary: " .. setting_value(cfg.reasoning_summary))
-  table.insert(lines, "personality: " .. setting_value(cfg.personality))
+  table.insert(lines, "reasoning effort: " .. setting_value(effective.reasoning_effort))
+  table.insert(lines, "reasoning summary: " .. setting_value(effective.reasoning_summary))
+  table.insert(lines, "personality: " .. setting_value(effective.personality))
 
   if codex_config then
     table.insert(lines, "")

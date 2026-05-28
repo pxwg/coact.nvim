@@ -32,6 +32,8 @@ When a thread is opened from another buffer, codex.nvim tracks that source
 buffer as the thread target for prompt context and Neovim dynamic tools.
 
 File edit approvals are shown as patch proposals in a Neovim review window.
+The `nvim.apply_patch` dynamic tool opens the edited file buffer directly for
+hunk-by-hunk review.
 
 ==============================================================================
 SETUP                                                     *codex.nvim-setup*
@@ -116,6 +118,8 @@ COMMANDS                                               *codex.nvim-commands*
   :Codex status
   :Codex restart
   :Codex attach [all]
+  :Codex add-buffer
+  :Codex add-selection
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
@@ -130,6 +134,10 @@ such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
 Command-line completion covers subcommands, `attach all`, loaded Codex buffer
 numbers, and loaded thread ids for `open`/`resume`.
+
+`:Codex add-buffer` appends the current source buffer path to the active chat
+prompt using direct `@path` syntax. `:Codex add-selection` appends
+`@selection` when the source buffer has visual selection marks.
 
 ==============================================================================
 HEALTH                                                   *codex.nvim-health*
@@ -166,6 +174,7 @@ The blink source and parser recognize these prompt token families:
   @quickfix
   @buffers
   @cwd
+  @path/to/file
 <
 
 `$skill:<name>` candidates come from Codex app-server `skills/list`. `/...`
@@ -188,11 +197,23 @@ Codex inputs before the turn is sent. Argument providers use
 >
   @file:`path with spaces.lua`
   @image:`assets/screenshot.png`
+  @lua/codex/init.lua
 <
 The blink source completes paths after `@file:` and `@image:` using that
-backtick form. When a thread is opened from another window, codex.nvim
-remembers that source buffer as the thread target, so `@buffer`, `@cursor`,
+backtick form. In insert mode, pressing TAB immediately after `@file:` opens
+`snacks.picker.files` when available, with |vim.ui.select()| only as a
+fallback; the selected file is inserted as direct `@path/to/file` syntax.
+`@image:` keeps the provider form because image inputs need image-specific
+attachment metadata. Custom hooks can be registered with
+`require("codex.context").register_hook(name, callback)`.
+
+When a thread is opened from another window, codex.nvim remembers that source
+buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
 `@diagnostics`, and Neovim dynamic tools do not read the chat buffer itself.
+`@selection` reads the source buffer's visual selection marks and includes file
+and range metadata plus diagnostics in the selected range. If the source buffer
+has a visual selection, that selection context is automatically attached to
+each submitted prompt unless the prompt already contains `@selection`.
 `@buffer` includes buffer RPC metadata such as bufnr, path, filetype, line
 count, cursor, modified state, and buffer text.
 Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
@@ -205,8 +226,7 @@ Codex app-server file-change approvals are normalized into a patch proposal.
 The review window supports:
 >
   a     accept
-  A     accept for session; for nvim.apply_patch, use native apply_patch for
-        the current turn
+  A     accept for session
   d     decline
   c     cancel
   [c    jump to previous file change or diff hunk
@@ -220,16 +240,30 @@ The review buffer indexes file changes and unified-diff hunk headers with
 extmarks so larger patches can be navigated as editor state.
 
 Modern app-server requests use `item/fileChange/requestApproval`. Legacy
-`applyPatchApproval` requests are supported as a fallback. The `nvim.apply_patch`
-dynamic tool uses the same review UI, but Neovim owns the final apply step: it
-refuses to overwrite modified loaded buffers, runs `git apply --check`, and
-applies only after approval. In a `nvim.apply_patch` review, `A` does not apply
-the patch in Neovim; it tells Codex to use native `apply_patch` for that patch
-and any remaining edits in the current turn. Later `nvim.apply_patch` calls in
-that turn return the same fallback instruction without opening another review.
-When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread
-developer instructions asking Codex to prefer `nvim.apply_patch` for workspace
-edits while preserving user-provided developer instructions.
+`applyPatchApproval` requests are supported as a fallback.
+
+The `nvim.apply_patch` dynamic tool uses an in-buffer flow instead. Neovim
+refuses to overwrite modified loaded buffers, runs `git apply --check`, opens
+the edited file directly, previews proposed changes as real buffer edits with
+old content shown as virtual lines, and writes only after hunks are resolved.
+
+In a `nvim.apply_patch` buffer review:
+>
+  <leader>ca  accept current hunk
+  <leader>cr  reject current hunk and prompt for a reason
+  <leader>cA  accept all remaining hunks
+  <leader>cR  reject all remaining hunks and prompt for a reason
+  <leader>cf  use native apply_patch for the current turn
+  <leader>cq  cancel the review
+  [c          previous pending hunk
+  ]c          next pending hunk
+<
+Rejected hunk reasons, partial-apply status, final file state, and a final diff
+are returned to Codex as the dynamic tool result so the agent can continue from
+the user's feedback. When `dynamic_tools.prefer_nvim_apply_patch` is enabled,
+codex.nvim adds thread developer instructions asking Codex to prefer
+`nvim.apply_patch` for workspace edits while preserving user-provided developer
+instructions.
 
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*
@@ -382,6 +416,15 @@ attach_buffer({bufnr})~
                                                         *codex.attach_all_buffers()*
 attach_all_buffers()~
     Rerun Codex buffer attach hooks for every loaded Codex thread buffer.
+
+                                                        *codex.add_current_buffer()*
+add_current_buffer()~
+    Append the current source buffer path to the active chat prompt.
+
+                                                        *codex.add_selection()*
+add_selection()~
+    Append `@selection` to the active chat prompt when the source buffer has a
+    visual selection.
 
                                                         *codex.on()*
 on({event}, {callback})~

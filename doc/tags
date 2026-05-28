@@ -1,5 +1,7 @@
 :Codex	codex.nvim.txt	/*:Codex*
 :Codex-detail	codex.nvim.txt	/*:Codex-detail*
+codex.add_current_buffer()	codex.nvim.txt	/*codex.add_current_buffer()*
+codex.add_selection()	codex.nvim.txt	/*codex.add_selection()*
 codex.attach_all_buffers()	codex.nvim.txt	/*codex.attach_all_buffers()*
 codex.attach_buffer()	codex.nvim.txt	/*codex.attach_buffer()*
 codex.detail	codex.nvim.txt	/*codex.detail*
