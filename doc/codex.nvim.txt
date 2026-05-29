@@ -259,23 +259,20 @@ are still accepted when `git` is available.
 
 `edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes
 `nvim.apply_patch` as the Neovim-backed equivalent of Codex's native
-`apply_patch` tool and adds harness instructions that mirror the native patch
-grammar: put patch text directly in `arguments.patch`, start with
-`*** Begin Patch`, use relative `*** Add File`, `*** Update File`,
-`*** Delete File`, and optional `*** Move to` headers, and end with
-`*** End Patch`. The agent is told to prefer small, focused patches, read the
-current buffer or relevant current file content before patching, build the patch
-from exact current content, and re-read the buffer before retrying any failed
-patch. It must not call native `apply_patch` directly; pair mode declines native
-app-server file-change approvals. If Neovim auto-apply is enabled for a session,
-the agent still uses `nvim.apply_patch`, but codex.nvim skips interactive hunk
-review and applies through Neovim after verification.
+`apply_patch` tool and adds concise harness instructions that route workspace
+edits to that tool in the Neovim environment. It must not call native
+`apply_patch` directly; pair mode declines native app-server file-change
+approvals. If Neovim auto-apply is enabled for a session, the agent still uses
+`nvim.apply_patch`, but codex.nvim skips interactive hunk review and applies
+through Neovim after verification.
 
-The pair-mode instruction treats returned diagnostics, rejected hunk reasons,
-and stale-context retry guidance as pair-coding feedback for the next edit.
-Agents should fix reported errors and warnings before reporting completion,
-address hints when practical, incorporate rejection reasons into the next patch
-strategy, and explain any intentional or false-positive leftovers.
+The `nvim.apply_patch` tool description carries the detailed patch protocol:
+put patch text directly in `arguments.patch`, start with `*** Begin Patch`, use
+relative `*** Add File`, `*** Update File`, `*** Delete File`, and optional
+`*** Move to` headers, and end with `*** End Patch`. It also tells agents to
+prefer small, focused patches, read current content before patching, retry only
+after refreshing stale context, and treat returned diagnostics, rejected hunk
+reasons, and stale-context guidance as pair-coding feedback.
 
 `edit.mode = "yolo"` disables the `nvim.apply_patch` dynamic tool and tells
 Codex to use the native `apply_patch` tool directly for workspace edits. Calls
@@ -298,8 +295,9 @@ In a `nvim.apply_patch` buffer review:
 Rejected hunk reasons, partial-apply status, final file state, a final diff, and
 the target buffer's `nvim.diagnostics` output are returned to Codex as the
 dynamic tool result so the agent can continue from the user's feedback. In pair
-mode, codex.nvim preserves user-provided developer instructions and appends the
-edit protocol as additional thread developer instructions.
+mode, codex.nvim preserves user-provided developer instructions and appends only
+edit-mode routing instructions; the detailed edit protocol stays on the
+`nvim.apply_patch` tool description.
 
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*

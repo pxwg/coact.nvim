@@ -12,27 +12,23 @@ assert(
   "thread/start should instruct Codex to prefer Neovim patch review"
 )
 assert(
-  start_params.developerInstructions:match("native Codex apply_patch format"),
-  "thread/start should include native nvim.apply_patch protocol"
-)
-assert(
-  start_params.developerInstructions:match("Do not repeatedly retry failed patches against stale context"),
-  "thread/start should forbid stale failed patch retries"
-)
-assert(
-  start_params.developerInstructions:match("nvim%.diagnostics")
-    and start_params.developerInstructions:match("user hunk feedback")
-    and start_params.developerInstructions:match("pair%-coding feedback"),
-  "thread/start should treat diagnostics and hunk feedback as pair-coding feedback"
-)
-assert(
-  start_params.developerInstructions:match("handle errors and warnings before reporting completion"),
-  "thread/start should require resolving reported errors and warnings before completion"
-)
-assert(
   start_params.developerInstructions:match("declines native file%-change approvals")
     and start_params.developerInstructions:match("Neovim auto%-apply"),
   "pair edit mode should keep edits on the Neovim apply_patch path"
+)
+assert(
+  start_params.developerInstructions:match("tool description"),
+  "thread/start should delegate patch syntax details to the nvim.apply_patch tool description"
+)
+assert(
+  not start_params.developerInstructions:match("Patch syntax must match")
+    and not start_params.developerInstructions:match("%*%*%* Add File:")
+    and not start_params.developerInstructions:match("pair%-coding feedback"),
+  "thread/start should not duplicate the nvim.apply_patch tool protocol"
+)
+assert(
+  start_params.developerInstructions:match("diagnostics handling"),
+  "thread/start should point edit feedback handling to the tool description"
 )
 local composed_instructions = codex._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
