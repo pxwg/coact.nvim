@@ -1053,10 +1053,12 @@ local function build_fold_levels(thread)
   thread.fold_levels = levels
 end
 
+local compact_hook_timeline_blocks
+
 function M.select_render_tree(thread)
   local blocks = {}
   util.list_extend(blocks, events.normalize_thread(thread))
-  util.list_extend(blocks, thread.timeline_blocks or {})
+  util.list_extend(blocks, compact_hook_timeline_blocks(thread.timeline_blocks))
   util.list_extend(blocks, events.pending_blocks(thread))
   util.list_extend(blocks, thread.local_blocks or {})
   if config.get().render.show_raw_events then
@@ -1097,6 +1099,65 @@ local function assistant_group_id(block)
     return nil
   end
   return block.message_id or "__assistant__"
+end
+
+local function legacy_hook_timeline_block(block)
+  return block
+    and block.type == "AgentTimelineBlock"
+    and not block.hook_run_order
+    and tostring(block.title or ""):match("^Hook:")
+end
+
+compact_hook_timeline_blocks = function(blocks)
+  local out = {}
+  local groups = {}
+  for _, block in ipairs(blocks or {}) do
+    if legacy_hook_timeline_block(block) then
+      local key = table.concat({
+        tostring(block.message_id or ""),
+        tostring(block.title or "Hook"),
+      }, ":")
+      local group = groups[key]
+      if not group then
+        group = {
+          type = "AgentTimelineBlock",
+          message_id = block.message_id,
+          item_id = "compact:" .. key,
+          title = block.title,
+          state = block.state,
+          text = "",
+          metadata = vim.tbl_extend("force", block.metadata or {}, { source = "hook" }),
+          raw = block.raw,
+          local_only = block.local_only,
+          compact_hook_events = {},
+        }
+        groups[key] = group
+        table.insert(out, group)
+      end
+      if block.state == "running" then
+        group.state = "running"
+      else
+        group.state = block.state or group.state
+      end
+      local summary = truncate_display(compact_text(events.block_text(block)), 140)
+      table.insert(
+        group.compact_hook_events,
+        ("- %s: %s"):format(
+          tostring(block.state or "unknown"),
+          summary ~= "" and summary or tostring(block.item_id or "hook")
+        )
+      )
+      group.text = ("%d hook event%s for %s.\n%s"):format(
+        #group.compact_hook_events,
+        #group.compact_hook_events == 1 and "" or "s",
+        tostring(block.title or "Hook"),
+        table.concat(group.compact_hook_events, "\n")
+      )
+    else
+      table.insert(out, block)
+    end
+  end
+  return out
 end
 
 local render_block

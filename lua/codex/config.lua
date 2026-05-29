@@ -53,10 +53,20 @@ local defaults = {
   },
   edit = {
     mode = "pair",
+    diagnostics_settle_ms = 200,
+    stale_context_lines = 80,
+    native_apply_patch_hook = {
+      enabled = true,
+      timeout_sec = 600,
+      status_message = "Reviewing patch in Neovim",
+      marker_cleanup_min_age_sec = 300,
+      debug = false,
+      debug_log_path = nil,
+    },
   },
   dynamic_tools = {
     enabled = true,
-    prefer_nvim_apply_patch = true,
+    prefer_nvim_apply_patch = false,
   },
 }
 
@@ -100,7 +110,7 @@ local function normalize_edit_mode(resolved, user_options)
     resolved.edit.mode = "pair"
   end
 
-  dynamic.prefer_nvim_apply_patch = resolved.edit.mode == "pair"
+  dynamic.prefer_nvim_apply_patch = type(user_dynamic) == "table" and user_dynamic.prefer_nvim_apply_patch == true
 end
 
 function M.setup(user_options)

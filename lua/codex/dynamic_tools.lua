@@ -116,7 +116,9 @@ local specs = {
 
 local function nvim_apply_patch_enabled()
   local opts = config.get()
-  return opts.dynamic_tools.enabled ~= false and config.edit_mode() == "pair"
+  return opts.dynamic_tools.enabled ~= false
+    and config.edit_mode() == "pair"
+    and opts.dynamic_tools.prefer_nvim_apply_patch == true
 end
 
 function M.specs()
@@ -383,22 +385,72 @@ local function native_path_is_absolute(path)
   return path:match("^/") or path:match("^%a:[/\\]")
 end
 
-local function resolve_native_patch_path(cwd, path)
+local function temp_relative_for_native_path(path, index)
+  local cleaned = tostring(path or ""):gsub("\\", "/")
+  cleaned = cleaned:gsub("^%a:", function(drive)
+    return drive:sub(1, 1)
+  end)
+  cleaned = cleaned:gsub("^/+", ""):gsub("^%./+", "")
+  local parts = {}
+  for part in cleaned:gmatch("[^/]+") do
+    if part ~= "" and part ~= "." and part ~= ".." then
+      table.insert(parts, (part:gsub("[^%w%._%-]", "_")))
+    end
+  end
+  if #parts == 0 then
+    parts = { "path" }
+  end
+  return vim.fs.joinpath(".codex-nvim-apply-patch", tostring(index), table.concat(parts, "/"))
+end
+
+local function resolve_native_patch_path(cwd, path, index, opts)
+  opts = opts or {}
   path = util.trim(path or "")
   if path == "" then
-    return nil, nil, "Codex apply_patch file path is empty."
-  end
-  if native_path_is_absolute(path) then
-    return nil, nil, "Codex apply_patch file paths must be relative: " .. path
+    return nil, nil, nil, "Codex apply_patch file path is empty."
   end
 
   local cwd_normalized = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
+  if native_path_is_absolute(path) then
+    if opts.allow_absolute ~= true then
+      return nil, nil, nil, "Codex apply_patch file paths must be relative: " .. path
+    end
+    local absolute = vim.fs.normalize(path)
+    return absolute, absolute, temp_relative_for_native_path(absolute, index)
+  end
+
   local absolute = vim.fs.normalize(vim.fs.joinpath(cwd_normalized, path))
   local relative = vim.fs.relpath(cwd_normalized, absolute)
   if not relative or relative == "" or relative == "." or relative:match("^%.%.[/\\]") or relative == ".." then
-    return nil, nil, "Codex apply_patch path escapes the working directory: " .. path
+    if opts.allow_absolute ~= true then
+      return nil, nil, nil, "Codex apply_patch path escapes the working directory: " .. path
+    end
+    return absolute, absolute, temp_relative_for_native_path(path, index)
   end
-  return absolute, relative
+  return absolute, relative, relative
+end
+
+local function rewrite_native_patch_paths_for_temp(patch, resolved)
+  local lines = util.split_lines(patch)
+  local op_index = 0
+  local current = nil
+  for index, line in ipairs(lines) do
+    local add_prefix = line:match("^(%*%*%* Add File:%s*).+$")
+    local delete_prefix = line:match("^(%*%*%* Delete File:%s*).+$")
+    local update_prefix = line:match("^(%*%*%* Update File:%s*).+$")
+    local move_prefix = line:match("^(%*%*%* Move to:%s*).+$")
+    local op_prefix = add_prefix or delete_prefix or update_prefix
+    if op_prefix then
+      op_index = op_index + 1
+      current = resolved[op_index]
+      if current then
+        lines[index] = op_prefix .. current.temp_relative_path
+      end
+    elseif move_prefix and current and current.move_temp_relative_path then
+      lines[index] = move_prefix .. current.move_temp_relative_path
+    end
+  end
+  return table.concat(lines, "\n")
 end
 
 local function read_file_lines(path)
@@ -410,6 +462,120 @@ local function read_file_lines(path)
     return nil, "Failed to read file " .. path .. ": " .. tostring(lines)
   end
   return lines
+end
+
+local function stale_context_line_limit()
+  local edit = config.get().edit or {}
+  return math.max(1, tonumber(edit.stale_context_lines) or 80)
+end
+
+local function first_hunk_old_start(diff)
+  for _, line in ipairs(util.split_lines(diff or "")) do
+    local start = line:match("^@@ %-(%d+)")
+    if start then
+      return tonumber(start)
+    end
+  end
+  return nil
+end
+
+local function numbered_excerpt(lines, start_lnum, max_lines)
+  max_lines = max_lines or stale_context_line_limit()
+  local total = #lines
+  if total == 0 then
+    return "(empty file)"
+  end
+  start_lnum = math.max(1, tonumber(start_lnum) or 1)
+  local finish_lnum = math.min(total, start_lnum + max_lines - 1)
+  local out = {}
+  if start_lnum > 1 then
+    table.insert(out, ("... %d earlier line%s omitted ..."):format(start_lnum - 1, start_lnum == 2 and "" or "s"))
+  end
+  for lnum = start_lnum, finish_lnum do
+    table.insert(out, ("%4d | %s"):format(lnum, lines[lnum] or ""))
+  end
+  if finish_lnum < total then
+    table.insert(
+      out,
+      ("... %d later line%s omitted ..."):format(total - finish_lnum, total - finish_lnum == 1 and "" or "s")
+    )
+  end
+  return table.concat(out, "\n")
+end
+
+local function stale_context_from_changes(cwd, changes, opts)
+  opts = opts or {}
+  cwd = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
+  local max_files = math.max(1, tonumber(opts.max_files) or 4)
+  local max_lines = math.max(1, tonumber(opts.max_lines) or stale_context_line_limit())
+  local sections = {
+    "## STALE CONTEXT RECOVERY",
+    "The patch did not match the current file content. Re-read these current excerpts before producing the next patch.",
+  }
+  local seen = {}
+  local count = 0
+  for _, change in ipairs(changes or {}) do
+    if count >= max_files then
+      table.insert(
+        sections,
+        ("... %d additional file%s omitted ..."):format(#changes - count, #changes - count == 1 and "" or "s")
+      )
+      break
+    end
+    local path = absolute_change_path(cwd, change.path)
+    if path and not seen[path] then
+      seen[path] = true
+      count = count + 1
+      local label = vim.fn.fnamemodify(path, ":.")
+      table.insert(sections, "")
+      table.insert(sections, "### " .. label)
+      local lines, read_err = read_file_lines(path)
+      if not lines then
+        table.insert(sections, "Could not read current file content: " .. tostring(read_err))
+      elseif vim.fn.filereadable(path) ~= 1 then
+        table.insert(sections, "File does not exist in the current workspace.")
+      else
+        local hunk_start = first_hunk_old_start(change.diff)
+        local start_lnum = hunk_start and math.max(1, hunk_start - 8) or 1
+        table.insert(sections, "```text")
+        table.insert(sections, numbered_excerpt(lines, start_lnum, max_lines))
+        table.insert(sections, "```")
+      end
+    end
+  end
+  if count == 0 then
+    table.insert(sections, "")
+    table.insert(sections, "No patch file paths could be resolved.")
+  end
+  return table.concat(sections, "\n")
+end
+
+local function stale_context_for_patch(cwd, patch, opts)
+  opts = opts or {}
+  if is_native_apply_patch(patch) then
+    local ops, err = parse_native_apply_patch_ops(patch)
+    if not ops then
+      return "## STALE CONTEXT RECOVERY\nCould not parse patch paths: " .. tostring(err)
+    end
+    local changes = {}
+    for index, op in ipairs(ops) do
+      local _, display_path, _, path_err = resolve_native_patch_path(cwd, op.path, index, opts)
+      if display_path then
+        table.insert(changes, {
+          kind = op.kind,
+          path = display_path,
+        })
+      elseif path_err then
+        table.insert(changes, {
+          kind = op.kind,
+          path = op.path,
+          diff = path_err,
+        })
+      end
+    end
+    return stale_context_from_changes(cwd, changes, opts)
+  end
+  return stale_context_from_changes(cwd, changes_from_unified_patch(patch), opts)
 end
 
 local function copy_file_to_temp(src, temp_root, relative)
@@ -459,7 +625,8 @@ local function apply_native_patch_in_temp(temp_root, patch)
   return true
 end
 
-local function changes_from_native_apply_patch(cwd, patch)
+local function changes_from_native_apply_patch(cwd, patch, opts)
+  opts = opts or {}
   cwd = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
   if vim.fn.isdirectory(cwd) ~= 1 then
     return nil, "Patch cwd is not a directory: " .. cwd
@@ -472,28 +639,31 @@ local function changes_from_native_apply_patch(cwd, patch)
   local changes = {}
   local resolved = {}
   for _, op in ipairs(ops) do
-    local absolute, relative
-    absolute, relative, err = resolve_native_patch_path(cwd, op.path)
+    local absolute, display_path, temp_relative
+    absolute, display_path, temp_relative, err = resolve_native_patch_path(cwd, op.path, #resolved + 1, opts)
     if not absolute then
       return nil, err
     end
     op.absolute_path = absolute
-    op.relative_path = relative
+    op.display_path = display_path
+    op.temp_relative_path = temp_relative
     table.insert(changes, {
       kind = op.kind,
-      path = relative,
+      path = display_path,
       move_path = op.move_path,
     })
 
     if op.move_path then
-      local move_absolute, move_relative
-      move_absolute, move_relative, err = resolve_native_patch_path(cwd, op.move_path)
+      local move_absolute, move_display_path, move_temp_relative
+      move_absolute, move_display_path, move_temp_relative, err =
+        resolve_native_patch_path(cwd, op.move_path, tostring(#resolved + 1) .. "-move", opts)
       if not move_absolute then
         return nil, err
       end
       op.move_absolute_path = move_absolute
-      op.move_relative_path = move_relative
-      changes[#changes].move_path = move_relative
+      op.move_display_path = move_display_path
+      op.move_temp_relative_path = move_temp_relative
+      changes[#changes].move_path = move_display_path
     end
     table.insert(resolved, op)
   end
@@ -507,19 +677,20 @@ local function changes_from_native_apply_patch(cwd, patch)
   vim.fn.mkdir(temp_root, "p")
   local ok, result, result_err = pcall(function()
     for _, op in ipairs(resolved) do
-      local copy_ok, copy_err = copy_file_to_temp(op.absolute_path, temp_root, op.relative_path)
+      local copy_ok, copy_err = copy_file_to_temp(op.absolute_path, temp_root, op.temp_relative_path)
       if not copy_ok then
         return nil, copy_err
       end
       if op.move_absolute_path then
-        copy_ok, copy_err = copy_file_to_temp(op.move_absolute_path, temp_root, op.move_relative_path)
+        copy_ok, copy_err = copy_file_to_temp(op.move_absolute_path, temp_root, op.move_temp_relative_path)
         if not copy_ok then
           return nil, copy_err
         end
       end
     end
 
-    local apply_ok, apply_err = apply_native_patch_in_temp(temp_root, patch)
+    local temp_patch = rewrite_native_patch_paths_for_temp(patch, resolved)
+    local apply_ok, apply_err = apply_native_patch_in_temp(temp_root, temp_patch)
     if not apply_ok then
       return nil, apply_err
     end
@@ -530,10 +701,10 @@ local function changes_from_native_apply_patch(cwd, patch)
       if not old_lines then
         return nil, read_err
       end
-      local final_relative = op.move_relative_path or op.relative_path
+      local final_relative = op.move_temp_relative_path or op.temp_relative_path
       local final_path = vim.fs.joinpath(temp_root, final_relative)
       local new_lines
-      if op.kind == "delete" and not op.move_relative_path then
+      if op.kind == "delete" and not op.move_temp_relative_path then
         new_lines = {}
       else
         new_lines, read_err = read_file_lines(final_path)
@@ -549,8 +720,8 @@ local function changes_from_native_apply_patch(cwd, patch)
       diff = util.trim(diff or "")
       table.insert(out, {
         kind = op.kind,
-        path = op.relative_path,
-        move_path = op.move_relative_path,
+        path = op.display_path,
+        move_path = op.move_display_path,
         diff = diff,
       })
     end
@@ -718,14 +889,21 @@ handlers.apply_patch = function(arguments, thread, message)
     local err
     changes, err = changes_from_native_apply_patch(cwd, patch)
     if not changes then
-      respond(err .. "\n\n" .. stale_patch_retry_message(), false)
+      respond(err .. "\n\n" .. stale_patch_retry_message() .. "\n\n" .. stale_context_for_patch(cwd, patch), false)
       return async_response
     end
   else
     changes = changes_from_unified_patch(patch)
     local valid, validation_message = validate_unified_patch(cwd, patch, changes)
     if not valid then
-      respond(validation_message .. "\n\n" .. stale_patch_retry_message(), false)
+      respond(
+        validation_message
+          .. "\n\n"
+          .. stale_patch_retry_message()
+          .. "\n\n"
+          .. stale_context_from_changes(cwd, changes),
+        false
+      )
       return async_response
     end
   end
@@ -748,7 +926,7 @@ handlers.apply_patch = function(arguments, thread, message)
     end,
   })
   if not session then
-    respond(err or "Patch review could not be opened.", false)
+    respond((err or "Patch review could not be opened.") .. "\n\n" .. stale_context_from_changes(cwd, changes), false)
   end
 
   return async_response
@@ -765,7 +943,7 @@ function M.handle_call(message)
     rpc.respond(
       message.id,
       text_response(
-        "nvim.apply_patch is not exposed in the current codex.nvim edit mode. Use native apply_patch directly only when edit.mode is yolo.",
+        "nvim.apply_patch is not exposed in the current codex.nvim edit mode. Use native apply_patch directly.",
         false
       )
     )
@@ -817,6 +995,8 @@ M._nvim_apply_patch_auto_apply_message = nvim_apply_patch_auto_apply_message
 M._nvim_apply_patch_enabled = nvim_apply_patch_enabled
 M._apply_patch_protocol_text = apply_patch_protocol_text
 M._stale_patch_retry_message = stale_patch_retry_message
+M._stale_context_for_patch = stale_context_for_patch
+M._stale_context_from_changes = stale_context_from_changes
 M._diagnostics_text = diagnostics_text
 M._with_diagnostics = with_diagnostics
 M._text_response = text_response

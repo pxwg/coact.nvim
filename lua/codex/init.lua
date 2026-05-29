@@ -38,6 +38,7 @@ local function setup_once()
   if not did_setup then
     config.setup()
     core.setup()
+    require("codex.native_apply_patch_hook").setup()
     did_setup = true
   end
   setup_lifecycle()
@@ -55,7 +56,6 @@ local function ensure_server(callback)
 end
 
 local function edit_tool_instruction()
-  local dynamic = config.get().dynamic_tools or {}
   local mode = config.edit_mode()
   if mode == "yolo" then
     return table.concat({
@@ -65,15 +65,14 @@ local function edit_tool_instruction()
       "Do not call nvim.apply_patch in yolo mode.",
     }, " ")
   end
-  if dynamic.enabled == false then
-    return nil
-  end
   return table.concat({
     "codex.nvim edit mode is pair.",
-    "When changing workspace files from codex.nvim, use the nvim.apply_patch dynamic tool for edits.",
-    "Do not use the native apply_patch tool directly; pair mode declines native file-change approvals.",
-    "If nvim.apply_patch reports that Neovim auto-apply is enabled for the current session, keep using nvim.apply_patch; it will skip interactive hunk review and apply through Neovim.",
-    "Follow the nvim.apply_patch tool description for patch syntax, review feedback, and diagnostics handling.",
+    "When changing workspace files from codex.nvim, use the native apply_patch tool.",
+    "codex.nvim registers a PreToolUse hook for native apply_patch that previews the patch in the affected Neovim file buffers before the native tool completes.",
+    "The Neovim review applies accepted hunks through the same file-buffer write path as nvim.apply_patch, then lets native apply_patch complete with a no-op updatedInput.command.",
+    "The Neovim review can approve the patch, apply a user-edited buffer state, partially apply accepted hunks, or reject it with a reason.",
+    "Do not request dangerous approval or sandbox bypasses for file edits; codex.nvim approves apply_patch permission and file-change requests after Neovim review.",
+    "Do not call nvim.apply_patch in pair mode; it is not exposed.",
   }, " ")
 end
 
@@ -96,7 +95,7 @@ local function thread_start_params(opts)
   local cfg = config.get().thread
   local cwd = opts.cwd or config.cwd()
   local permissions = opts.permissions or cfg.permissions
-  return {
+  local params = {
     model = opts.model or cfg.model,
     modelProvider = opts.model_provider or cfg.model_provider,
     serviceTier = opts.service_tier or cfg.service_tier,
@@ -116,6 +115,11 @@ local function thread_start_params(opts)
     experimentalRawEvents = false,
     persistExtendedHistory = false,
   }
+  local hook_config = require("codex.native_apply_patch_hook").runtime_config()
+  if hook_config then
+    params.config = hook_config
+  end
+  return params
 end
 
 local function sandbox_policy(mode)
@@ -143,6 +147,10 @@ local function turn_start_params(thread_id, input)
   else
     params.sandboxPolicy = sandbox_policy(cfg.sandbox)
   end
+  local hook_config = require("codex.native_apply_patch_hook").runtime_config()
+  if hook_config then
+    params.config = hook_config
+  end
   return params
 end
 
@@ -157,6 +165,7 @@ end
 function M.setup(opts)
   config.setup(opts)
   core.setup()
+  require("codex.native_apply_patch_hook").setup()
   setup_lifecycle()
   did_setup = true
 end

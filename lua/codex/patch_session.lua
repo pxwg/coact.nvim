@@ -148,13 +148,36 @@ local function find_buffer(path)
   return nil
 end
 
+local function is_normal_window(winid)
+  return winid and vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_config(winid).relative == ""
+end
+
+local function is_review_window(winid)
+  if not is_normal_window(winid) then
+    return false
+  end
+  return not context.is_codex_buffer(vim.api.nvim_win_get_buf(winid))
+end
+
+local function visible_review_window(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil
+  end
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if is_review_window(winid) then
+      return winid
+    end
+  end
+  return nil
+end
+
 local function normal_window()
   local current = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(current) and vim.api.nvim_win_get_config(current).relative == "" then
+  if is_review_window(current) then
     return current
   end
   for _, winid in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_config(winid).relative == "" then
+    if is_review_window(winid) then
       return winid
     end
   end
@@ -162,17 +185,32 @@ local function normal_window()
 end
 
 local function target_window(thread)
-  if thread and thread.context_winid and vim.api.nvim_win_is_valid(thread.context_winid) then
-    if vim.api.nvim_win_get_config(thread.context_winid).relative == "" then
-      return thread.context_winid
-    end
+  if thread and is_review_window(thread.context_winid) then
+    return thread.context_winid
   end
   local bufnr = thread and context.target_buffer(thread) or nil
-  local winid = bufnr and context.window_for_buffer(bufnr, thread) or nil
-  if winid and vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_config(winid).relative == "" then
+  local winid = bufnr and context.is_context_buffer(bufnr) and context.window_for_buffer(bufnr, thread) or nil
+  if is_review_window(winid) then
     return winid
   end
   return normal_window()
+end
+
+local function create_review_window()
+  vim.cmd("botright split")
+  return vim.api.nvim_get_current_win()
+end
+
+local function review_window(session)
+  if is_review_window(session.review_winid) then
+    return session.review_winid
+  end
+  local winid = target_window(session.thread)
+  if not winid then
+    winid = create_review_window()
+  end
+  session.review_winid = winid
+  return winid
 end
 
 local function set_buffer_lines(bufnr, start_row, end_row, lines)
@@ -408,11 +446,7 @@ local function update_hints(session)
 end
 
 local function ensure_hunk_window(session, hunk)
-  local winid = target_window(session.thread)
-  if not winid then
-    vim.cmd("botright split")
-    winid = vim.api.nvim_get_current_win()
-  end
+  local winid = visible_review_window(hunk.bufnr) or review_window(session)
   vim.api.nvim_set_current_win(winid)
   if vim.api.nvim_win_get_buf(winid) ~= hunk.bufnr then
     vim.api.nvim_win_set_buf(winid, hunk.bufnr)
@@ -497,6 +531,73 @@ local function final_diff(session)
   return table.concat(sections, "\n\n")
 end
 
+local function proposal_delta_diff(session)
+  local sections = {}
+  for _, file in ipairs(session.file_order or {}) do
+    local proposed_lines = file.proposed_lines
+    local final_lines = file.final_lines
+    if
+      type(proposed_lines) == "table"
+      and type(final_lines) == "table"
+      and not same_lines(proposed_lines, final_lines)
+    then
+      local diff = vim.diff(lines_to_text(proposed_lines), lines_to_text(final_lines), {
+        result_type = "unified",
+        ctxlen = 2,
+      })
+      diff = util.trim(diff or "")
+      if diff ~= "" then
+        table.insert(sections, ("### %s\n```diff\n%s\n```"):format(file.relative_path, diff))
+      end
+    end
+  end
+  return table.concat(sections, "\n\n")
+end
+
+local severity_names = {
+  [vim.diagnostic.severity.ERROR] = "ERROR",
+  [vim.diagnostic.severity.WARN] = "WARN",
+  [vim.diagnostic.severity.INFO] = "INFO",
+  [vim.diagnostic.severity.HINT] = "HINT",
+}
+
+local function diagnostics_summary(session)
+  local sections = {}
+  for _, file in ipairs(session.file_order or {}) do
+    local bufnr = file.bufnr
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+      local diagnostics = vim.diagnostic.get(bufnr)
+      if #diagnostics > 0 then
+        table.sort(diagnostics, function(a, b)
+          if a.lnum == b.lnum then
+            return (a.col or 0) < (b.col or 0)
+          end
+          return (a.lnum or 0) < (b.lnum or 0)
+        end)
+        table.insert(sections, "### " .. file.relative_path)
+        for _, diagnostic in ipairs(diagnostics) do
+          local severity = severity_names[diagnostic.severity] or "INFO"
+          local source = diagnostic.source and diagnostic.source ~= "" and (" [" .. diagnostic.source .. "]") or ""
+          table.insert(
+            sections,
+            ("- L%d:C%d %s%s %s"):format(
+              (diagnostic.lnum or 0) + 1,
+              (diagnostic.col or 0) + 1,
+              severity,
+              source,
+              tostring(diagnostic.message or "")
+            )
+          )
+        end
+      end
+    end
+  end
+  if #sections == 0 then
+    return "No diagnostics in edited buffers."
+  end
+  return table.concat(sections, "\n")
+end
+
 local function file_hunk_counts(file)
   local accepted = 0
   local rejected = 0
@@ -568,6 +669,62 @@ local function write_files(session)
   return #errors == 0, table.concat(errors, "\n")
 end
 
+local function diagnostics_settle_ms(session)
+  if session.diagnostics_settle_ms ~= nil then
+    return math.max(0, tonumber(session.diagnostics_settle_ms) or 0)
+  end
+  local edit = config.get().edit or {}
+  return math.max(0, tonumber(edit.diagnostics_settle_ms) or 0)
+end
+
+local function has_lsp_client(bufnr)
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr) and vim.lsp) then
+    return false
+  end
+  if vim.lsp.get_clients then
+    return #vim.lsp.get_clients({ bufnr = bufnr }) > 0
+  end
+  if vim.lsp.get_active_clients then
+    return #vim.lsp.get_active_clients({ bufnr = bufnr }) > 0
+  end
+  return false
+end
+
+local function wait_for_fresh_diagnostics(session)
+  local timeout = diagnostics_settle_ms(session)
+  if timeout <= 0 then
+    return
+  end
+
+  local watched = {}
+  for bufnr in pairs(session.buffers or {}) do
+    if has_lsp_client(bufnr) then
+      table.insert(watched, bufnr)
+    end
+  end
+  if #watched == 0 then
+    return
+  end
+
+  local changed = false
+  local group =
+    vim.api.nvim_create_augroup("codex.patch_session.diagnostics." .. tostring(session.id), { clear = true })
+  for _, bufnr in ipairs(watched) do
+    vim.api.nvim_create_autocmd("DiagnosticChanged", {
+      group = group,
+      buffer = bufnr,
+      callback = function()
+        changed = true
+      end,
+    })
+  end
+  pcall(vim.cmd, "silent! checktime")
+  vim.wait(timeout, function()
+    return changed
+  end, 25)
+  pcall(vim.api.nvim_del_augroup_by_id, group)
+end
+
 local function build_summary(session, write_error)
   local accepted = 0
   local rejected = 0
@@ -617,12 +774,24 @@ local function build_summary(session, write_error)
     end
   end
 
+  local proposal_delta = proposal_delta_diff(session)
+  if proposal_delta ~= "" then
+    table.insert(lines, "")
+    table.insert(lines, "## USER MODIFICATIONS TO CODEX PROPOSAL")
+    table.insert(lines, "Diff from Codex's previewed patch result to the final Neovim-reviewed buffer state.")
+    table.insert(lines, proposal_delta)
+  end
+
   local diff = final_diff(session)
   if diff ~= "" then
     table.insert(lines, "")
     table.insert(lines, "## FINAL DIFF")
     table.insert(lines, diff)
   end
+
+  table.insert(lines, "")
+  table.insert(lines, "## nvim.diagnostics")
+  table.insert(lines, diagnostics_summary(session))
 
   return table.concat(lines, "\n")
 end
@@ -648,17 +817,41 @@ local function complete(session, force_failure)
     return
   end
   session.completed = true
-  local write_ok, write_error = write_files(session)
+  session.force_failure = force_failure == true
+  local write_ok, write_error = true, nil
+  if session.apply_on_complete ~= false then
+    write_ok, write_error = write_files(session)
+  end
+  wait_for_fresh_diagnostics(session)
+  session.write_ok = write_ok
+  session.write_error = write_error
+  local accepted = 0
   local rejected = 0
+  local pending = 0
   for _, hunk in ipairs(session.hunks or {}) do
-    if hunk.status == "rejected" then
+    if hunk.status == "accepted" then
+      accepted = accepted + 1
+    elseif hunk.status == "rejected" then
       rejected = rejected + 1
+    else
+      pending = pending + 1
     end
   end
+  session.accepted_hunks = accepted
+  session.rejected_hunks = rejected
+  session.pending_hunks = pending
+  for _, file in ipairs(session.file_order or {}) do
+    file.final_lines = normalized_final_lines(file)
+  end
   local summary = build_summary(session, write_error)
+  session.summary = summary
+  local success = write_ok and rejected == 0 and not force_failure
+  if session.restore_on_complete == true then
+    restore_original_files(session)
+  end
   cleanup(session)
   if session.on_complete then
-    session.on_complete(summary, write_ok and rejected == 0 and not force_failure)
+    session.on_complete(summary, success, session)
   end
 end
 
@@ -815,12 +1008,17 @@ end
 local function open_buffer_for_file(session, file, focus)
   local bufnr = find_buffer(file.path)
   if focus then
-    local winid = target_window(session.thread)
-    if winid then
-      vim.api.nvim_set_current_win(winid)
+    local winid = visible_review_window(bufnr)
+    if not winid then
+      winid = review_window(session)
     end
-    vim.cmd("edit " .. vim.fn.fnameescape(file.path))
-    bufnr = vim.api.nvim_get_current_buf()
+    vim.api.nvim_set_current_win(winid)
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_win_set_buf(winid, bufnr)
+    else
+      vim.cmd("edit " .. vim.fn.fnameescape(file.path))
+      bufnr = vim.api.nvim_get_current_buf()
+    end
   elseif not bufnr then
     bufnr = vim.fn.bufadd(file.path)
     vim.fn.bufload(bufnr)
@@ -920,12 +1118,15 @@ local function apply_preview(session)
   for _, hunk in ipairs(session.hunks) do
     mark_hunk(hunk)
   end
+  for _, file in ipairs(session.file_order or {}) do
+    file.proposed_lines = normalized_final_lines(file)
+  end
   return true
 end
 
 function M.open(opts)
   opts = opts or {}
-  local thread = opts.thread_id and state.get_thread(opts.thread_id) or nil
+  local thread = opts.thread or (opts.thread_id and state.get_thread(opts.thread_id)) or nil
   local session = {
     id = opts.request_id or tostring(vim.uv.hrtime()),
     cwd = vim.fs.normalize(vim.fn.expand(opts.cwd or config.cwd())),
@@ -933,6 +1134,9 @@ function M.open(opts)
     thread = thread,
     on_complete = opts.on_complete,
     on_auto_apply = opts.on_auto_apply,
+    diagnostics_settle_ms = opts.diagnostics_settle_ms,
+    apply_on_complete = opts.apply_on_complete,
+    restore_on_complete = opts.restore_on_complete,
     files = {},
     file_order = {},
     buffers = {},

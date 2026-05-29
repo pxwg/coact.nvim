@@ -89,20 +89,21 @@ function M.check()
     vim.health.warn(("App-server command does not visibly include app-server: %s"):format(command_label(app_command)))
   end
 
-  local nvim_apply_patch_enabled = opts.dynamic_tools
-    and opts.dynamic_tools.enabled ~= false
-    and config.edit_mode() == "pair"
+  local native_pair_hook_enabled = config.edit_mode() == "pair"
+    and opts.edit
+    and opts.edit.native_apply_patch_hook
+    and opts.edit.native_apply_patch_hook.enabled ~= false
   if
-    nvim_apply_patch_enabled
+    native_pair_hook_enabled
     and (vim.fn.executable("apply_patch") == 1 or (app_executable and vim.fn.executable(app_executable) == 1))
   then
-    vim.health.ok("Codex apply_patch runtime is available for nvim.apply_patch")
-  elseif nvim_apply_patch_enabled then
-    vim.health.error("Codex apply_patch runtime is required when nvim.apply_patch is enabled in pair edit mode")
+    vim.health.ok("Codex apply_patch runtime is available for native hook validation")
+  elseif native_pair_hook_enabled then
+    vim.health.error("Codex apply_patch runtime is required for native apply_patch hook validation in pair mode")
   end
   if vim.fn.executable("git") == 1 then
     vim.health.ok("git is available for legacy unified-diff nvim.apply_patch compatibility")
-  elseif nvim_apply_patch_enabled then
+  elseif native_pair_hook_enabled then
     vim.health.info("git is not available; native Codex apply_patch-format reviews still work")
   else
     vim.health.info("git is not available")

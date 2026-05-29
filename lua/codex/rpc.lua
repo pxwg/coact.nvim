@@ -30,6 +30,13 @@ local function app_server_env()
   return env
 end
 
+local function env_empty(env)
+  for _ in pairs(env or {}) do
+    return false
+  end
+  return true
+end
+
 local function sanitize_malloc_env_enabled(opts)
   return not (opts.app_server and opts.app_server.sanitize_malloc_env == false)
 end
@@ -131,6 +138,65 @@ function M.is_running()
   return M.job_id ~= nil and M.job_id > 0
 end
 
+local function register_native_hook_trust(callback)
+  local ok, native_hook = pcall(require, "codex.native_apply_patch_hook")
+  if not ok or type(native_hook.enabled) ~= "function" or not native_hook.enabled() then
+    callback()
+    return
+  end
+  if type(native_hook.debug_log) == "function" then
+    native_hook.debug_log("trust_hooks_list_request", {})
+  end
+  M.request("hooks/list", native_hook.hooks_list_params(), function(list_err, result)
+    if type(native_hook.debug_log) == "function" then
+      native_hook.debug_log("trust_hooks_list_done", {
+        error = list_err,
+        result = result,
+      })
+    end
+    if list_err then
+      callback({
+        message = "codex native apply_patch hook trust discovery failed: " .. tostring(list_err.message or list_err),
+      })
+      return
+    end
+
+    if type(native_hook.has_matching_hook) == "function" and not native_hook.has_matching_hook(result) then
+      callback({
+        message = "codex native apply_patch hook was not found in app-server hooks/list",
+      })
+      return
+    end
+
+    local edits = native_hook.trust_edits_from_hooks_response(result)
+    if #edits == 0 then
+      callback()
+      return
+    end
+
+    if type(native_hook.debug_log) == "function" then
+      native_hook.debug_log("trust_config_write_request", { edits = edits })
+    end
+    M.request("config/batchWrite", {
+      edits = edits,
+      reloadUserConfig = true,
+    }, function(write_err)
+      if type(native_hook.debug_log) == "function" then
+        native_hook.debug_log("trust_config_write_done", {
+          error = write_err,
+        })
+      end
+      if write_err then
+        callback({
+          message = "codex native apply_patch hook trust write failed: " .. tostring(write_err.message or write_err),
+        })
+        return
+      end
+      callback()
+    end)
+  end)
+end
+
 function M.start(callback)
   if M.is_running() then
     if callback then
@@ -144,6 +210,17 @@ function M.start(callback)
   M.stdout_tail = ""
   M.stderr_tail = ""
   M.initialized = false
+  local env = sanitize_malloc_env_enabled(opts) and app_server_env() or {}
+  local hook_err
+  command, env, hook_err = require("codex.native_apply_patch_hook").prepare_app_server(command, env)
+  if not command then
+    if callback then
+      callback({ message = hook_err }, nil)
+    else
+      util.notify(hook_err, vim.log.levels.ERROR)
+    end
+    return
+  end
 
   local job_opts = {
     stdin = "pipe",
@@ -178,7 +255,9 @@ function M.start(callback)
 
   if sanitize_malloc_env_enabled(opts) then
     job_opts.clear_env = true
-    job_opts.env = app_server_env()
+    job_opts.env = env
+  elseif not env_empty(env) then
+    job_opts.env = env
   end
 
   M.job_id = vim.fn.jobstart(command, job_opts)
@@ -215,11 +294,25 @@ function M.start(callback)
     if M.stopping or not M.is_running() then
       return
     end
-    M.initialized = true
-    M.notify("initialized", {})
-    if callback then
-      callback(nil, result or true)
-    end
+    register_native_hook_trust(function(trust_err)
+      if trust_err then
+        M.stop()
+        if callback then
+          callback(trust_err, nil)
+        else
+          util.notify(trust_err.message or trust_err, vim.log.levels.ERROR)
+        end
+        return
+      end
+      if M.stopping or not M.is_running() then
+        return
+      end
+      M.initialized = true
+      M.notify("initialized", {})
+      if callback then
+        callback(nil, result or true)
+      end
+    end)
   end)
 end
 
@@ -297,5 +390,6 @@ end
 
 M._app_server_env = app_server_env
 M._sanitize_malloc_env_enabled = sanitize_malloc_env_enabled
+M._register_native_hook_trust = register_native_hook_trust
 
 return M

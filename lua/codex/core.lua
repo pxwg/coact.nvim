@@ -1,4 +1,5 @@
 local buffers = require("codex.buffers")
+local config = require("codex.config")
 local hooks = require("codex.hooks")
 local state = require("codex.state")
 local util = require("codex.util")
@@ -67,6 +68,114 @@ local function append_timeline(method, params, title, state_value, text)
     local_only = true,
   }
   append_limited(thread.timeline_blocks, block)
+  schedule(thread.id)
+end
+
+local function hook_event_name(run)
+  return tostring(util.value(run.eventName) or util.value(run.event_name) or util.value(run.id) or "hook")
+end
+
+local function hook_run_id(method, params, run, group)
+  return tostring(
+    util.value(run.id)
+      or util.value(run.runId)
+      or util.value(run.run_id)
+      or util.value(params.runId)
+      or util.value(params.run_id)
+      or ("%s:%d"):format(method, #(group.hook_run_order or {}) + 1)
+  )
+end
+
+local function hook_group_id(params, run)
+  local turn_id = util.value(params.turnId) or util.value(params.turn_id) or util.value(run.turnId) or "thread"
+  return "hook:" .. tostring(turn_id) .. ":" .. hook_event_name(run)
+end
+
+local function hook_status(method, run)
+  return tostring(util.value(run.status) or (method == "hook/started" and "running" or "completed"))
+end
+
+local function hook_group_state(group)
+  local latest = "completed"
+  for _, id in ipairs(group.hook_run_order or {}) do
+    local run = group.hook_runs and group.hook_runs[id]
+    if run then
+      latest = run.status or latest
+      if run.status == "running" then
+        return "running"
+      end
+    end
+  end
+  return latest
+end
+
+local function hook_group_text(group)
+  local order = group.hook_run_order or {}
+  local total = #order
+  local latest = total > 0 and group.hook_runs[order[total]] or nil
+  local latest_status = latest and latest.status or group.state or "completed"
+  local lines = {
+    ("%d hook run%s for %s; latest %s."):format(
+      total,
+      total == 1 and "" or "s",
+      tostring(group.hook_event or "hook"),
+      tostring(latest_status)
+    ),
+  }
+  for _, id in ipairs(order) do
+    local run = group.hook_runs[id]
+    if run then
+      table.insert(lines, ("- %s: %s"):format(util.short_id(id), tostring(run.status or "unknown")))
+      if run.summary and run.summary ~= "" then
+        table.insert(lines, "  " .. run.summary)
+      end
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+local function upsert_hook_timeline(method, params)
+  local thread = thread_for_params(params)
+  if not thread then
+    return
+  end
+  local run = type(params.run) == "table" and params.run or {}
+  local event_name = hook_event_name(run)
+  local group_id = hook_group_id(params, run)
+  thread.hook_timeline_blocks = thread.hook_timeline_blocks or {}
+  local block = thread.hook_timeline_blocks[group_id]
+  if not block then
+    block = {
+      type = "AgentTimelineBlock",
+      message_id = params and params.turnId,
+      item_id = group_id,
+      title = "Hook: " .. event_name,
+      state = "running",
+      text = "",
+      metadata = { source = "hook", eventName = event_name },
+      raw = params,
+      local_only = true,
+      hook_event = event_name,
+      hook_runs = {},
+      hook_run_order = {},
+    }
+    thread.hook_timeline_blocks[group_id] = block
+    append_limited(thread.timeline_blocks, block)
+  end
+
+  local run_id = hook_run_id(method, params, run, block)
+  if not block.hook_runs[run_id] then
+    table.insert(block.hook_run_order, run_id)
+  end
+  block.hook_runs[run_id] = {
+    status = hook_status(method, run),
+    method = method,
+    summary = inspect_summary(run, 180),
+    raw = run,
+  }
+  block.state = hook_group_state(block)
+  block.text = hook_group_text(block)
+  block.raw = params
   schedule(thread.id)
 end
 
@@ -301,14 +410,7 @@ handlers["turn/started"] = function(params)
 end
 
 handlers["hook/started"] = function(params)
-  local run = params.run or {}
-  append_timeline(
-    "hook/started",
-    params,
-    "Hook: " .. tostring(run.eventName or run.id or "started"),
-    "running",
-    inspect_summary(run, 220)
-  )
+  upsert_hook_timeline("hook/started", params)
 end
 
 handlers["turn/completed"] = function(params)
@@ -327,14 +429,7 @@ handlers["turn/completed"] = function(params)
 end
 
 handlers["hook/completed"] = function(params)
-  local run = params.run or {}
-  append_timeline(
-    "hook/completed",
-    params,
-    "Hook: " .. tostring(run.eventName or run.id or "completed"),
-    tostring(run.status or "completed"),
-    inspect_summary(run, 220)
-  )
+  upsert_hook_timeline("hook/completed", params)
 end
 
 handlers["item/started"] = function(params)
@@ -547,10 +642,21 @@ handlers["guardianWarning"] = handlers["warning"]
 handlers["deprecationNotice"] = handlers["warning"]
 
 local function nvim_apply_patch_pair_mode()
-  local ok, dynamic_tools = pcall(require, "codex.dynamic_tools")
-  return ok
-    and type(dynamic_tools._nvim_apply_patch_enabled) == "function"
-    and dynamic_tools._nvim_apply_patch_enabled()
+  return config.edit_mode() == "pair"
+end
+
+local function native_apply_patch_debug_log(event, data)
+  local ok, native_hook = pcall(require, "codex.native_apply_patch_hook")
+  if ok and type(native_hook.debug_log) == "function" then
+    native_hook.debug_log(event, data)
+  end
+end
+
+local function native_file_change_accept_response(method)
+  if method == "applyPatchApproval" then
+    return { decision = "approved" }
+  end
+  return { decision = "accept" }
 end
 
 local function native_file_change_decline_response(method)
@@ -566,19 +672,88 @@ local function decline_native_file_change_in_pair_mode(message)
   end
 
   local params = message.params or {}
+  native_apply_patch_debug_log("file_change_decline_unreviewed", {
+    method = message.method,
+    request_id = message.id,
+    params = params,
+  })
   append_timeline(
     message.method or "item/fileChange/requestApproval",
     params,
     "Native patch declined",
     "declined",
-    "pair edit mode routes file edits through nvim.apply_patch"
+    "pair edit mode requires native apply_patch to pass the Neovim PreToolUse review hook first"
   )
   require("codex.rpc").respond(message.id, native_file_change_decline_response(message.method))
-  util.notify("pair mode declined native apply_patch; use nvim.apply_patch", vim.log.levels.WARN)
+  util.notify("pair mode declined unreviewed native apply_patch", vim.log.levels.WARN)
+  return true
+end
+
+local function accept_reviewed_native_file_change(message)
+  if not nvim_apply_patch_pair_mode() then
+    return false
+  end
+  local params = message.params or {}
+  native_apply_patch_debug_log("file_change_request_seen", {
+    method = message.method,
+    request_id = message.id,
+    params = params,
+  })
+  if not require("codex.native_apply_patch_hook").consume_reviewed_approval(params) then
+    return false
+  end
+  native_apply_patch_debug_log("file_change_accept_reviewed", {
+    method = message.method,
+    request_id = message.id,
+    params = params,
+  })
+  append_timeline(
+    message.method or "item/fileChange/requestApproval",
+    params,
+    "Native patch approved",
+    "approved",
+    "apply_patch was already reviewed by Neovim PreToolUse hook"
+  )
+  require("codex.rpc").respond(message.id, native_file_change_accept_response(message.method))
+  return true
+end
+
+local function accept_reviewed_native_permission(message)
+  if not nvim_apply_patch_pair_mode() then
+    return false
+  end
+  local params = message.params or {}
+  native_apply_patch_debug_log("permission_request_seen", {
+    method = message.method,
+    request_id = message.id,
+    params = params,
+  })
+  if not require("codex.native_apply_patch_hook").consume_reviewed_approval(params, "permission") then
+    return false
+  end
+  native_apply_patch_debug_log("permission_accept_reviewed", {
+    method = message.method,
+    request_id = message.id,
+    params = params,
+  })
+  append_timeline(
+    message.method or "item/permissions/requestApproval",
+    params,
+    "Native apply_patch permission approved",
+    "approved",
+    "apply_patch permission was already reviewed by Neovim PreToolUse hook"
+  )
+  require("codex.rpc").respond(message.id, { decision = "accept" })
   return true
 end
 
 function M.handle_notification(message)
+  if tostring(message.method or ""):lower():match("hook") then
+    native_apply_patch_debug_log("app_server_hook_notification", {
+      method = message.method,
+      params = message.params,
+    })
+  end
   local handler = handlers[message.method]
   if handler then
     handler(message.params or {})
@@ -589,6 +764,9 @@ end
 
 function M.handle_server_request(message)
   if message.method == "item/fileChange/requestApproval" or message.method == "applyPatchApproval" then
+    if accept_reviewed_native_file_change(message) then
+      return
+    end
     if decline_native_file_change_in_pair_mode(message) then
       return
     end
@@ -606,6 +784,9 @@ function M.handle_server_request(message)
     return
   end
   if message.method == "item/permissions/requestApproval" then
+    if accept_reviewed_native_permission(message) then
+      return
+    end
     require("codex.approvals").permissions(message)
     return
   end

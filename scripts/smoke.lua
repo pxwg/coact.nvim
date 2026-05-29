@@ -8,38 +8,238 @@ assert(
 )
 local start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
 assert(
-  type(start_params.developerInstructions) == "string" and start_params.developerInstructions:match("nvim%.apply_patch"),
-  "thread/start should instruct Codex to prefer Neovim patch review"
+  type(start_params.developerInstructions) == "string"
+    and start_params.developerInstructions:match("native apply_patch"),
+  "thread/start should instruct Codex to use native apply_patch in pair mode"
 )
 assert(
-  start_params.developerInstructions:match("declines native file%-change approvals")
-    and start_params.developerInstructions:match("Neovim auto%-apply"),
-  "pair edit mode should keep edits on the Neovim apply_patch path"
+  start_params.developerInstructions:match("PreToolUse hook")
+    and start_params.developerInstructions:match("updatedInput%.command"),
+  "pair edit mode should route native apply_patch through Neovim hook review"
 )
 assert(
-  start_params.developerInstructions:match("tool description"),
-  "thread/start should delegate patch syntax details to the nvim.apply_patch tool description"
+  start_params.developerInstructions:match("Do not request dangerous approval"),
+  "pair edit mode should not ask Codex to bypass approvals for native apply_patch"
+)
+assert(
+  start_params.developerInstructions:match("Do not call nvim%.apply_patch"),
+  "pair edit mode should not ask Codex to use nvim.apply_patch"
 )
 assert(
   not start_params.developerInstructions:match("Patch syntax must match")
     and not start_params.developerInstructions:match("%*%*%* Add File:")
     and not start_params.developerInstructions:match("pair%-coding feedback"),
-  "thread/start should not duplicate the nvim.apply_patch tool protocol"
+  "thread/start should not duplicate the native apply_patch tool protocol"
 )
 assert(
-  start_params.developerInstructions:match("diagnostics handling"),
-  "thread/start should point edit feedback handling to the tool description"
+  not (start_params.config and start_params.config.bypass_hook_trust == true),
+  "thread/start should not enable global hook trust bypass for Neovim apply_patch review"
 )
 local composed_instructions = codex._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
-assert(composed_instructions:match("nvim%.apply_patch"), "default edit instruction should mention nvim.apply_patch")
+assert(composed_instructions:match("native apply_patch"), "default edit instruction should mention native apply_patch")
 local dynamic_tools_for_config = require("codex.dynamic_tools")
 local pair_specs = dynamic_tools_for_config.specs() or {}
+assert(not vim.iter(pair_specs):any(function(spec)
+  return spec.namespace == "nvim" and spec.name == "apply_patch"
+end), "pair edit mode should not expose nvim.apply_patch")
+local native_hook = require("codex.native_apply_patch_hook")
 assert(
-  vim.iter(pair_specs):any(function(spec)
-    return spec.namespace == "nvim" and spec.name == "apply_patch"
-  end),
-  "pair edit mode should expose nvim.apply_patch"
+  native_hook._hook_config_arg():match("hooks%.PreToolUse")
+    and native_hook._hook_config_arg():match("apply_patch")
+    and native_hook._hook_config_arg():match("codex%-nvim%-apply%-patch%-hook"),
+  "pair edit mode should be able to inject a PreToolUse apply_patch hook"
+)
+assert(
+  not table.concat(native_hook._command_with_hook({ "codex", "app-server" }), " "):match("bypass_hook_trust=true"),
+  "pair edit mode should not use global hook trust bypass"
+)
+local native_hook_trust_edits = native_hook.trust_edits_from_hooks_response({
+  data = {
+    {
+      hooks = {
+        {
+          enabled = true,
+          handlerType = "command",
+          eventName = "preToolUse",
+          matcher = "^apply_patch$",
+          command = native_hook._hook_command(),
+          key = "/<session-flags>/config.toml:pre_tool_use:0:0",
+          currentHash = "sha256:abc123",
+          trustStatus = "untrusted",
+        },
+      },
+    },
+  },
+})
+assert(
+  #native_hook_trust_edits == 1
+    and native_hook_trust_edits[1].keyPath == 'hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0".trusted_hash'
+    and native_hook_trust_edits[1].value == "sha256:abc123",
+  "pair edit mode should persist trust for only the injected apply_patch hook hash"
+)
+local hook_script = table.concat(vim.fn.readfile("scripts/codex-nvim-apply-patch-hook"), "\n")
+assert(
+  hook_script:match("review_file_async") and hook_script:match("'result':"),
+  "apply_patch hook script should queue Neovim review asynchronously and wait on a result file"
+)
+assert(
+  hook_script:match("< /dev/null"),
+  "apply_patch hook script should not let Neovim client inherit Codex hook stdin"
+)
+assert(
+  hook_script:match('tmpdir="%${TMPDIR:%-/tmp}"') and hook_script:match('tmpdir="%${tmpdir%%/}"'),
+  "apply_patch hook script should normalize TMPDIR before building remote payload paths"
+)
+do
+  local native_hook_gen_dir = vim.fn.tempname()
+  vim.fn.mkdir(native_hook_gen_dir, "p")
+  vim.fn.writefile({ "one", "two" }, vim.fs.joinpath(native_hook_gen_dir, "smoke-native-hook.txt"))
+  local native_hook_completion_patch = native_hook._noop_patch(native_hook_gen_dir, "smoke-native-hook")
+  assert(
+    native_hook_completion_patch:match("%*%*%* Delete File: %.codex%-nvim%-apply%-patch%-noop")
+      and not native_hook_completion_patch:match("%*%*%* Add File:"),
+    "native apply_patch hook should return a delete-marker completion patch after Neovim writes"
+  )
+  local native_hook_marker =
+    native_hook_completion_patch:match("%*%*%* Delete File:%s*(%.codex%-nvim%-apply%-patch%-noop[^\n]+)")
+  assert(
+    native_hook_marker and vim.fn.filereadable(vim.fs.joinpath(native_hook_gen_dir, native_hook_marker)) == 1,
+    "native apply_patch hook no-op marker should exist before app-server verification reads it"
+  )
+  assert(
+    dynamic_tools_for_config._changes_from_native_apply_patch(native_hook_gen_dir, native_hook_completion_patch),
+    "native apply_patch hook no-op completion patch should validate through Codex apply_patch"
+  )
+  local stale_marker = vim.fs.joinpath(native_hook_gen_dir, ".codex-nvim-apply-patch-noop-stale")
+  local fresh_marker = vim.fs.joinpath(native_hook_gen_dir, ".codex-nvim-apply-patch-noop-fresh")
+  vim.fn.writefile({ "stale" }, stale_marker)
+  vim.fn.writefile({ "fresh" }, fresh_marker)
+  local old_time = os.time() - 600
+  vim.uv.fs_utime(stale_marker, old_time, old_time)
+  local cleanup_result = native_hook._cleanup_stale_noop_markers(native_hook_gen_dir, 300)
+  assert(
+    vim.fn.filereadable(stale_marker) == 0
+      and vim.fn.filereadable(fresh_marker) == 1
+      and vim.tbl_contains(cleanup_result.removed, ".codex-nvim-apply-patch-noop-stale"),
+    "native apply_patch hook should clean only stale no-op markers"
+  )
+  vim.fn.delete(fresh_marker)
+  local native_hook_review_file = vim.fs.joinpath(native_hook_gen_dir, "native-hook-review.txt")
+  vim.fn.writefile({ "left", "right" }, native_hook_review_file)
+  local native_hook_review_output = nil
+  native_hook.review_payload_async({
+    cwd = native_hook_gen_dir,
+    tool_name = "apply_patch",
+    tool_use_id = "native-hook-review",
+    tool_input = {
+      command = table.concat({
+        "*** Begin Patch",
+        "*** Update File: native-hook-review.txt",
+        "@@",
+        " left",
+        "-right",
+        "+from-codex",
+        "*** End Patch",
+      }, "\n"),
+    },
+  }, function(output)
+    native_hook_review_output = output
+  end)
+  local native_hook_review_session = nil
+  vim.wait(1000, function()
+    local bufnr = vim.fn.bufnr(native_hook_review_file)
+    if bufnr > 0 then
+      native_hook_review_session = require("codex.patch_session")._active_session(bufnr)
+    end
+    return native_hook_review_session ~= nil
+  end, 20)
+  assert(native_hook_review_session, "native apply_patch hook should open file-buffer patch review")
+  local native_hook_review_buf = native_hook_review_session.hunks[1].bufnr
+  local native_hook_diag_ns = vim.api.nvim_create_namespace("codex-smoke-native-hook-diagnostics")
+  vim.diagnostic.set(native_hook_diag_ns, native_hook_review_buf, {
+    {
+      lnum = 1,
+      col = 0,
+      message = "native hook edited buffer diagnostic",
+      severity = vim.diagnostic.severity.ERROR,
+      source = "smoke",
+    },
+  }, {})
+  vim.api.nvim_buf_set_lines(native_hook_review_buf, 1, 2, false, { "from-nvim" })
+  require("codex.patch_session")._accept_hunk(native_hook_review_session, native_hook_review_session.hunks[1])
+  vim.wait(1000, function()
+    return native_hook_review_output ~= nil
+  end, 20)
+  assert(native_hook_review_output, "native apply_patch hook file-buffer review should complete")
+  assert(
+    native_hook_review_output:match('"permissionDecision":"allow"')
+      and native_hook_review_output:match("%+from%-nvim")
+      and native_hook_review_output:match("%-from%-codex")
+      and native_hook_review_output:match("USER MODIFICATIONS TO CODEX PROPOSAL")
+      and native_hook_review_output:match("## nvim%.diagnostics")
+      and native_hook_review_output:match("native hook edited buffer diagnostic")
+      and not native_hook_review_output:match("%+from%-codex"),
+    "native apply_patch hook should report user edits and edited-buffer diagnostics in its review summary"
+  )
+  assert(
+    native_hook_review_output:match("%.codex%-nvim%-apply%-patch%-noop")
+      and vim.fn.readfile(native_hook_review_file)[2] == "from-nvim",
+    "native apply_patch hook should write through the same patch_session path as nvim.apply_patch"
+  )
+  local native_hook_reject_file = vim.fs.joinpath(native_hook_gen_dir, "native-hook-reject.txt")
+  vim.fn.writefile({ "left", "right" }, native_hook_reject_file)
+  local native_hook_reject_output = nil
+  native_hook.review_payload_async({
+    cwd = native_hook_gen_dir,
+    tool_name = "apply_patch",
+    tool_use_id = "native-hook-reject",
+    tool_input = {
+      command = table.concat({
+        "*** Begin Patch",
+        "*** Update File: native-hook-reject.txt",
+        "@@",
+        " left",
+        "-right",
+        "+discarded",
+        "*** End Patch",
+      }, "\n"),
+    },
+  }, function(output)
+    native_hook_reject_output = output
+  end)
+  local native_hook_reject_session = nil
+  vim.wait(1000, function()
+    local bufnr = vim.fn.bufnr(native_hook_reject_file)
+    if bufnr > 0 then
+      native_hook_reject_session = require("codex.patch_session")._active_session(bufnr)
+    end
+    return native_hook_reject_session ~= nil
+  end, 20)
+  assert(native_hook_reject_session, "native apply_patch hook should open rejected hunk review")
+  require("codex.patch_session")._reject_hunk(
+    native_hook_reject_session,
+    native_hook_reject_session.hunks[1],
+    "keep right"
+  )
+  vim.wait(1000, function()
+    return native_hook_reject_output ~= nil
+  end, 20)
+  assert(
+    native_hook_reject_output
+      and native_hook_reject_output:match('"permissionDecision":"deny"')
+      and native_hook_reject_output:match("User rejected Codex native apply_patch")
+      and native_hook_reject_output:match("keep right"),
+    "native apply_patch hook should deny all-rejected patches with user rejection feedback"
+  )
+  assert(
+    vim.fn.readfile(native_hook_reject_file)[2] == "right",
+    "rejected native hook patch should keep original content"
+  )
+end
+assert(
+  native_hook._approval_item_id({ toolUse = { id = "nested-native-approval" } }) == "nested-native-approval",
+  "native apply_patch hook review should match nested approval item ids"
 )
 assert(
   dynamic_tools_for_config._apply_patch_protocol_text():match("native Codex apply_patch format"),
@@ -67,7 +267,25 @@ assert(
 assert(
   dynamic_tools_for_config._stale_patch_retry_message():match("Re%-read the current buffer"),
   "nvim.apply_patch failure guidance should require refreshing buffer state"
-)
+);
+(function()
+  local stale_dir = vim.fn.tempname()
+  vim.fn.mkdir(stale_dir, "p")
+  vim.fn.writefile({ "current alpha", "current beta" }, vim.fs.joinpath(stale_dir, "stale.txt"))
+  local stale_patch = table.concat({
+    "*** Begin Patch",
+    "*** Update File: stale.txt",
+    "@@",
+    "-old alpha",
+    "+new alpha",
+    "*** End Patch",
+  }, "\n")
+  local stale_context = dynamic_tools_for_config._stale_context_for_patch(stale_dir, stale_patch)
+  assert(
+    stale_context:match("STALE CONTEXT RECOVERY") and stale_context:match("current alpha"),
+    "stale patch recovery should include current file excerpts"
+  )
+end)()
 codex.setup({ edit = { mode = "yolo" } })
 local yolo_start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
 assert(
@@ -562,6 +780,32 @@ assert(
     and native_changes[1].diff:match("%+three"),
   "nvim.apply_patch should convert native Codex apply_patch edits to review diffs"
 )
+local absolute_native_target = vim.fn.tempname() .. ".txt"
+local absolute_native_patch = table.concat({
+  "*** Begin Patch",
+  "*** Add File: " .. absolute_native_target,
+  "+absolute",
+  "*** End Patch",
+}, "\n")
+local rejected_absolute_native_changes, rejected_absolute_native_err =
+  dynamic_tools._changes_from_native_apply_patch(patch_dir, absolute_native_patch)
+assert(
+  not rejected_absolute_native_changes and rejected_absolute_native_err:match("must be relative"),
+  "nvim.apply_patch should keep rejecting absolute native patch paths by default"
+)
+local absolute_native_changes, absolute_native_err =
+  dynamic_tools._changes_from_native_apply_patch(patch_dir, absolute_native_patch, { allow_absolute = true })
+assert(absolute_native_changes, absolute_native_err)
+assert(
+  #absolute_native_changes == 1
+    and absolute_native_changes[1].path == vim.fs.normalize(absolute_native_target)
+    and absolute_native_changes[1].diff:match("%+absolute"),
+  "native Codex apply_patch review should accept absolute paths"
+)
+assert(
+  vim.fn.filereadable(absolute_native_target) == 0,
+  "native Codex apply_patch review should not write absolute paths during verification"
+)
 local native_written = false
 require("codex.patch_session").open({
   cwd = patch_dir,
@@ -576,6 +820,34 @@ assert(native_written, "native nvim.apply_patch review should complete when acce
 assert(
   vim.fn.readfile(vim.fs.joinpath(patch_dir, "native.txt"))[2] == "three",
   "native nvim.apply_patch should write accepted edits"
+)
+vim.fn.writefile({ "left", "right" }, vim.fs.joinpath(patch_dir, "review-only.txt"))
+local review_only_patch = table.concat({
+  "*** Begin Patch",
+  "*** Update File: review-only.txt",
+  "@@",
+  " left",
+  "-right",
+  "+changed",
+  "*** End Patch",
+}, "\n")
+local review_only_changes = assert(dynamic_tools._changes_from_native_apply_patch(patch_dir, review_only_patch))
+local review_only_seen_final = false
+require("codex.patch_session").open({
+  cwd = patch_dir,
+  changes = review_only_changes,
+  interactive = false,
+  apply_on_complete = false,
+  restore_on_complete = true,
+  on_complete = function(_, success, session_result)
+    assert(success, "review-only patch session should still report accepted hunks as success")
+    review_only_seen_final = session_result.file_order[1].final_lines[2] == "changed"
+  end,
+})
+assert(review_only_seen_final, "review-only patch session should expose accepted final buffer lines")
+assert(
+  vim.fn.readfile(vim.fs.joinpath(patch_dir, "review-only.txt"))[2] == "right",
+  "review-only patch session should restore buffers without writing accepted edits"
 )
 local session_dir = vim.fn.tempname()
 vim.fn.mkdir(session_dir, "p")
@@ -639,6 +911,47 @@ vim.wait(1000, function()
   return session_done
 end, 20)
 assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch hunk should restore original file content")
+do
+  local previous_active_thread_id = require("codex.state").active_thread_id
+  vim.cmd("tabnew")
+  local codex_review_win = vim.api.nvim_get_current_win()
+  local codex_review_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(codex_review_buf, "codex://thread/smoke-patch-window")
+  vim.bo[codex_review_buf].buftype = "nofile"
+  vim.bo[codex_review_buf].filetype = "codex"
+  vim.b[codex_review_buf].codex_thread_id = "smoke-patch-window"
+  vim.api.nvim_win_set_buf(codex_review_win, codex_review_buf)
+  local smoke_window_state = require("codex.state")
+  smoke_window_state.set_buffer("smoke-patch-window", codex_review_buf, codex_review_win)
+  local preserve_chat_file = vim.fs.joinpath(session_dir, "preserve-chat.txt")
+  vim.fn.writefile({ "chat", "old" }, preserve_chat_file)
+  local preserve_chat_patch = table.concat({
+    "diff --git a/preserve-chat.txt b/preserve-chat.txt",
+    "--- a/preserve-chat.txt",
+    "+++ b/preserve-chat.txt",
+    "@@ -1,2 +1,2 @@",
+    " chat",
+    "-old",
+    "+new",
+  }, "\n")
+  local preserve_chat_session = patch_session.open({
+    cwd = session_dir,
+    thread_id = "smoke-patch-window",
+    changes = dynamic_tools._changes_from_unified_patch(preserve_chat_patch),
+  })
+  assert(
+    vim.api.nvim_win_get_buf(codex_review_win) == codex_review_buf,
+    "patch session should not replace the Codex chat window with the review file buffer"
+  )
+  assert(
+    vim.api.nvim_get_current_win() ~= codex_review_win and patch_session._active_session(0) == preserve_chat_session,
+    "patch session should open a separate review window when launched from a Codex chat buffer"
+  )
+  patch_session._accept_hunk(preserve_chat_session, preserve_chat_session.hunks[1])
+  assert(vim.fn.readfile(preserve_chat_file)[2] == "new", "separate review window should still write accepted edits")
+  vim.cmd("tabclose")
+  smoke_window_state.active_thread_id = previous_active_thread_id
+end
 local delete_only_file = vim.fs.joinpath(session_dir, "delete-only.txt")
 vim.fn.writefile({ "left context", "remove this", "right context" }, delete_only_file)
 local delete_only_patch = table.concat({
@@ -717,6 +1030,7 @@ assert(
   "patch session should render each changed block without highlighting intervening context"
 )
 patch_session._accept_hunk(multi_session, multi_hunk)
+codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = true } })
 local tool_dir = vim.fn.tempname()
 vim.fn.mkdir(tool_dir, "p")
 local tool_file = vim.fs.joinpath(tool_dir, "tool.txt")
@@ -732,7 +1046,42 @@ local tool_patch = table.concat({
   "*** End Patch",
 }, "\n")
 local rpc = require("codex.rpc")
-local original_rpc_respond = rpc.respond
+local original_rpc_respond = rpc.respond;
+(function()
+  local stale_tool_file = vim.fs.joinpath(tool_dir, "stale-tool.txt")
+  vim.fn.writefile({ "fresh red", "fresh green" }, stale_tool_file)
+  local stale_tool_response = nil
+  rpc.respond = function(id, result)
+    assert(id == "tool-apply-stale", "stale dynamic tool should respond to the original request id")
+    stale_tool_response = result
+  end
+  dynamic_tools.handle_call({
+    id = "tool-apply-stale",
+    params = {
+      namespace = "nvim",
+      tool = "apply_patch",
+      threadId = "smoke-context",
+      arguments = {
+        cwd = tool_dir,
+        patch = table.concat({
+          "*** Begin Patch",
+          "*** Update File: stale-tool.txt",
+          "@@",
+          "-old red",
+          "+new red",
+          "*** End Patch",
+        }, "\n"),
+      },
+    },
+  })
+  rpc.respond = original_rpc_respond
+  assert(stale_tool_response and stale_tool_response.success == false, "stale dynamic patch should fail")
+  assert(
+    stale_tool_response.contentItems[1].text:match("STALE CONTEXT RECOVERY")
+      and stale_tool_response.contentItems[1].text:match("fresh red"),
+    "stale dynamic patch response should include current file excerpts"
+  )
+end)()
 local smoke_diag_ns = vim.api.nvim_create_namespace("codex-smoke-apply-patch-diagnostics")
 vim.diagnostic.set(smoke_diag_ns, source_buf, {
   {
@@ -900,6 +1249,7 @@ assert(
   not dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
   "turn cleanup should clear turn-scoped Neovim auto-apply"
 )
+codex.setup()
 
 local done = false
 local source = require("codex.completion.blink").new()
@@ -1182,7 +1532,60 @@ assert(
   app_server_env.MallocStackLoggingNoCompact == nil,
   "rpc should strip MallocStackLoggingNoCompact from app-server env"
 )
+local original_rpc_request_for_hook_refresh = rpc.request
+local hook_trust_requests = {}
+local hook_trust_done = false
+rpc.request = function(method, params, callback)
+  table.insert(hook_trust_requests, { method = method, params = params })
+  if method == "hooks/list" then
+    callback(nil, {
+      data = {
+        {
+          hooks = {
+            {
+              enabled = true,
+              handlerType = "command",
+              eventName = "preToolUse",
+              matcher = "^apply_patch$",
+              command = native_hook._hook_command(),
+              key = "/<session-flags>/config.toml:pre_tool_use:0:0",
+              currentHash = "sha256:abc123",
+              trustStatus = "untrusted",
+            },
+          },
+        },
+      },
+    })
+  elseif method == "config/batchWrite" then
+    callback(nil, { status = "ok" })
+  else
+    callback({ message = "unexpected method " .. tostring(method) })
+  end
+end
+rpc._register_native_hook_trust(function(err)
+  assert(err == nil, err and err.message or "native apply_patch hook trust should register")
+  hook_trust_done = true
+end)
+rpc.request = original_rpc_request_for_hook_refresh
+assert(hook_trust_done, "native apply_patch hook trust registration should complete")
+assert(
+  #hook_trust_requests == 2
+    and hook_trust_requests[1].method == "hooks/list"
+    and hook_trust_requests[2].method == "config/batchWrite",
+  "native apply_patch hook trust should list hooks then write the trusted hash"
+)
+assert(
+  hook_trust_requests[2].params.edits[1].keyPath
+      == 'hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0".trusted_hash'
+    and hook_trust_requests[2].params.edits[1].value == "sha256:abc123"
+    and hook_trust_requests[2].params.reloadUserConfig == true,
+  "native apply_patch hook trust should write the quoted hook trusted_hash"
+)
 
+local smoke_codex_home = vim.fn.tempname()
+vim.fn.mkdir(smoke_codex_home, "p")
+local previous_codex_home = vim.env.CODEX_HOME
+vim.env.CODEX_HOME = smoke_codex_home
 local rpc_done = false
 rpc.start(function(err)
   assert(err == nil, err and err.message or "app-server should initialize")
@@ -1192,6 +1595,7 @@ vim.wait(3000, function()
   return rpc_done
 end, 20)
 assert(rpc_done, "app-server initialize timed out")
+vim.env.CODEX_HOME = previous_codex_home
 local running_status = codex.status()
 assert(running_status.server_running == true, "status should report running server after startup")
 assert(running_status.server_initialized == true, "status should report initialized server after startup")
@@ -1375,6 +1779,23 @@ local pair_native_response = nil
 rpc.respond = function(id, result)
   pair_native_response = { id = id, result = result }
 end
+native_hook.mark_reviewed("native-write")
+core.handle_server_request({
+  id = "pair-native-permission-approval",
+  method = "item/permissions/requestApproval",
+  params = {
+    threadId = "smoke-core-pending",
+    turnId = "turn-core",
+    itemId = "native-write",
+  },
+})
+assert(
+  pair_native_response
+    and pair_native_response.id == "pair-native-permission-approval"
+    and pair_native_response.result.decision == "accept",
+  "pair mode should accept apply_patch permissions already reviewed by the Neovim hook"
+)
+pair_native_response = nil
 core.handle_server_request({
   id = "pair-native-approval",
   method = "item/fileChange/requestApproval",
@@ -1388,8 +1809,32 @@ rpc.respond = original_rpc_respond_for_pair_native
 assert(
   pair_native_response
     and pair_native_response.id == "pair-native-approval"
+    and pair_native_response.result.decision == "accept",
+  "pair mode should accept native file changes already reviewed by the Neovim hook"
+)
+assert(
+  not native_hook.consume_reviewed_item("native-write"),
+  "pair mode should consume reviewed native apply_patch approvals after the file change"
+)
+pair_native_response = nil
+rpc.respond = function(id, result)
+  pair_native_response = { id = id, result = result }
+end
+core.handle_server_request({
+  id = "pair-native-unreviewed-approval",
+  method = "item/fileChange/requestApproval",
+  params = {
+    threadId = "smoke-core-pending",
+    turnId = "turn-core",
+    itemId = "native-unreviewed-write",
+  },
+})
+rpc.respond = original_rpc_respond_for_pair_native
+assert(
+  pair_native_response
+    and pair_native_response.id == "pair-native-unreviewed-approval"
     and pair_native_response.result.decision == "decline",
-  "pair mode should decline native app-server file-change approvals"
+  "pair mode should decline native file changes that did not pass Neovim hook review"
 )
 core.handle_notification({
   method = "turn/completed",
@@ -1540,7 +1985,103 @@ core.handle_notification({
   },
 })
 assert(#(thread.timeline_blocks or {}) > 0, "known lifecycle notifications should render as timeline blocks")
-local timeline_count = #(thread.timeline_blocks or {})
+local timeline_count = #(thread.timeline_blocks or {});
+(function()
+  core.handle_notification({
+    method = "hook/started",
+    params = {
+      threadId = "smoke-extmarks",
+      turnId = "turn-1",
+      run = {
+        id = "hook-run-1",
+        eventName = "preToolUse",
+        command = "codex-nvim-apply-patch-hook",
+      },
+    },
+  })
+  core.handle_notification({
+    method = "hook/completed",
+    params = {
+      threadId = "smoke-extmarks",
+      turnId = "turn-1",
+      run = {
+        id = "hook-run-1",
+        eventName = "preToolUse",
+        status = "completed",
+        command = "codex-nvim-apply-patch-hook",
+      },
+    },
+  })
+  core.handle_notification({
+    method = "hook/started",
+    params = {
+      threadId = "smoke-extmarks",
+      turnId = "turn-1",
+      run = {
+        id = "hook-run-2",
+        eventName = "preToolUse",
+        command = "codex-nvim-apply-patch-hook",
+      },
+    },
+  })
+  core.handle_notification({
+    method = "hook/completed",
+    params = {
+      threadId = "smoke-extmarks",
+      turnId = "turn-1",
+      run = {
+        id = "hook-run-2",
+        eventName = "preToolUse",
+        status = "completed",
+        command = "codex-nvim-apply-patch-hook",
+      },
+    },
+  })
+  local hook_block = thread.hook_timeline_blocks and thread.hook_timeline_blocks["hook:turn-1:preToolUse"]
+  assert(
+    #(thread.timeline_blocks or {}) == timeline_count + 1
+      and hook_block
+      and hook_block.title == "Hook: preToolUse"
+      and hook_block.state == "completed"
+      and #(hook_block.hook_run_order or {}) == 2
+      and hook_block.text:match("2 hook runs"),
+    "hook notifications should aggregate into one expandable timeline block per turn and event"
+  )
+  local legacy_hook_thread = {
+    timeline_blocks = {
+      {
+        type = "AgentTimelineBlock",
+        message_id = "legacy-turn",
+        item_id = "legacy-hook-1",
+        title = "Hook: preToolUse",
+        state = "running",
+        text = "legacy started",
+      },
+      {
+        type = "AgentTimelineBlock",
+        message_id = "legacy-turn",
+        item_id = "legacy-hook-2",
+        title = "Hook: preToolUse",
+        state = "completed",
+        text = "legacy completed",
+      },
+    },
+  }
+  local legacy_hook_blocks = require("codex.ui.render").select_render_tree(legacy_hook_thread)
+  local legacy_hook_count = 0
+  local legacy_hook_block = nil
+  for _, block in ipairs(legacy_hook_blocks) do
+    if block.type == "AgentTimelineBlock" and block.title == "Hook: preToolUse" then
+      legacy_hook_count = legacy_hook_count + 1
+      legacy_hook_block = block
+    end
+  end
+  assert(
+    legacy_hook_count == 1 and legacy_hook_block.text:match("2 hook events"),
+    "render should compact legacy hook timeline rows into one expandable block"
+  )
+end)()
+timeline_count = #(thread.timeline_blocks or {})
 state.set_cache(catalog.cache_key("tools"), { { label = "/stale/tool" } })
 core.handle_notification({
   method = "mcpServer/startupStatus/updated",
