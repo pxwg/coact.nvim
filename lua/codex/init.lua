@@ -149,6 +149,7 @@ end
 local function turn_settings_from_params(params, thread)
   return {
     model = params.model or (thread and thread.config and thread.config.model),
+    service_tier = params.serviceTier,
     reasoning_effort = params.effort,
   }
 end

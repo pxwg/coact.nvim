@@ -36,15 +36,40 @@ local function source_effort(source)
   return first_label(source.reasoning_effort, source.reasoningEffort, source.effort, reasoning.effort)
 end
 
+local function service_tier_label(value)
+  if type(value) == "table" then
+    return first_label(value.id, value.name, value.label, value.title, value.type)
+  end
+  return util.label(value)
+end
+
+local function source_service_tier(source)
+  if type(source) ~= "table" then
+    return nil
+  end
+  return service_tier_label(source.service_tier) or service_tier_label(source.serviceTier)
+end
+
+local function source_fast_label(source)
+  local service_tier = source_service_tier(source)
+  if service_tier and service_tier:lower():find("fast", 1, true) then
+    return "fast"
+  end
+  return nil
+end
+
 local function add_settings_labels(labels, ...)
   local model
+  local fast
   local effort
   for index = 1, select("#", ...) do
     local source = select(index, ...)
     model = model or source_model(source)
+    fast = fast or source_fast_label(source)
     effort = effort or source_effort(source)
   end
   add(labels, model)
+  add(labels, fast)
   if effort then
     add(labels, "effort " .. effort)
   end

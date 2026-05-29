@@ -198,6 +198,7 @@ item_converters.userMessage = function(item, turn_id)
     state = status_of(item),
     metadata = {
       model = item.model,
+      serviceTier = util.value(item.serviceTier) or item.service_tier,
       reasoningEffort = item.reasoningEffort or item.effort,
     },
     raw = item,

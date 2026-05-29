@@ -143,24 +143,32 @@ assert(status_thread.status == "active", "thread payload status objects should n
 local metadata = require("codex.ui.metadata")
 local status_labels = metadata.composer_labels({ config = {}, status = { type = "active", activeFlags = {} } })
 assert(#status_labels == 1 and status_labels[1] == "active", "composer metadata should not stringify tables")
-codex.setup({ thread = { model = "gpt-5", reasoning_effort = "high" } })
+codex.setup({ thread = { model = "gpt-5", service_tier = "fast", reasoning_effort = "high" } })
 local configured_composer_labels = metadata.composer_labels({ config = {}, status = "active" })
 assert(
-  vim.deep_equal(configured_composer_labels, { "gpt-5", "effort high", "active" }),
-  "composer metadata should include configured model and reasoning effort"
+  vim.deep_equal(configured_composer_labels, { "gpt-5", "fast", "effort high", "active" }),
+  "composer metadata should include configured model, fast tier, and reasoning effort"
 )
+codex.setup({ thread = { model = "gpt-5", reasoning_effort = "high" } })
 local stale_header_thread = state.ensure_thread("smoke-thread-settings-header", {
-  config = { model = "gpt-5-codex", reasoning_effort = "xhigh" },
+  config = { model = "gpt-5-codex", service_tier = "fast", reasoning_effort = "xhigh" },
   status = "active",
 })
 stale_header_thread.settings = { effort = "medium" }
 state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
 assert(
-  vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "effort medium", "active" }),
-  "composer metadata should prefer updated thread effort over stale defaults"
+  vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "fast", "effort medium", "active" }),
+  "composer metadata should prefer updated thread state over stale defaults"
 )
 local effective_turn_params = codex._turn_start_params("smoke-thread-settings-header", {})
 assert(effective_turn_params.effort == "medium", "turn/start should use updated thread reasoning effort")
+assert(effective_turn_params.serviceTier == "fast", "turn/start should use updated thread service tier")
+stale_header_thread.settings = { serviceTier = vim.NIL }
+state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
+assert(
+  vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "effort medium", "active" }),
+  "composer metadata should stop showing fast after selecting the default service tier"
+)
 stale_header_thread.settings = { effort = vim.NIL }
 state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
 assert(
@@ -169,13 +177,21 @@ assert(
 )
 local active_user_labels = metadata.user_labels(nil, {
   state = "active",
-  raw = { settings = { model = "gpt-5-codex", reasoning_effort = "medium" } },
+  raw = { settings = { model = "gpt-5-codex", service_tier = "fast", reasoning_effort = "medium" } },
 })
 assert(
-  vim.deep_equal(active_user_labels, { "active", "gpt-5-codex", "effort medium" }),
-  "user metadata should include active turn model and reasoning effort"
+  vim.deep_equal(active_user_labels, { "active", "gpt-5-codex", "fast", "effort medium" }),
+  "user metadata should include active turn model, fast tier, and reasoning effort"
 )
 codex.setup()
+local object_tier_thread = state.ensure_thread("smoke-object-service-tier", {
+  config = { service_tier = { id = "fast", name = "Fast" } },
+  status = "active",
+})
+assert(
+  vim.deep_equal(metadata.composer_labels(object_tier_thread), { "fast", "active" }),
+  "composer metadata should detect fast service tiers returned as objects"
+)
 require("codex.core").handle_notification({
   method = "thread/status/changed",
   params = {
@@ -192,13 +208,14 @@ require("codex.core").handle_notification({
   method = "thread/settings/updated",
   params = {
     threadId = "smoke-settings-event",
-    threadSettings = { effort = "medium" },
+    threadSettings = { serviceTier = "fast", effort = "medium" },
   },
 })
 assert(settings_event_thread.config.reasoning_effort == "medium", "settings events should update thread config")
+assert(settings_event_thread.config.service_tier == "fast", "settings events should update thread service tier")
 assert(
-  vim.deep_equal(metadata.composer_labels(settings_event_thread), { "gpt-5-codex", "effort medium", "active" }),
-  "settings events should refresh composer reasoning effort"
+  vim.deep_equal(metadata.composer_labels(settings_event_thread), { "gpt-5-codex", "fast", "effort medium", "active" }),
+  "settings events should refresh composer fast tier and reasoning effort"
 )
 local catalog = require("codex.catalog")
 state.set_cache(catalog.cache_key("skills"), {
@@ -1052,6 +1069,42 @@ assert(
 assert(model_settings_update.threadId == "thread-model-effort", "slash /model should target the active thread")
 assert(model_settings_update.model == "gpt-5-codex", "slash /model should update the selected model")
 assert(model_settings_update.effort == "high", "slash /model should update the selected thinking effort")
+state.ensure_thread("thread-fast-status", {
+  config = { model = "gpt-5-codex", service_tier = "fast" },
+  status = "active",
+})
+local util = require("codex.util")
+local original_notify = util.notify
+local fast_status_message = nil
+util.notify = function(message)
+  fast_status_message = message
+end
+rpc.request = function(method, params, callback)
+  assert(method == "model/list", "slash /fast status should request model/list")
+  callback(nil, {
+    data = {
+      {
+        id = "gpt-5-codex",
+        model = "gpt-5-codex",
+        hidden = false,
+        isDefault = true,
+        serviceTiers = {
+          { id = "standard", name = "Standard" },
+          { id = "fast", name = "Fast" },
+        },
+      },
+    },
+    nextCursor = vim.NIL,
+  })
+end
+slash.dispatch("/fast status", "thread-fast-status", {
+  ensure_server = function(callback)
+    callback()
+  end,
+})
+rpc.request = original_rpc_request
+util.notify = original_notify
+assert(fast_status_message == "Fast tier: on", "/fast status should read the effective thread service tier")
 local permission_items = {}
 vim.ui.select = function(items, opts, callback)
   for _, item in ipairs(items) do
@@ -1175,8 +1228,22 @@ assert(#events.pending_blocks(thread) == 0, "pending user block should hide afte
 thread.active_turn_id = "turn-2"
 thread.pending_request = { prompt = "hello", created_at = vim.uv.now() }
 assert(#events.pending_blocks(thread) == 1, "pending user block should not hide behind earlier turns")
-thread.pending_request = { prompt = "not echoed yet", created_at = vim.uv.now() }
-assert(#events.pending_blocks(thread) == 1, "pending user block should render before userMessage echo")
+thread.pending_request = {
+  prompt = "not echoed yet",
+  settings = { model = "gpt-5-codex", service_tier = "fast", reasoning_effort = "medium" },
+  created_at = vim.uv.now(),
+}
+local pending_header_blocks = events.pending_blocks(thread)
+assert(#pending_header_blocks == 1, "pending user block should render before userMessage echo")
+assert(
+  vim.deep_equal(metadata.user_labels(thread, pending_header_blocks[1]), {
+    "submitted",
+    "gpt-5-codex",
+    "fast",
+    "effort medium",
+  }),
+  "pending userMessage headers should use submitted turn settings"
+)
 thread.pending_request = nil
 thread.active_turn_id = nil
 local asset_prompt = "@image:`" .. image_asset .. "`\n\ninspect image"
@@ -1218,6 +1285,7 @@ local turn_settings_thread = state.ensure_thread("smoke-turn-settings", {
 })
 state.set_turn_settings("smoke-turn-settings", "turn-settings", {
   model = "gpt-5-codex",
+  serviceTier = "fast",
   effort = "high",
 })
 state.upsert_item("smoke-turn-settings", "turn-settings", {
@@ -1233,6 +1301,7 @@ assert(
   vim.deep_equal(metadata.user_labels(turn_settings_thread, turn_setting_blocks[1]), {
     "active",
     "gpt-5-codex",
+    "fast",
     "effort high",
   }),
   "userMessage headers should use saved turn settings"

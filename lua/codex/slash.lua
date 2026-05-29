@@ -397,6 +397,21 @@ local function current_cfg()
   return config.get().thread
 end
 
+local function effective_cfg(thread_id)
+  local id = current_thread_id(thread_id)
+  return state.effective_thread_settings(id and state.get_thread(id) or nil, current_cfg())
+end
+
+local function service_tier_value(value)
+  if is_nil(value) then
+    return nil
+  end
+  if type(value) == "table" then
+    return text_or_nil(field(value, "id")) or text_or_nil(field(value, "name"))
+  end
+  return tostring(value)
+end
+
 local function schedule_thread_render(thread_id)
   local ok, buffers = pcall(require, "codex.buffers")
   if ok and buffers.schedule_render then
@@ -589,9 +604,9 @@ local function set_service_tier(service_tier, actions, thread_id, label)
   apply_thread_settings(thread_id, { serviceTier = service_tier or vim.NIL }, label, actions)
 end
 
-local function active_model_from_catalog(models)
+local function active_model_from_catalog(models, thread_id)
   models = as_table(models)
-  local cfg_model = current_cfg().model
+  local cfg_model = effective_cfg(thread_id).model
   for _, model in ipairs(models) do
     if model.model == cfg_model or model.id == cfg_model or (not cfg_model and model.isDefault) then
       return model
@@ -613,14 +628,14 @@ end
 local function open_fast(args, actions, thread_id)
   local arg = args[1] and args[1]:lower() or ""
   request_models(actions, function(models)
-    local model = active_model_from_catalog(models)
+    local model = active_model_from_catalog(models, thread_id)
     if not model then
       notify("no active model is available", vim.log.levels.WARN)
       return
     end
     local tier = fast_tier(model)
     if arg == "status" then
-      local enabled = tier and current_cfg().service_tier == tier.id
+      local enabled = tier and service_tier_value(effective_cfg(thread_id).service_tier) == service_tier_value(tier)
       present_result(notify_result(("Fast tier: %s"):format(enabled and "on" or "off")))
       return
     end

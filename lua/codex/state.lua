@@ -88,10 +88,13 @@ local function normalize_turn_settings(settings)
   if present.model and settings_values.model then
     normalized.model = settings_values.model
   end
+  if present.service_tier and settings_values.service_tier then
+    normalized.service_tier = settings_values.service_tier
+  end
   if present.reasoning_effort and settings_values.reasoning_effort then
     normalized.reasoning_effort = settings_values.reasoning_effort
   end
-  if not normalized.model and not normalized.reasoning_effort then
+  if not normalized.model and not normalized.service_tier and not normalized.reasoning_effort then
     return nil
   end
   return normalized
