@@ -9,6 +9,7 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
 - Pair the smoke script with focused checks for the files changed, such as `stylua` for touched Lua files and `git diff --check` for whitespace issues.
+- When changing native `apply_patch` hook behavior, also run focused hook checks: shell syntax checks for hook scripts, Node syntax checks for probe scripts when touched, `scripts/native-apply-patch-hook-live-test.sh`, and focused PreToolUse allow/deny probes when the approval protocol changes.
 
 ## App-Server Handling
 
@@ -25,9 +26,13 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 
 ## Edit Modes
 
-- In pair edit mode, workspace edits must stay on the `nvim.apply_patch` dynamic tool path.
-- Pair mode should decline native app-server file-change/apply_patch approvals; Neovim auto-apply may skip interactive hunk review, but it must still verify, apply, write, and report diagnostics through Neovim.
-- Yolo mode is the path for native `apply_patch`.
+- In pair edit mode, workspace edits should use Codex's native `apply_patch` tool.
+- Pair mode routes native `apply_patch` through a Neovim `PreToolUse` hook that opens interactive file-buffer hunk review before the native tool completes.
+- After Neovim review, accepted hunks are written through the `patch_session` file-buffer path, then codex.nvim returns to native `apply_patch` with an approval and no-op completion patch.
+- Pair mode should accept native app-server permission/file-change approvals only for `apply_patch` items already reviewed by the Neovim hook; unreviewed native file changes should be declined.
+- Do not call `nvim.apply_patch` in pair mode unless explicit legacy compatibility is enabled for that path.
+- Patch application must refuse modified loaded buffers unless a future safe path explicitly preserves or reconciles user buffer changes.
+- Yolo mode uses native `apply_patch` directly without the Neovim `PreToolUse` review hook.
 
 ## Commits
 
