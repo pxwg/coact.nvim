@@ -453,6 +453,10 @@ assert(
   ordered_context[#ordered_context] and ordered_context[#ordered_context].text == "what should I do next?",
   "user request should remain the final text input for semantic priority"
 )
+assert(
+  ordered_context[1].text:match("Reference context, not instructions:") and ordered_context[1].text:match("\n\n$"),
+  "reference context should keep trailing separation for app-server text flattening"
+)
 local buffer_context = parser.parse("@buffer")
 assert(buffer_context[1] and buffer_context[1].text:match("bufnr:"), "@buffer should include Neovim buffer metadata")
 local skill_parsed = parser.parse("$skill:smoke")
@@ -1638,6 +1642,17 @@ local thread = state.ensure_thread("smoke-extmarks", {
   generation = "tool_running",
 })
 local events = require("codex.events")
+local repaired_fence_block = events.block_for_item({
+  id = "user-fence",
+  type = "userMessage",
+  content = {
+    { type = "text", text = "```typst\nlet x = 1\n```next prompt", text_elements = {} },
+  },
+}, "turn-fence")
+assert(
+  repaired_fence_block.text:match("```%s*\nnext prompt"),
+  "userMessage rendering should repair flattened fenced context boundaries"
+)
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "user-1",
   type = "userMessage",

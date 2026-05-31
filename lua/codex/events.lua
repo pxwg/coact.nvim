@@ -46,10 +46,34 @@ local function user_input_text(input)
   return vim.inspect(input)
 end
 
+local function repair_fenced_text(text)
+  local lines = vim.split(tostring(text or ""), "\n", { plain = true })
+  local repaired = {}
+  local in_fence = false
+  for _, line in ipairs(lines) do
+    if vim.startswith(line, "```") then
+      if in_fence then
+        local rest = line:sub(4)
+        table.insert(repaired, "```")
+        if rest ~= "" then
+          table.insert(repaired, rest)
+        end
+        in_fence = false
+      else
+        table.insert(repaired, line)
+        in_fence = true
+      end
+    else
+      table.insert(repaired, line)
+    end
+  end
+  return table.concat(repaired, "\n")
+end
+
 local function user_text(content)
   local out = {}
   for _, input in ipairs(content or {}) do
-    local text = user_input_text(input)
+    local text = repair_fenced_text(user_input_text(input))
     if text ~= "" then
       table.insert(out, text)
     end
