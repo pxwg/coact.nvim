@@ -468,9 +468,7 @@ assert(
   file_asset_parsed[1] and file_asset_parsed[1].text:match("text asset with spaces"),
   "@file should accept backtick-quoted paths with spaces"
 )
-local official_file_parsed = parser.parse("@" .. require("codex.context").display_path(text_asset), {
-  auto_selection = false,
-})
+local official_file_parsed = parser.parse("@" .. require("codex.context").display_path(text_asset))
 assert(
   official_file_parsed[1] and official_file_parsed[1].text:match("text asset with spaces"),
   "@path should expand Codex official file context syntax"
@@ -547,23 +545,29 @@ assert(codex_context_text:match("codex%-context%-smoke"), "@buffer should use th
 assert(codex_context_text:match("cursor: L2:C8"), "@buffer should preserve the source window cursor")
 vim.api.nvim_buf_set_mark(source_buf, "<", 1, 0, {})
 vim.api.nvim_buf_set_mark(source_buf, ">", 2, 0, {})
-local auto_selection_context = parser.parse("explain selection", {
+local no_selection_context = parser.parse("explain selection", {
   thread = state.get_thread("smoke-context"),
 })
 assert(
-  auto_selection_context[1] and auto_selection_context[1].text:match("Neovim context: selection"),
-  "parser should auto-attach source-buffer visual selection context"
+  no_selection_context[1] and no_selection_context[1].text == "explain selection",
+  "parser should not auto-attach source-buffer visual selection context"
+)
+local explicit_selection_context = parser.parse("@selection\n\nexplain selection", {
+  thread = state.get_thread("smoke-context"),
+})
+assert(
+  explicit_selection_context[1] and explicit_selection_context[1].text:match("Neovim context: selection"),
+  "@selection should attach source-buffer visual selection context"
 )
 assert(
-  auto_selection_context[1].text:match("codex%-context%-smoke") and auto_selection_context[1].text:match("L1%-L2"),
+  explicit_selection_context[1].text:match("codex%-context%-smoke")
+    and explicit_selection_context[1].text:match("L1%-L2"),
   "selection context should include source file and range metadata"
 )
 assert(
-  auto_selection_context[#auto_selection_context].text == "explain selection",
-  "auto-attached selection should precede the user request"
+  explicit_selection_context[#explicit_selection_context].text == "explain selection",
+  "@selection context should precede the user request"
 )
-pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
-pcall(vim.api.nvim_buf_del_mark, source_buf, ">")
 
 local original_ui_select_for_context = vim.ui.select
 local original_snacks_for_context = package.loaded["snacks"]
@@ -1261,6 +1265,25 @@ source:get_completions({
   done = true
 end)
 assert(done, "completion callback should run synchronously for Neovim context items")
+
+local selection_completion_done = false
+source:get_completions({
+  bufnr = context_thread_buf,
+  line = "@sel",
+  cursor = { 1, 4 },
+}, function(result)
+  assert(#result.items == 1 and result.items[1].label == "@selection", "completion should return @selection")
+  assert(
+    result.items[1].documentation
+      and result.items[1].documentation:match("local codex_context_smoke")
+      and result.items[1].documentation:match("L1%-L2"),
+    "@selection completion should preview source-buffer selection content"
+  )
+  selection_completion_done = true
+end)
+assert(selection_completion_done, "selection completion callback should run synchronously")
+pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
+pcall(vim.api.nvim_buf_del_mark, source_buf, ">")
 
 local path_done = false
 local file_completion_line = "@file:`" .. asset_dir .. "/space"

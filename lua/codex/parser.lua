@@ -316,17 +316,6 @@ local function prompt_token(line)
     or line:match("^([%$][%w_./:~%-]+)$")
 end
 
-local function contains_selection_token(text)
-  for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
-    local token = prompt_token(line)
-    local parsed = token and parse_context_token(token)
-    if parsed and parsed.name == "selection" and not parsed.has_arg then
-      return true
-    end
-  end
-  return false
-end
-
 function M.parse(text, parse_opts)
   parse_opts = parse_opts or {}
   local inputs = {}
@@ -363,12 +352,6 @@ function M.parse(text, parse_opts)
   end
 
   local body_text = table.concat(body, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
-  if parse_opts.auto_selection ~= false and not contains_selection_token(text) then
-    local selection_inputs = resolve_context_token("@selection", parse_opts)
-    if selection_inputs then
-      vim.list_extend(inputs, selection_inputs)
-    end
-  end
   local input = text_input(body_text)
   if input then
     table.insert(inputs, input)

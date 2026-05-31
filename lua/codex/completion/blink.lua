@@ -1,4 +1,6 @@
 local catalog = require("codex.catalog")
+local context = require("codex.context")
+local state = require("codex.state")
 
 local M = {}
 local Source = {}
@@ -32,14 +34,38 @@ local function completion_kind()
   return types.CompletionItemKind
 end
 
-local function to_item(item)
+local function selection_documentation(ctx)
+  local bufnr = ctx and ctx.bufnr or vim.api.nvim_get_current_buf()
+  local thread = bufnr and state.thread_for_buf(bufnr) or nil
+  local target = context.target_buffer(thread)
+  local selected = context.selection_for_buffer(target)
+  if not selected then
+    return "No visual selection found in the source buffer."
+  end
+  return table.concat({
+    ("Current visual selection from %s, L%d-L%d:"):format(selected.filename, selected.start_line, selected.end_line),
+    "",
+    "```" .. (selected.filetype or ""),
+    selected.content,
+    "```",
+  }, "\n")
+end
+
+local function item_documentation(item, ctx)
+  if item.label == "@selection" then
+    return selection_documentation(ctx)
+  end
+  return item.documentation
+end
+
+local function to_item(item, ctx)
   local kinds = completion_kind()
   return {
     label = item.label,
     insertText = item.insertText or item.label,
     kind = item.kind or kinds.Keyword or 14,
     detail = item.detail,
-    documentation = item.documentation,
+    documentation = item_documentation(item, ctx),
     filterText = item.filterText,
     data = item.data,
   }
@@ -119,7 +145,7 @@ function Source:get_completions(ctx, callback)
     local out = {}
     for _, item in ipairs(candidates or {}) do
       if item.label and item_matches(item, prefix) then
-        table.insert(out, to_item(item))
+        table.insert(out, to_item(item, ctx))
       end
     end
 

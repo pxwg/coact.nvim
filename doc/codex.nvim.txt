@@ -209,20 +209,22 @@ Codex inputs before the turn is sent. Argument providers use
   @lua/codex/init.lua
 <
 The blink source completes paths after `@file:` and `@image:` using that
-backtick form. In insert mode, pressing TAB immediately after `@file:` opens
-`snacks.picker.files` when available, with |vim.ui.select()| only as a
-fallback; the selected file is inserted as direct `@path/to/file` syntax.
-`@image:` keeps the provider form because image inputs need image-specific
-attachment metadata. Custom hooks can be registered with
+backtick form. The `@selection` completion preview shows the current
+source-buffer selection content before insertion. In insert mode, pressing TAB
+immediately after `@file:` opens `snacks.picker.files` when available, with
+|vim.ui.select()| only as a fallback; the selected file is inserted as direct
+`@path/to/file` syntax. `@image:` keeps the provider form because image inputs
+need image-specific attachment metadata. Custom hooks can be registered with
 `require("codex.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, codex.nvim remembers that source
 buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
 `@diagnostics`, and Neovim dynamic tools do not read the chat buffer itself.
 `@selection` reads the source buffer's visual selection marks and includes file
-and range metadata plus diagnostics in the selected range. If the source buffer
-has a visual selection, that selection context is automatically attached to
-each submitted prompt unless the prompt already contains `@selection`.
+and range metadata plus diagnostics in the selected range. Selection context is
+attached only when the prompt explicitly contains `@selection` or
+`:Codex add-selection` inserts it, so context injection remains prompt
+controlled.
 Expanded text contexts are sent before the user request and are labeled as
 reference context, not instructions; the user request remains the final text
 input for semantic priority.
