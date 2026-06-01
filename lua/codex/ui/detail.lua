@@ -40,6 +40,9 @@ local function block_title(block)
   if block.type == "ToolCallBlock" or block.type == "PatchBlock" then
     return tostring(block.tool or "tool")
   end
+  if block.type == "ActivitySummaryBlock" then
+    return "Thinking finished"
+  end
   if block.type == "AgentTimelineBlock" then
     return "Agent: " .. tostring(block.title or "event")
   end

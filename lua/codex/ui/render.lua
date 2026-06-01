@@ -18,6 +18,7 @@ local foldable_types = {
 }
 
 local placeholder_types = {
+  ActivitySummaryBlock = true,
   ReasoningBlock = true,
   ToolCallBlock = true,
   PatchBlock = true,
@@ -27,6 +28,7 @@ local placeholder_types = {
 }
 
 local assistant_content_types = {
+  ActivitySummaryBlock = true,
   AssistantBlock = true,
   ReasoningBlock = true,
   ToolCallBlock = true,
@@ -55,6 +57,7 @@ local composer_trailing_punctuation = {
 }
 
 local stream_decoration_by_type = {
+  ActivitySummaryBlock = { kind = "thinking", marker = "▎ ", hl_group = "CodexStreamPlan" },
   ToolCallBlock = { kind = "tool", marker = "▌ ", hl_group = "CodexStreamTool" },
   PatchBlock = { kind = "patch", marker = "▌ ", hl_group = "CodexStreamPatch" },
   AgentTimelineBlock = { kind = "agent", marker = "▎ ", hl_group = "CodexStreamAgent" },
@@ -274,7 +277,64 @@ local function stream_decoration_for_block(block)
   return stream_decoration_by_type[block and block.type]
 end
 
+local function activity_counts(children)
+  local counts = {
+    reasoning = 0,
+    tool = 0,
+    patch = 0,
+    plan = 0,
+    agent = 0,
+    raw = 0,
+  }
+  for _, child in ipairs(children or {}) do
+    if child.type == "ReasoningBlock" then
+      counts.reasoning = counts.reasoning + 1
+    elseif child.type == "ToolCallBlock" then
+      counts.tool = counts.tool + 1
+    elseif child.type == "PatchBlock" then
+      counts.patch = counts.patch + 1
+    elseif child.type == "PlanBlock" then
+      counts.plan = counts.plan + 1
+    elseif child.type == "AgentTimelineBlock" then
+      counts.agent = counts.agent + 1
+    elseif child.type == "RawEventBlock" then
+      counts.raw = counts.raw + 1
+    end
+  end
+  return counts
+end
+
+local function plural_count(count, label)
+  if count <= 0 then
+    return nil
+  end
+  return tostring(count) .. " " .. label .. (count == 1 and "" or "s")
+end
+
+local function activity_count_labels(block)
+  local counts = activity_counts(block and block.children)
+  local labels = {}
+  for _, label in ipairs({
+    plural_count(counts.reasoning, "reasoning"),
+    plural_count(counts.tool, "tool"),
+    plural_count(counts.patch, "patch"),
+    plural_count(counts.plan, "plan"),
+    plural_count(counts.agent, "agent"),
+    plural_count(counts.raw, "raw"),
+  }) do
+    if label then
+      table.insert(labels, label)
+    end
+  end
+  return labels
+end
+
 local function placeholder_meta(block)
+  if block.type == "ActivitySummaryBlock" then
+    local meta = activity_count_labels(block)
+    table.insert(meta, 1, block.state or "finished")
+    return meta
+  end
   if block.type == "ReasoningBlock" then
     local text = events.block_text(block)
     if text == "" then
@@ -311,6 +371,9 @@ local function placeholder_meta(block)
 end
 
 local function placeholder_title(block)
+  if block.type == "ActivitySummaryBlock" then
+    return "Thinking finished"
+  end
   if block.type == "ReasoningBlock" then
     return "Reasoning" .. (block.state and (" [" .. block.state .. "]") or "")
   end
@@ -330,6 +393,9 @@ local function placeholder_title(block)
 end
 
 local function placeholder_body_lines(block)
+  if block.type == "ActivitySummaryBlock" then
+    return util.split_lines(events.block_text(block))
+  end
   if block.type == "ReasoningBlock" or block.type == "PlanBlock" or block.type == "AgentTimelineBlock" then
     return util.split_lines(events.block_text(block))
   end
@@ -1055,6 +1121,145 @@ end
 
 local compact_hook_timeline_blocks
 
+local activity_summary_types = {
+  ReasoningBlock = true,
+  ToolCallBlock = true,
+  PatchBlock = true,
+  AgentTimelineBlock = true,
+  PlanBlock = true,
+  RawEventBlock = true,
+}
+
+local function compactable_turn_ids(thread, blocks)
+  local ids = {}
+  local active_turn_id = util.value(thread and thread.active_turn_id)
+  local busy = thread_busy(thread)
+  for _, block in ipairs(blocks or {}) do
+    local turn_id = util.value(block.message_id)
+    if
+      turn_id
+      and block.type == "AssistantBlock"
+      and util.trim(events.block_text(block)) ~= ""
+      and not (busy and (not active_turn_id or active_turn_id == turn_id))
+    then
+      ids[turn_id] = true
+    end
+  end
+  return ids
+end
+
+local function activity_child_title(block)
+  if block.type == "ReasoningBlock" then
+    return "Reasoning" .. (block.state and (" [" .. block.state .. "]") or "")
+  end
+  if block.type == "ToolCallBlock" or block.type == "PatchBlock" then
+    return tostring(block.tool or "tool") .. (block.state and (" [" .. block.state .. "]") or "")
+  end
+  if block.type == "AgentTimelineBlock" then
+    return "Agent: " .. tostring(block.title or "event") .. (block.state and (" [" .. block.state .. "]") or "")
+  end
+  if block.type == "PlanBlock" then
+    return "Plan" .. (block.state and (" [" .. block.state .. "]") or "")
+  end
+  if block.type == "RawEventBlock" then
+    return "Raw Event: " .. tostring(block.title or "unknown")
+  end
+  return tostring(block.type or "Block")
+end
+
+local function append_activity_child_lines(lines, child)
+  local has_meta = false
+  table.insert(lines, "### " .. activity_child_title(child))
+  if child.item_id then
+    table.insert(lines, "item: " .. tostring(child.item_id))
+    has_meta = true
+  end
+  if child.tool_call_id then
+    table.insert(lines, "tool_call_id: " .. tostring(child.tool_call_id))
+    has_meta = true
+  end
+  if child.metadata and child.metadata.source then
+    table.insert(lines, "source: " .. tostring(child.metadata.source))
+    has_meta = true
+  end
+  if has_meta then
+    table.insert(lines, "")
+  end
+  if child.type == "ToolCallBlock" or child.type == "PatchBlock" then
+    for _, rendered_line in ipairs(tool_renderers.render(child)) do
+      table.insert(lines, rendered_line)
+    end
+  else
+    local text = events.block_text(child)
+    if text ~= "" then
+      util.list_extend(lines, util.split_lines(text))
+    else
+      table.insert(lines, "(no rendered content)")
+    end
+  end
+  table.insert(lines, "")
+end
+
+local function activity_summary_text(children)
+  local lines = {}
+  for _, child in ipairs(children or {}) do
+    append_activity_child_lines(lines, child)
+  end
+  while #lines > 0 and lines[#lines] == "" do
+    table.remove(lines)
+  end
+  return table.concat(lines, "\n")
+end
+
+local function activity_summary_block(turn_id, children)
+  return {
+    type = "ActivitySummaryBlock",
+    message_id = turn_id,
+    item_id = "activity-summary:" .. tostring(turn_id),
+    title = "Thinking finished",
+    state = "finished",
+    text = activity_summary_text(children),
+    children = children,
+    raw = {
+      children = children,
+    },
+    local_only = true,
+  }
+end
+
+local function compact_completed_activity(thread, blocks)
+  local compactable = compactable_turn_ids(thread, blocks)
+  local children_by_turn = {}
+  for _, block in ipairs(blocks or {}) do
+    local turn_id = util.value(block.message_id)
+    if turn_id and compactable[turn_id] and activity_summary_types[block.type] then
+      children_by_turn[turn_id] = children_by_turn[turn_id] or {}
+      table.insert(children_by_turn[turn_id], block)
+    end
+  end
+
+  local out = {}
+  local emitted = {}
+  for _, block in ipairs(blocks or {}) do
+    local turn_id = util.value(block.message_id)
+    if turn_id and compactable[turn_id] and activity_summary_types[block.type] then
+      if not emitted[turn_id] then
+        table.insert(out, activity_summary_block(turn_id, children_by_turn[turn_id] or {}))
+        emitted[turn_id] = true
+      end
+    elseif turn_id and compactable[turn_id] and block.type == "AssistantBlock" then
+      if not emitted[turn_id] and children_by_turn[turn_id] and #children_by_turn[turn_id] > 0 then
+        table.insert(out, activity_summary_block(turn_id, children_by_turn[turn_id]))
+        emitted[turn_id] = true
+      end
+      table.insert(out, block)
+    else
+      table.insert(out, block)
+    end
+  end
+  return out
+end
+
 function M.select_render_tree(thread)
   local blocks = {}
   util.list_extend(blocks, events.normalize_thread(thread))
@@ -1064,7 +1269,7 @@ function M.select_render_tree(thread)
   if config.get().render.show_raw_events then
     util.list_extend(blocks, thread.raw_blocks or {})
   end
-  return blocks
+  return compact_completed_activity(thread, blocks)
 end
 
 local function user_meta(thread, block)

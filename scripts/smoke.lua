@@ -1785,7 +1785,123 @@ assert(
   cleared_event_thread.placeholder_marks[1] and cleared_event_thread.placeholder_marks[1].expanded == false,
   "cleared agent events should default to collapsed"
 )
-codex.setup()
+codex.setup();
+(function()
+  local final_compact_thread = state.ensure_thread("smoke-final-activity", {
+    title = "Smoke final activity",
+    cwd = vim.fn.getcwd(),
+    generation = "idle",
+  })
+  state.upsert_item("smoke-final-activity", "turn-final", {
+    id = "reasoning-final",
+    type = "reasoning",
+    summary = { "checked the UI state" },
+    content = { "kept intermediate details" },
+    status = "completed",
+  })
+  state.upsert_item("smoke-final-activity", "turn-final", {
+    id = "tool-final",
+    type = "commandExecution",
+    command = "echo done",
+    cwd = vim.fn.getcwd(),
+    status = "completed",
+    aggregatedOutput = "done",
+    exitCode = 0,
+  })
+  state.upsert_item("smoke-final-activity", "turn-final", {
+    id = "assistant-final",
+    type = "agentMessage",
+    text = "final answer",
+    status = "completed",
+  })
+  final_compact_thread.timeline_blocks = {
+    {
+      type = "AgentTimelineBlock",
+      message_id = "turn-final",
+      item_id = "timeline-final",
+      title = "Model rerouted",
+      state = "rerouted",
+      text = "gpt-5 -> gpt-5.1",
+      local_only = true,
+    },
+  }
+  local final_blocks = render.select_render_tree(final_compact_thread)
+  local summary_block = nil
+  local standalone_activity = 0
+  local assistant_seen = false
+  for _, block in ipairs(final_blocks) do
+    if block.type == "ActivitySummaryBlock" then
+      summary_block = block
+    elseif
+      block.type == "ReasoningBlock"
+      or block.type == "ToolCallBlock"
+      or block.type == "PatchBlock"
+      or block.type == "PlanBlock"
+      or block.type == "AgentTimelineBlock"
+    then
+      standalone_activity = standalone_activity + 1
+    elseif block.type == "AssistantBlock" and block.text == "final answer" then
+      assistant_seen = true
+    end
+  end
+  assert(summary_block ~= nil, "completed assistant turns should compact activity into one summary block")
+  assert(assistant_seen, "completed activity compaction should keep the final assistant answer visible")
+  assert(standalone_activity == 0, "completed activity compaction should hide standalone reasoning/tool/agent rows")
+  assert(
+    summary_block.children and #summary_block.children == 3,
+    "completed activity summary should retain reasoning, tool, and agent timeline children"
+  )
+  assert(
+    summary_block.text:match("### Reasoning")
+      and summary_block.text:match("echo done")
+      and summary_block.text:match("Agent: Model rerouted"),
+    "completed activity summary should preserve child details"
+  )
+  local final_compact_buf = vim.api.nvim_create_buf(false, true)
+  state.bind_buffer(final_compact_thread, final_compact_buf)
+  render.render(final_compact_thread)
+  local final_compact_lines = vim.api.nvim_buf_get_lines(final_compact_buf, 0, -1, false)
+  assert(vim.tbl_contains(final_compact_lines, "final answer"), "completed activity render should show final answer")
+  assert(
+    final_compact_thread.placeholder_marks[1]
+      and final_compact_thread.placeholder_marks[1].block.type == "ActivitySummaryBlock"
+      and final_compact_thread.placeholder_marks[1].title == "Thinking finished",
+    "completed activity render should expose one collapsed thinking-finished row"
+  )
+  local final_detail_lines = require("codex.ui.detail").lines_for(summary_block)
+  assert(
+    table.concat(final_detail_lines, "\n"):match("# Thinking finished"),
+    "activity summary detail should have a clear title"
+  )
+
+  local busy_activity_thread = state.ensure_thread("smoke-busy-activity", {
+    title = "Smoke busy activity",
+    cwd = vim.fn.getcwd(),
+    generation = "streaming",
+  })
+  state.upsert_item("smoke-busy-activity", "turn-busy", {
+    id = "busy-reasoning",
+    type = "reasoning",
+    summary = { "still thinking" },
+    status = "inProgress",
+  })
+  state.upsert_item("smoke-busy-activity", "turn-busy", {
+    id = "busy-assistant",
+    type = "agentMessage",
+    text = "partial answer",
+    status = "inProgress",
+  })
+  local busy_blocks = render.select_render_tree(busy_activity_thread)
+  assert(not vim.iter(busy_blocks):any(function(block)
+    return block.type == "ActivitySummaryBlock"
+  end), "busy activity should remain fully inspectable until the final result")
+  assert(
+    vim.iter(busy_blocks):any(function(block)
+      return block.type == "ReasoningBlock"
+    end),
+    "busy activity should keep standalone reasoning rows"
+  )
+end)()
 local core_pending_thread = state.ensure_thread("smoke-core-pending", {
   title = "Smoke core pending",
   cwd = vim.fn.getcwd(),
