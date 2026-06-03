@@ -1762,6 +1762,80 @@ assert(
   "pending asset prompt should hide once the same turn has a userMessage echo"
 )
 local render = require("codex.ui.render")
+do
+  local markdown_guard_thread = state.ensure_thread("smoke-markdown-guard", {
+    title = "Smoke markdown guard",
+    cwd = vim.fn.getcwd(),
+  })
+  local markdown_guard_buf = vim.api.nvim_create_buf(false, true)
+  state.bind_buffer(markdown_guard_thread, markdown_guard_buf)
+  local unclosed_agent_text = "```diff\n+ leaked highlight"
+  state.upsert_item("smoke-markdown-guard", "turn-markdown-guard", {
+    id = "assistant-markdown-guard",
+    type = "agentMessage",
+    text = unclosed_agent_text,
+  })
+  state.upsert_item("smoke-markdown-guard", "turn-after-markdown-guard", {
+    id = "user-after-markdown-guard",
+    type = "userMessage",
+    content = {
+      { type = "text", text = "after the fence", text_elements = {} },
+    },
+  })
+  render.render(markdown_guard_thread)
+  local markdown_guard_lines = vim.api.nvim_buf_get_lines(markdown_guard_buf, 0, -1, false)
+  local markdown_guard_close = nil
+  local user_header_after_guard = nil
+  for index, line in ipairs(markdown_guard_lines) do
+    if line == "```" and not markdown_guard_close then
+      markdown_guard_close = index
+    elseif markdown_guard_close and line == "## You" then
+      user_header_after_guard = index
+      break
+    end
+  end
+  assert(markdown_guard_close ~= nil, "assistant rendering should close unclosed fenced code blocks")
+  assert(
+    markdown_guard_thread.items["assistant-markdown-guard"].text == unclosed_agent_text,
+    "markdown fence guard should not mutate raw assistant messages"
+  )
+  assert(
+    user_header_after_guard and markdown_guard_close < user_header_after_guard,
+    "markdown fence guard should close the assistant block before the next user header"
+  )
+  assert(
+    markdown_guard_thread.markdown_ranges[1]
+      and markdown_guard_thread.markdown_ranges[1].auto_closed_line == markdown_guard_close,
+    "markdown fence guard should record the render-only auto-close line"
+  )
+  assert(
+    markdown_guard_thread.markdown_ranges[2]
+      and markdown_guard_thread.markdown_ranges[2].start_line > markdown_guard_close,
+    "markdown highlight ranges should stay block-local after auto-closing a fence"
+  )
+  local markdown_guard_marks =
+    vim.api.nvim_buf_get_extmarks(markdown_guard_buf, render.namespace(), 0, -1, { details = true })
+  local first_markdown_range = markdown_guard_thread.markdown_ranges[1]
+  local has_block_local_markdown_mark = false
+  for _, mark in ipairs(markdown_guard_marks) do
+    local lnum = mark[2] + 1
+    local details = mark[4] or {}
+    if
+      first_markdown_range
+      and lnum >= first_markdown_range.start_line
+      and lnum < markdown_guard_close
+      and details.hl_group
+    then
+      has_block_local_markdown_mark = true
+      break
+    end
+  end
+  assert(has_block_local_markdown_mark, "block-local markdown highlighting should add capture extmarks")
+  assert(
+    not (vim.treesitter.highlighter.active and vim.treesitter.highlighter.active[markdown_guard_buf]),
+    "codex markdown rendering should not attach a buffer-wide Tree-sitter highlighter"
+  )
+end
 local cleared_event_thread = state.ensure_thread("smoke-cleared-event", {
   title = "Smoke cleared event",
   cwd = vim.fn.getcwd(),
@@ -2108,6 +2182,10 @@ state.upsert_item("smoke-extmarks", "turn-1", {
   aggregatedOutput = "hello",
 })
 buffers.ensure("smoke-extmarks")
+assert(
+  not (vim.treesitter.highlighter.active and vim.treesitter.highlighter.active[thread.bufnr]),
+  "codex buffers should use block-local markdown highlighting instead of buffer-wide Tree-sitter"
+)
 vim.api.nvim_set_current_buf(thread.bufnr)
 buffers.apply_window_options(vim.api.nvim_get_current_win(), thread.bufnr)
 local extmarks =
