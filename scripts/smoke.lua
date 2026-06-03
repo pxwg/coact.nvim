@@ -1809,6 +1809,12 @@ codex.setup();
     exitCode = 0,
   })
   state.upsert_item("smoke-final-activity", "turn-final", {
+    id = "commentary-final",
+    type = "agentMessage",
+    text = "intermediate progress update",
+    status = "commentary",
+  })
+  state.upsert_item("smoke-final-activity", "turn-final", {
     id = "assistant-final",
     type = "agentMessage",
     text = "final answer",
@@ -1829,9 +1835,13 @@ codex.setup();
   local summary_block = nil
   local standalone_activity = 0
   local assistant_seen = false
-  for _, block in ipairs(final_blocks) do
+  local commentary_index = nil
+  local summary_index = nil
+  local final_index = nil
+  for index, block in ipairs(final_blocks) do
     if block.type == "ActivitySummaryBlock" then
       summary_block = block
+      summary_index = index
     elseif
       block.type == "ReasoningBlock"
       or block.type == "ToolCallBlock"
@@ -1840,12 +1850,20 @@ codex.setup();
       or block.type == "AgentTimelineBlock"
     then
       standalone_activity = standalone_activity + 1
+    elseif block.type == "AssistantBlock" and block.state == "commentary" then
+      commentary_index = index
     elseif block.type == "AssistantBlock" and block.text == "final answer" then
       assistant_seen = true
+      final_index = index
     end
   end
   assert(summary_block ~= nil, "completed assistant turns should compact activity into one summary block")
   assert(assistant_seen, "completed activity compaction should keep the final assistant answer visible")
+  assert(commentary_index ~= nil, "completed activity compaction should keep commentary visible")
+  assert(
+    commentary_index < summary_index and summary_index < final_index,
+    "completed activity summary should separate commentary from final answer"
+  )
   assert(standalone_activity == 0, "completed activity compaction should hide standalone reasoning/tool/agent rows")
   assert(
     summary_block.children and #summary_block.children == 3,
@@ -1886,20 +1904,78 @@ codex.setup();
     status = "inProgress",
   })
   state.upsert_item("smoke-busy-activity", "turn-busy", {
-    id = "busy-assistant",
+    id = "busy-commentary",
     type = "agentMessage",
-    text = "partial answer",
-    status = "inProgress",
+    text = "progress update",
+    status = "commentary",
   })
   local busy_blocks = render.select_render_tree(busy_activity_thread)
   assert(not vim.iter(busy_blocks):any(function(block)
     return block.type == "ActivitySummaryBlock"
-  end), "busy activity should remain fully inspectable until the final result")
+  end), "busy commentary activity should remain fully inspectable until the final answer starts")
   assert(
     vim.iter(busy_blocks):any(function(block)
       return block.type == "ReasoningBlock"
     end),
     "busy activity should keep standalone reasoning rows"
+  )
+
+  local streaming_final_thread = state.ensure_thread("smoke-streaming-final-activity", {
+    title = "Smoke streaming final activity",
+    cwd = vim.fn.getcwd(),
+    generation = "streaming",
+  })
+  streaming_final_thread.active_turn_id = "turn-streaming-final"
+  state.upsert_item("smoke-streaming-final-activity", "turn-streaming-final", {
+    id = "streaming-reasoning",
+    type = "reasoning",
+    summary = { "done thinking" },
+    status = "completed",
+  })
+  state.upsert_item("smoke-streaming-final-activity", "turn-streaming-final", {
+    id = "streaming-commentary",
+    type = "agentMessage",
+    text = "progress before final",
+    status = "commentary",
+  })
+  state.upsert_item("smoke-streaming-final-activity", "turn-streaming-final", {
+    id = "streaming-tool",
+    type = "commandExecution",
+    command = "echo streamed",
+    cwd = vim.fn.getcwd(),
+    status = "completed",
+    aggregatedOutput = "streamed",
+    exitCode = 0,
+  })
+  state.upsert_item("smoke-streaming-final-activity", "turn-streaming-final", {
+    id = "streaming-final",
+    type = "agentMessage",
+    text = "partial final answer",
+    status = "final_answer",
+  })
+  local streaming_blocks = render.select_render_tree(streaming_final_thread)
+  local streaming_commentary_index = nil
+  local streaming_summary_index = nil
+  local streaming_final_index = nil
+  local streaming_standalone_activity = 0
+  for index, block in ipairs(streaming_blocks) do
+    if block.type == "ActivitySummaryBlock" then
+      streaming_summary_index = index
+    elseif block.type == "ReasoningBlock" or block.type == "ToolCallBlock" then
+      streaming_standalone_activity = streaming_standalone_activity + 1
+    elseif block.type == "AssistantBlock" and block.state == "commentary" then
+      streaming_commentary_index = index
+    elseif block.type == "AssistantBlock" and block.text == "partial final answer" then
+      streaming_final_index = index
+    end
+  end
+  assert(streaming_summary_index ~= nil, "streaming final answers should compact finished activity")
+  assert(streaming_commentary_index ~= nil, "streaming final compaction should keep commentary visible")
+  assert(streaming_final_index ~= nil, "streaming final compaction should keep the final answer visible")
+  assert(streaming_standalone_activity == 0, "streaming final compaction should hide standalone reasoning/tool rows")
+  assert(
+    streaming_commentary_index < streaming_summary_index and streaming_summary_index < streaming_final_index,
+    "streaming final compaction should put thinking-finished between commentary and final answer"
   )
 end)()
 local core_pending_thread = state.ensure_thread("smoke-core-pending", {

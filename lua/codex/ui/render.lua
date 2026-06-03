@@ -1130,18 +1130,21 @@ local activity_summary_types = {
   RawEventBlock = true,
 }
 
-local function compactable_turn_ids(thread, blocks)
+local function final_assistant_block(block)
+  if not block or block.type ~= "AssistantBlock" then
+    return false
+  end
+  if util.trim(events.block_text(block)) == "" then
+    return false
+  end
+  return block.state ~= "commentary"
+end
+
+local function compactable_turn_ids(_, blocks)
   local ids = {}
-  local active_turn_id = util.value(thread and thread.active_turn_id)
-  local busy = thread_busy(thread)
   for _, block in ipairs(blocks or {}) do
     local turn_id = util.value(block.message_id)
-    if
-      turn_id
-      and block.type == "AssistantBlock"
-      and util.trim(events.block_text(block)) ~= ""
-      and not (busy and (not active_turn_id or active_turn_id == turn_id))
-    then
+    if turn_id and final_assistant_block(block) then
       ids[turn_id] = true
     end
   end
@@ -1243,11 +1246,9 @@ local function compact_completed_activity(thread, blocks)
   for _, block in ipairs(blocks or {}) do
     local turn_id = util.value(block.message_id)
     if turn_id and compactable[turn_id] and activity_summary_types[block.type] then
-      if not emitted[turn_id] then
-        table.insert(out, activity_summary_block(turn_id, children_by_turn[turn_id] or {}))
-        emitted[turn_id] = true
-      end
-    elseif turn_id and compactable[turn_id] and block.type == "AssistantBlock" then
+      -- Hold intermediate activity until the final answer, so the summary
+      -- separates progress commentary from the user-facing result.
+    elseif turn_id and compactable[turn_id] and final_assistant_block(block) then
       if not emitted[turn_id] and children_by_turn[turn_id] and #children_by_turn[turn_id] > 0 then
         table.insert(out, activity_summary_block(turn_id, children_by_turn[turn_id]))
         emitted[turn_id] = true
