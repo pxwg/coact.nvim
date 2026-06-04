@@ -10,7 +10,6 @@ local ns = vim.api.nvim_create_namespace("codex.nvim")
 local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
-local markdown_highlight_queries = {}
 
 local foldable_types = {
   UserBlock = true,
@@ -135,22 +134,17 @@ local function unclosed_fence(lines)
   return open
 end
 
-local function mark_markdown_range(thread, start_line, finish_line, auto_closed_line)
-  if finish_line < start_line then
+local function mark_auto_closed_fence(thread, line)
+  if not line then
     return
   end
-  table.insert(thread.markdown_ranges, {
-    start_line = start_line,
-    finish_line = finish_line,
-    auto_closed_line = auto_closed_line,
-  })
+  table.insert(thread.auto_closed_fence_lines, line)
 end
 
-local function add_markdown_text(thread, lines, value)
+local function add_guarded_text(thread, lines, value)
   local text_lines = util.split_lines(value)
   if #text_lines == 0 then
     local line = add(lines, "")
-    mark_markdown_range(thread, line, line, nil)
     return line, line
   end
 
@@ -160,15 +154,12 @@ local function add_markdown_text(thread, lines, value)
   end
 
   local open = unclosed_fence(text_lines)
-  local auto_closed_line = nil
   if open then
     table.insert(lines, string.rep(open.char, open.len))
-    auto_closed_line = #lines
+    mark_auto_closed_fence(thread, #lines)
   end
 
-  local finish_line = #lines
-  mark_markdown_range(thread, start_line, finish_line, auto_closed_line)
-  return start_line, finish_line
+  return start_line, #lines
 end
 
 local function compact_text(value)
@@ -618,122 +609,19 @@ local function apply_stream_decoration_marks(thread, bufnr)
   end
 end
 
-local function markdown_query(lang)
-  if markdown_highlight_queries[lang] == false then
-    return nil
-  end
-  if markdown_highlight_queries[lang] then
-    return markdown_highlight_queries[lang]
-  end
-  local ok, query = pcall(vim.treesitter.query.get, lang, "highlights")
-  if not ok or not query then
-    markdown_highlight_queries[lang] = false
-    return nil
-  end
-  local entry = {
-    lang = lang,
-    query = query,
-    hl_cache = {},
-  }
-  markdown_highlight_queries[lang] = entry
-  return entry
-end
-
-local function markdown_hl(entry, capture)
-  local cached = entry.hl_cache[capture]
-  if cached ~= nil then
-    return cached
-  end
-  local name = entry.query.captures[capture]
-  if not name or vim.startswith(name, "_") then
-    entry.hl_cache[capture] = false
-    return nil
-  end
-  local ok, hl = pcall(vim.api.nvim_get_hl_id_by_name, "@" .. name .. "." .. entry.lang)
-  if not ok or not hl or hl == 0 then
-    entry.hl_cache[capture] = false
-    return nil
-  end
-  entry.hl_cache[capture] = hl
-  return hl
-end
-
-local function markdown_priority(metadata, capture)
-  local default_priority = vim.hl and vim.hl.priorities and vim.hl.priorities.treesitter or 100
-  if not metadata then
-    return default_priority
-  end
-  local capture_metadata = metadata[capture]
-  local priority = metadata.priority
-  if priority == nil and capture_metadata then
-    priority = capture_metadata.priority
-  end
-  return tonumber(priority) or default_priority
-end
-
-local function apply_markdown_tree(bufnr, range, text, tree, lang)
-  local entry = markdown_query(lang)
-  if not entry then
-    return
-  end
-  for capture, node, metadata in entry.query:iter_captures(tree:root(), text, 0, -1) do
-    local hl = markdown_hl(entry, capture)
-    if hl then
-      local start_row, start_col, end_row, end_col = node:range()
-      local target_start = range.start_line - 1 + start_row
-      local target_end = range.start_line - 1 + end_row
-      if target_start <= range.finish_line - 1 and target_end >= range.start_line - 1 then
-        vim.api.nvim_buf_set_extmark(bufnr, ns, target_start, start_col, {
-          end_row = target_end,
-          end_col = end_col,
-          hl_group = hl,
-          priority = markdown_priority(metadata, capture),
-          strict = false,
-        })
-      end
-    end
-  end
-end
-
-local function apply_markdown_range(bufnr, range)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, range.start_line - 1, range.finish_line, false)
-  if #lines == 0 then
-    return
-  end
-  local text = table.concat(lines, "\n")
-  local ok, parser = pcall(vim.treesitter.get_string_parser, text, "markdown")
-  if not ok or not parser then
-    return
-  end
-  local parsed = pcall(function()
-    parser:parse()
-  end)
-  if not parsed then
-    return
-  end
-  parser:for_each_tree(function(tree, lang_tree)
-    if tree and lang_tree then
-      apply_markdown_tree(bufnr, range, text, tree, lang_tree:lang())
-    end
-  end)
-end
-
 local function buffer_line_length(bufnr, lnum)
   local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
   return #line
 end
 
-local function apply_markdown_marks(thread, bufnr)
-  for _, range in ipairs(thread.markdown_ranges or {}) do
-    apply_markdown_range(bufnr, range)
-    if range.auto_closed_line then
-      vim.api.nvim_buf_set_extmark(bufnr, ns, range.auto_closed_line - 1, 0, {
-        end_col = buffer_line_length(bufnr, range.auto_closed_line),
-        hl_group = "Comment",
-        priority = 1200,
-        strict = false,
-      })
-    end
+local function apply_auto_closed_fence_marks(thread, bufnr)
+  for _, line in ipairs(thread.auto_closed_fence_lines or {}) do
+    vim.api.nvim_buf_set_extmark(bufnr, ns, line - 1, 0, {
+      end_col = buffer_line_length(bufnr, line),
+      hl_group = "Comment",
+      priority = 1200,
+      strict = false,
+    })
   end
 end
 
@@ -1564,25 +1452,25 @@ render_block = function(thread, lines, block, opts)
     local line = add(lines, "## You")
     mark_header(thread, line, "user", "You", user_meta(thread, block), block)
     add(lines, "")
-    add_markdown_text(thread, lines, block.text)
+    add_guarded_text(thread, lines, block.text)
   elseif block.type == "AssistantBlock" then
     if not opts.assistant_body then
       local line = add(lines, "## Codex")
       mark_header(thread, line, "assistant", "Codex", assistant_meta(thread, block), block)
       add(lines, "")
     end
-    add_markdown_text(thread, lines, block.text)
+    add_guarded_text(thread, lines, block.text)
   elseif placeholder_types[block.type] then
     render_placeholder(thread, lines, block, opts)
   elseif block.type == "ErrorBlock" then
     local line = add(lines, "### Error")
     mark_header(thread, line, "section", "Error", {}, block)
-    add_markdown_text(thread, lines, events.block_text(block))
+    add_guarded_text(thread, lines, events.block_text(block))
   else
     local title = tostring(block.type or "Block")
     local line = add(lines, "### " .. title)
     mark_header(thread, line, "section", title, {}, block)
-    add_markdown_text(thread, lines, events.block_text(block))
+    add_guarded_text(thread, lines, events.block_text(block))
   end
   local finish = #lines
   for lnum = start, finish do
@@ -1629,7 +1517,7 @@ function M.render(thread)
   thread.placeholder_index = {}
   thread.placeholder_marks = {}
   thread.header_marks = {}
-  thread.markdown_ranges = {}
+  thread.auto_closed_fence_lines = {}
   thread.reasoning_marks = {}
   thread.stream_decoration_marks = {}
   thread.spinner_mark = nil
@@ -1675,7 +1563,7 @@ function M.render(thread)
   vim.bo[bufnr].modifiable = true
   replace_buffer_lines(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-  apply_markdown_marks(thread, bufnr)
+  apply_auto_closed_fence_marks(thread, bufnr)
   apply_header_marks(thread, bufnr)
   apply_placeholder_marks(thread, bufnr)
   apply_reasoning_marks(thread, bufnr)

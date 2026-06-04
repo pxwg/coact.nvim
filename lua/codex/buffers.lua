@@ -279,8 +279,12 @@ function M.ensure(thread_id)
   vim.api.nvim_buf_set_name(bufnr, "codex://thread/" .. thread_id)
   configure_buffer(bufnr, thread_id)
   state.bind_buffer(thread, bufnr)
-  vim.bo[bufnr].syntax = ""
-  vim.b[bufnr].current_syntax = nil
+  if pcall(vim.treesitter.start, bufnr, "markdown") then
+    vim.bo[bufnr].syntax = ""
+    vim.b[bufnr].current_syntax = nil
+  else
+    vim.bo[bufnr].syntax = "markdown"
+  end
   setup_buffer_autocmds(bufnr)
   M.render(thread_id, {})
   return bufnr
