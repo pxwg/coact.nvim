@@ -625,8 +625,11 @@ local function review_context(summary, session_result)
   local lines = {
     "User reviewed Codex native apply_patch in Neovim.",
   }
-  if session_result and (tonumber(session_result.rejected_hunks or 0) or 0) > 0 then
-    table.insert(lines, "Some hunks were rejected; review the user rejection feedback before planning follow-up edits.")
+  if session_result and (tonumber(session_result.rejected_blocks or session_result.rejected_hunks or 0) or 0) > 0 then
+    table.insert(
+      lines,
+      "Some changed blocks were rejected; review the user rejection feedback before planning follow-up edits."
+    )
   end
   if type(summary) == "string" and util.trim(summary) ~= "" then
     table.insert(lines, "")
@@ -660,12 +663,17 @@ local function finish_session_review(payload, patch, changes, done)
         item_id = item_id,
         success = success,
         force_failure = session_result and session_result.force_failure,
+        rejected_blocks = session_result and session_result.rejected_blocks,
         rejected_hunks = session_result and session_result.rejected_hunks,
         write_ok = session_result and session_result.write_ok,
         write_error = session_result and session_result.write_error,
       })
-      local accepted_hunks = tonumber(session_result and session_result.accepted_hunks or 0) or 0
-      local rejected_hunks = tonumber(session_result and session_result.rejected_hunks or 0) or 0
+      local accepted_blocks = tonumber(
+        session_result and (session_result.accepted_blocks or session_result.accepted_hunks) or 0
+      ) or 0
+      local rejected_blocks = tonumber(
+        session_result and (session_result.rejected_blocks or session_result.rejected_hunks) or 0
+      ) or 0
       if session_result and session_result.force_failure then
         done(deny_output(rejection_context(summary)))
         return
@@ -674,7 +682,7 @@ local function finish_session_review(payload, patch, changes, done)
         done(deny_output("Neovim apply_patch write failed.\n\n" .. tostring(summary or "")))
         return
       end
-      if accepted_hunks == 0 and rejected_hunks > 0 then
+      if accepted_blocks == 0 and rejected_blocks > 0 then
         done(deny_output(rejection_context(summary)))
         return
       end

@@ -265,7 +265,7 @@ hash through Codex config, while per-session Neovim RPC details are passed
 through environment variables, so pair mode does not need
 `--dangerously-bypass-hook-trust`. The hook previews the patch in the affected
 Neovim file buffers before the native tool completes. Accepting the review writes
-accepted hunks through the same path as `nvim.apply_patch`, then returns
+accepted changed blocks through the same path as `nvim.apply_patch`, then returns
 `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex
 native `apply_patch` can complete without repeating the real edit; rejecting
 returns `permissionDecision: "deny"` with the user's reason. Follow-up
@@ -274,15 +274,15 @@ accepted only when their item id was already reviewed by the Neovim hook, so
 pair mode does not require
 `--dangerously-bypass-approvals-and-sandbox`.
 
-The pair-mode native review uses the file-buffer hunk controls:
+The pair-mode native review uses the file-buffer changed-block controls:
 >
-  <leader>ca  accept current hunk
-  <leader>cr  reject current hunk and prompt for a reason
-  <leader>cA  accept all remaining hunks
-  <leader>cR  reject all remaining hunks and prompt for a reason
+  <leader>ca  accept current changed block
+  <leader>cr  reject current changed block and prompt for a reason
+  <leader>cA  accept all remaining changed blocks
+  <leader>cR  reject all remaining changed blocks and prompt for a reason
   <leader>cq  cancel review
-  [c          jump to previous pending hunk
-  ]c          jump to next pending hunk
+  [c          jump to previous pending changed block
+  ]c          jump to next pending changed block
 <
 You can edit the previewed file buffer before accepting; codex.nvim writes the
 final accepted buffer state and returns the review summary to Codex as hook
@@ -299,16 +299,16 @@ rejected while the tool is not exposed. The legacy option
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 >
-  <leader>ca  accept current hunk
-  <leader>cr  reject current hunk and prompt for a reason
-  <leader>cA  accept all remaining hunks
-  <leader>cR  reject all remaining hunks and prompt for a reason
+  <leader>ca  accept current changed block
+  <leader>cr  reject current changed block and prompt for a reason
+  <leader>cA  accept all remaining changed blocks
+  <leader>cR  reject all remaining changed blocks and prompt for a reason
   <leader>cf  use Neovim auto-apply for the session
   <leader>cq  cancel the review
-  [c          previous pending hunk
-  ]c          next pending hunk
+  [c          previous pending changed block
+  ]c          next pending changed block
 <
-Rejected hunk reasons, partial-apply status, final file state, a final diff, and
+Rejected changed-block reasons, partial-apply status, final file state, a final diff, and
 the target buffer's `nvim.diagnostics` output are returned to Codex as the
 dynamic tool result so the agent can continue from the user's feedback when
 that legacy tool is explicitly enabled.

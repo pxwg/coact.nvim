@@ -155,7 +155,7 @@ do
     return native_hook_review_session ~= nil
   end, 20)
   assert(native_hook_review_session, "native apply_patch hook should open file-buffer patch review")
-  local native_hook_review_buf = native_hook_review_session.hunks[1].bufnr
+  local native_hook_review_buf = native_hook_review_session.blocks[1].bufnr
   local native_hook_diag_ns = vim.api.nvim_create_namespace("codex-smoke-native-hook-diagnostics")
   vim.diagnostic.set(native_hook_diag_ns, native_hook_review_buf, {
     {
@@ -167,7 +167,7 @@ do
     },
   }, {})
   vim.api.nvim_buf_set_lines(native_hook_review_buf, 1, 2, false, { "from-nvim" })
-  require("codex.patch_session")._accept_hunk(native_hook_review_session, native_hook_review_session.hunks[1])
+  require("codex.patch_session")._accept_block(native_hook_review_session, native_hook_review_session.blocks[1])
   vim.wait(1000, function()
     return native_hook_review_output ~= nil
   end, 20)
@@ -216,10 +216,10 @@ do
     end
     return native_hook_reject_session ~= nil
   end, 20)
-  assert(native_hook_reject_session, "native apply_patch hook should open rejected hunk review")
-  require("codex.patch_session")._reject_hunk(
+  assert(native_hook_reject_session, "native apply_patch hook should open rejected block review")
+  require("codex.patch_session")._reject_block(
     native_hook_reject_session,
-    native_hook_reject_session.hunks[1],
+    native_hook_reject_session.blocks[1],
     "keep right"
   )
   vim.wait(1000, function()
@@ -848,7 +848,7 @@ require("codex.patch_session").open({
   apply_on_complete = false,
   restore_on_complete = true,
   on_complete = function(_, success, session_result)
-    assert(success, "review-only patch session should still report accepted hunks as success")
+    assert(success, "review-only patch session should still report accepted blocks as success")
     review_only_seen_final = session_result.file_order[1].final_lines[2] == "changed"
   end,
 })
@@ -877,7 +877,7 @@ local session = patch_session.open({
   cwd = session_dir,
   changes = dynamic_tools._changes_from_unified_patch(session_patch),
   on_complete = function(summary, success)
-    assert(not success, "rejected hunk should report a failed/partial patch review")
+    assert(not success, "rejected block should report a failed/partial patch review")
     assert(summary:match("keep beta"), "patch review summary should include rejection feedback")
     session_done = true
   end,
@@ -889,6 +889,7 @@ assert(
 assert(patch_session._active_session(0) == session, "patch session should track active edited buffers")
 local diff_ns = vim.api.nvim_get_namespaces()["codex.patch_session.diff"]
 local session_hunk = session.hunks[1]
+local session_block = session.blocks[1]
 assert(
   #session_hunk.changed_blocks == 1
     and #session_hunk.changed_blocks[1].old_lines == 1
@@ -914,11 +915,11 @@ assert(
     and not session_old_virtual:match("gamma"),
   "patch session should show only deleted lines as old virtual diff content"
 )
-patch_session._reject_hunk(session, session.hunks[1], "keep beta")
+patch_session._reject_block(session, session_block, "keep beta")
 vim.wait(1000, function()
   return session_done
 end, 20)
-assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch hunk should restore original file content")
+assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch block should restore original file content")
 do
   local previous_active_thread_id = require("codex.state").active_thread_id
   vim.cmd("tabnew")
@@ -955,7 +956,7 @@ do
     vim.api.nvim_get_current_win() ~= codex_review_win and patch_session._active_session(0) == preserve_chat_session,
     "patch session should open a separate review window when launched from a Codex chat buffer"
   )
-  patch_session._accept_hunk(preserve_chat_session, preserve_chat_session.hunks[1])
+  patch_session._accept_block(preserve_chat_session, preserve_chat_session.blocks[1])
   assert(vim.fn.readfile(preserve_chat_file)[2] == "new", "separate review window should still write accepted edits")
   vim.cmd("tabclose")
   smoke_window_state.active_thread_id = previous_active_thread_id
@@ -998,7 +999,7 @@ assert(
     and not delete_only_virtual:match("right context"),
   "patch session should render deletion-only blocks without context lines"
 )
-patch_session._accept_hunk(delete_only_session, delete_only_hunk)
+patch_session._accept_block(delete_only_session, delete_only_session.blocks[1])
 local multi_file = vim.fs.joinpath(session_dir, "multi.txt")
 vim.fn.writefile({ "top", "old one", "middle", "old two", "bottom" }, multi_file)
 local multi_patch = table.concat({
@@ -1014,13 +1015,20 @@ local multi_patch = table.concat({
   "+new two",
   " bottom",
 }, "\n")
+local multi_done = false
 local multi_session = patch_session.open({
   cwd = session_dir,
   changes = dynamic_tools._changes_from_unified_patch(multi_patch),
+  on_complete = function(summary, success, session_result)
+    assert(not success, "partially rejected blocks should report a partial patch review")
+    assert(summary:match("keep old one"), "block-level patch review should report the rejected block reason")
+    multi_done = session_result.accepted_blocks == 1 and session_result.rejected_blocks == 1
+  end,
 })
 local multi_hunk = multi_session.hunks[1]
 assert(
   #multi_session.hunks == 1
+    and #multi_session.blocks == 2
     and #multi_hunk.changed_blocks == 2
     and #multi_hunk.display_extmark_ids == 2
     and #multi_hunk.old_extmark_ids == 2,
@@ -1037,7 +1045,52 @@ assert(
     and second_multi_mark[3].end_row == 4,
   "patch session should render each changed block without highlighting intervening context"
 )
-patch_session._accept_hunk(multi_session, multi_hunk)
+patch_session._reject_block(multi_session, multi_session.blocks[1], "keep old one")
+assert(
+  not multi_session.completed and multi_session.blocks[1].status == "rejected" and not multi_session.blocks[2].status,
+  "rejecting one patch block should leave other blocks in the same hunk pending"
+)
+patch_session._accept_block(multi_session, multi_session.blocks[2])
+vim.wait(1000, function()
+  return multi_done
+end, 20)
+assert(multi_done, "mixed block decisions should complete the patch session")
+local multi_lines = vim.fn.readfile(multi_file)
+assert(
+  multi_lines[2] == "old one" and multi_lines[4] == "new two",
+  "block-level patch review should allow mixed decisions inside one hunk"
+);
+(function()
+  local shift_file = vim.fs.joinpath(session_dir, "shift.txt")
+  vim.fn.writefile({ "top", "remove me", "middle", "old tail", "bottom" }, shift_file)
+  local shift_patch = table.concat({
+    "diff --git a/shift.txt b/shift.txt",
+    "--- a/shift.txt",
+    "+++ b/shift.txt",
+    "@@ -1,5 +1,4 @@",
+    " top",
+    "-remove me",
+    " middle",
+    "-old tail",
+    "+new tail",
+    " bottom",
+  }, "\n")
+  local shift_session = patch_session.open({
+    cwd = session_dir,
+    changes = dynamic_tools._changes_from_unified_patch(shift_patch),
+  })
+  assert(
+    #shift_session.hunks == 1 and #shift_session.blocks == 2,
+    "line-shifting patch review should still split changed blocks inside one hunk"
+  )
+  patch_session._reject_block(shift_session, shift_session.blocks[1], "keep removed line")
+  patch_session._accept_block(shift_session, shift_session.blocks[2])
+  local shift_lines = vim.fn.readfile(shift_file)
+  assert(
+    table.concat(shift_lines, "\n") == "top\nremove me\nmiddle\nnew tail\nbottom",
+    "rejecting a line-shifting block should keep later block approvals aligned"
+  )
+end)()
 codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = true } })
 local tool_dir = vim.fn.tempname()
 vim.fn.mkdir(tool_dir, "p")
@@ -1117,8 +1170,8 @@ dynamic_tools.handle_call({
   },
 })
 local tool_session = patch_session._active_session(0)
-assert(tool_session and tool_session.hunks[1], "nvim.apply_patch dynamic tool should open an in-buffer patch session")
-patch_session._reject_hunk(tool_session, tool_session.hunks[1], "not this color")
+assert(tool_session and tool_session.blocks[1], "nvim.apply_patch dynamic tool should open an in-buffer patch session")
+patch_session._reject_block(tool_session, tool_session.blocks[1], "not this color")
 vim.wait(1000, function()
   return tool_response ~= nil
 end, 20)
@@ -1163,8 +1216,8 @@ dynamic_tools.handle_call({
   },
 })
 local accept_tool_session = patch_session._active_session(0)
-assert(accept_tool_session and accept_tool_session.hunks[1], "accepted nvim.apply_patch should open a patch session")
-patch_session._accept_hunk(accept_tool_session, accept_tool_session.hunks[1])
+assert(accept_tool_session and accept_tool_session.blocks[1], "accepted nvim.apply_patch should open a patch session")
+patch_session._accept_block(accept_tool_session, accept_tool_session.blocks[1])
 vim.wait(1000, function()
   return accept_tool_response ~= nil
 end, 20)

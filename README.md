@@ -21,7 +21,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 - Prompt-anchor window following that keeps the composer stable while Codex streams, but suspends auto-follow when you scroll away.
 - App-server lifecycle notifications are preserved as timeline blocks; unknown notifications are retained as raw blocks and can be shown for debugging.
 - Patch review window for `item/fileChange/requestApproval` and legacy `applyPatchApproval`.
-- Pair-mode native `apply_patch` review through a Codex `PreToolUse` hook, using the same file-buffer hunk UI as the internal Neovim patch tool.
+- Pair-mode native `apply_patch` review through a Codex `PreToolUse` hook, using the same file-buffer changed-block UI as the internal Neovim patch tool.
 - Basic command and permission approval prompts.
 - Optional dynamic tools exposed to Codex under the `nvim` namespace:
   - `nvim.current_buffer`
@@ -203,23 +203,23 @@ Review keys:
 
 The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. Outside pair mode, Codex still owns the final app-server file-change application after approval.
 
-`edit.mode = "pair"` is the default. In pair mode, codex.nvim tells Codex to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the app-server process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Accepting the review writes accepted hunks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
+`edit.mode = "pair"` is the default. In pair mode, codex.nvim tells Codex to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the app-server process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Accepting the review writes accepted changed blocks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
 
-The pair-mode native review uses the file-buffer hunk controls: `<leader>ca` accepts the current hunk, `<leader>cr` rejects it with a reason, `<leader>cA` accepts the rest, `<leader>cR` rejects the rest, and `<leader>cq` cancels. You can edit the previewed file buffer before accepting; codex.nvim writes the final accepted buffer state and returns the review summary to Codex as hook context, including rejection reasons and any diff between Codex's proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
+The pair-mode native review uses the file-buffer changed-block controls: `<leader>ca` accepts the current changed block, `<leader>cr` rejects it with a reason, `<leader>cA` accepts the rest, `<leader>cR` rejects the rest, and `<leader>cq` cancels. You can edit the previewed file buffer before accepting; codex.nvim writes the final accepted buffer state and returns the review summary to Codex as hook context, including rejection reasons and any diff between Codex's proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
 
 `edit.mode = "yolo"` tells Codex to use the native `apply_patch` tool directly without the Neovim PreToolUse review hook. Calls to `nvim.apply_patch` are rejected while the tool is not exposed. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` still selects yolo mode unless `edit.mode` is set explicitly.
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 
-- `<leader>ca`: accept current hunk
-- `<leader>cr`: reject current hunk and prompt for a reason
-- `<leader>cA`: accept all remaining hunks
-- `<leader>cR`: reject all remaining hunks and prompt for a reason
+- `<leader>ca`: accept current changed block
+- `<leader>cr`: reject current changed block and prompt for a reason
+- `<leader>cA`: accept all remaining changed blocks
+- `<leader>cR`: reject all remaining changed blocks and prompt for a reason
 - `<leader>cf`: use Neovim auto-apply for the session
 - `<leader>cq`: cancel the review
-- `[c` / `]c`: jump between pending hunks
+- `[c` / `]c`: jump between pending changed blocks
 
-Rejected hunk reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to Codex as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
+Rejected changed-block reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to Codex as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
 
 ## Events
 
@@ -258,7 +258,7 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises health and status helpers, parser/completion behavior, verifies source-buffer context tracking, checks `@file:` picker hooks and direct `@path` syntax, verifies patch-review hunk indexing, verifies Neovim-owned patch application and in-buffer hunk rejection feedback, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises health and status helpers, parser/completion behavior, verifies source-buffer context tracking, checks `@file:` picker hooks and direct `@path` syntax, verifies patch-review hunk indexing, verifies Neovim-owned patch application and in-buffer changed-block rejection feedback, verifies app-server initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
 
 ## License
 

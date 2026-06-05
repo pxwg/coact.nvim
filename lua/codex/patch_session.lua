@@ -281,42 +281,50 @@ local function hunk_label(hunk)
   return ("%s hunk %d"):format(path, hunk.index or 0)
 end
 
-local function hunk_position(hunk)
-  local row = hunk.applied_start_row or 0
-  local end_row = row + #(hunk.new_lines or {})
-  if hunk.extmark_id and vim.api.nvim_buf_is_valid(hunk.bufnr) then
-    local extmark = vim.api.nvim_buf_get_extmark_by_id(hunk.bufnr, diff_ns, hunk.extmark_id, { details = true })
+local function block_label(block)
+  local hunk = block and block.hunk or nil
+  local file = (block and block.file) or (hunk and hunk.file) or nil
+  local path = file and file.relative_path or "patch"
+  return ("%s block %d"):format(path, block and block.index or 0)
+end
+
+local function block_bufnr(block)
+  local hunk = block and block.hunk or nil
+  return block and (block.bufnr or (hunk and hunk.bufnr)) or nil
+end
+
+local function block_position(block)
+  local hunk = block and block.hunk or nil
+  local bufnr = block_bufnr(block)
+  local row = (hunk and hunk.applied_start_row or 0) + (block and block.new_start or 0)
+  local end_row = row + #(block and block.new_lines or {})
+  local mark_id = block and (block.display_extmark_id or block.old_extmark_id) or nil
+  if mark_id and bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    local extmark = vim.api.nvim_buf_get_extmark_by_id(bufnr, diff_ns, mark_id, { details = true })
     if #extmark > 0 then
       row = extmark[1]
-      end_row = extmark[3] and extmark[3].end_row or end_row
+      end_row = extmark[3] and extmark[3].end_row or (row + #(block.new_lines or {}))
     end
   end
-  if #(hunk.new_lines or {}) == 0 then
+  if #(block and block.new_lines or {}) == 0 then
     end_row = row
   end
   return row, end_row
 end
 
-local function remove_hunk_marks(hunk)
-  if not hunk.bufnr or not vim.api.nvim_buf_is_valid(hunk.bufnr) then
+local function remove_block_marks(block)
+  local bufnr = block_bufnr(block)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  if hunk.extmark_id then
-    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, hunk.extmark_id)
-    hunk.extmark_id = nil
+  if block.display_extmark_id then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, block.display_extmark_id)
+    block.display_extmark_id = nil
   end
-  if hunk.old_extmark_id then
-    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, hunk.old_extmark_id)
-    hunk.old_extmark_id = nil
+  if block.old_extmark_id then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, block.old_extmark_id)
+    block.old_extmark_id = nil
   end
-  for _, id in ipairs(hunk.display_extmark_ids or {}) do
-    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, id)
-  end
-  hunk.display_extmark_ids = nil
-  for _, id in ipairs(hunk.old_extmark_ids or {}) do
-    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, id)
-  end
-  hunk.old_extmark_ids = nil
 end
 
 local function old_virtual_lines(hunk, block)
@@ -325,8 +333,8 @@ local function old_virtual_lines(hunk, block)
     return {}
   end
   local virt_lines = {}
-  local suffix = #(hunk.changed_blocks or {}) > 1 and (" block %d"):format(block.index or 0) or ""
-  table.insert(virt_lines, { { ("--- before %s%s"):format(hunk_label(hunk), suffix), "DiffDelete" } })
+  local label = #(hunk.changed_blocks or {}) > 1 and block_label(block) or hunk_label(hunk)
+  table.insert(virt_lines, { { ("--- before %s"):format(label), "DiffDelete" } })
   for _, line in ipairs(old_lines) do
     table.insert(virt_lines, { { "- " .. line, "DiffDelete" } })
   end
@@ -355,55 +363,53 @@ local function mark_hunk(hunk)
   })
 
   for index, block in ipairs(hunk.changed_blocks or {}) do
-    block.index = index
+    block.index_in_hunk = index
     local block_start = clamp_extmark_row(bufnr, (hunk.applied_start_row or 0) + (block.new_start or 0))
     if #(block.new_lines or {}) > 0 then
-      table.insert(
-        hunk.display_extmark_ids,
-        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-          end_row = clamp_extmark_row(bufnr, block_start + #block.new_lines),
-          hl_group = "DiffAdd",
-          hl_eol = true,
-          hl_mode = "combine",
-          priority = 20000,
-        })
-      )
+      block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+        end_row = clamp_extmark_row(bufnr, block_start + #block.new_lines),
+        hl_group = "DiffAdd",
+        hl_eol = true,
+        hl_mode = "combine",
+        priority = 20000,
+        right_gravity = false,
+        end_right_gravity = true,
+      })
+      table.insert(hunk.display_extmark_ids, block.display_extmark_id)
     else
-      table.insert(
-        hunk.display_extmark_ids,
-        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-          virt_text = {
-            { ("[deleted %d line%s]"):format(#block.old_lines, #block.old_lines == 1 and "" or "s"), "DiffDelete" },
-          },
-          virt_text_pos = "right_align",
-          priority = 20000,
-        })
-      )
+      block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+        virt_text = {
+          { ("[deleted %d line%s]"):format(#block.old_lines, #block.old_lines == 1 and "" or "s"), "DiffDelete" },
+        },
+        virt_text_pos = "right_align",
+        priority = 20000,
+        right_gravity = false,
+      })
+      table.insert(hunk.display_extmark_ids, block.display_extmark_id)
     end
 
     local virt_lines = old_virtual_lines(hunk, block)
     if #virt_lines > 0 then
-      table.insert(
-        hunk.old_extmark_ids,
-        vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-          virt_lines = virt_lines,
-          virt_lines_above = true,
-          priority = 19999,
-        })
-      )
+      block.old_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+        virt_lines = virt_lines,
+        virt_lines_above = true,
+        priority = 19999,
+        right_gravity = false,
+      })
+      table.insert(hunk.old_extmark_ids, block.old_extmark_id)
     end
   end
 end
 
-local function current_hunk(session)
-  return session.hunks[session.current_index or 1]
+local function current_block(session)
+  return session.blocks[session.current_index or 1]
 end
 
-local function pending_hunks(session)
+local function pending_blocks(session)
   local pending = {}
-  for _, hunk in ipairs(session.hunks or {}) do
-    if not hunk.status then
-      table.insert(pending, hunk)
+  for _, block in ipairs(session.blocks or {}) do
+    if not block.status then
+      table.insert(pending, block)
     end
   end
   return pending
@@ -416,19 +422,20 @@ local function update_hints(session)
     end
   end
 
-  local hunk = current_hunk(session)
-  if not hunk or hunk.status or not vim.api.nvim_buf_is_valid(hunk.bufnr) then
+  local block = current_block(session)
+  local bufnr = block_bufnr(block)
+  if not block or block.status or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
-  local start_row = hunk_position(hunk)
-  local total = #(session.hunks or {})
-  local pending = #pending_hunks(session)
-  vim.api.nvim_buf_set_extmark(hunk.bufnr, hint_ns, start_row, 0, {
+  local start_row = block_position(block)
+  local total = #(session.blocks or {})
+  local pending = #pending_blocks(session)
+  vim.api.nvim_buf_set_extmark(bufnr, hint_ns, start_row, 0, {
     virt_text = {
       {
-        ("Codex patch %d/%d (%d pending): %s accept, %s reject, %s all, %s reject-all, %s auto-apply"):format(
-          hunk.index,
+        ("Codex patch block %d/%d (%d pending): %s accept, %s reject, %s all, %s reject-all, %s auto-apply"):format(
+          block.index,
           total,
           pending,
           keymaps.accept,
@@ -445,27 +452,29 @@ local function update_hints(session)
   })
 end
 
-local function ensure_hunk_window(session, hunk)
-  local winid = visible_review_window(hunk.bufnr) or review_window(session)
+local function ensure_block_window(session, block)
+  local bufnr = block_bufnr(block)
+  local winid = visible_review_window(bufnr) or review_window(session)
   vim.api.nvim_set_current_win(winid)
-  if vim.api.nvim_win_get_buf(winid) ~= hunk.bufnr then
-    vim.api.nvim_win_set_buf(winid, hunk.bufnr)
+  if vim.api.nvim_win_get_buf(winid) ~= bufnr then
+    vim.api.nvim_win_set_buf(winid, bufnr)
   end
   return winid
 end
 
 local function navigate_to(session, index)
-  if not session or session.completed or #session.hunks == 0 then
+  if not session or session.completed or #session.blocks == 0 then
     return false
   end
-  local hunk = session.hunks[index]
-  if not hunk then
+  local block = session.blocks[index]
+  local bufnr = block_bufnr(block)
+  if not block or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return false
   end
   session.current_index = index
-  local winid = ensure_hunk_window(session, hunk)
-  local start_row = hunk_position(hunk)
-  local line_count = vim.api.nvim_buf_line_count(hunk.bufnr)
+  local winid = ensure_block_window(session, block)
+  local start_row = block_position(block)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
   vim.api.nvim_win_set_cursor(winid, { math.max(1, math.min(line_count, start_row + 1)), 0 })
   vim.api.nvim_win_call(winid, function()
     vim.cmd("normal! zz")
@@ -475,14 +484,14 @@ local function navigate_to(session, index)
 end
 
 local function navigate_next(session)
-  local total = #session.hunks
+  local total = #session.blocks
   if total == 0 then
     return false
   end
   local start = session.current_index or 1
   for offset = 1, total do
     local index = ((start + offset - 1) % total) + 1
-    if not session.hunks[index].status then
+    if not session.blocks[index].status then
       return navigate_to(session, index)
     end
   end
@@ -490,14 +499,14 @@ local function navigate_next(session)
 end
 
 local function navigate_prev(session)
-  local total = #session.hunks
+  local total = #session.blocks
   if total == 0 then
     return false
   end
   local start = session.current_index or 1
   for offset = 1, total do
     local index = ((start - offset - 1) % total) + 1
-    if not session.hunks[index].status then
+    if not session.blocks[index].status then
       return navigate_to(session, index)
     end
   end
@@ -598,20 +607,96 @@ local function diagnostics_summary(session)
   return table.concat(sections, "\n")
 end
 
-local function file_hunk_counts(file)
+local function file_block_counts(file)
   local accepted = 0
   local rejected = 0
   local pending = 0
-  for _, hunk in ipairs(file.hunks or {}) do
-    if hunk.status == "accepted" then
+  for _, block in ipairs(file.blocks or {}) do
+    if block.status == "accepted" then
       accepted = accepted + 1
-    elseif hunk.status == "rejected" then
+    elseif block.status == "rejected" then
       rejected = rejected + 1
     else
       pending = pending + 1
     end
   end
   return accepted, rejected, pending
+end
+
+local function hunk_block_counts(hunk)
+  local accepted = 0
+  local rejected = 0
+  local pending = 0
+  for _, block in ipairs(hunk.changed_blocks or {}) do
+    if block.status == "accepted" then
+      accepted = accepted + 1
+    elseif block.status == "rejected" then
+      rejected = rejected + 1
+    else
+      pending = pending + 1
+    end
+  end
+  return accepted, rejected, pending
+end
+
+local function update_hunk_status(hunk)
+  if not hunk then
+    return
+  end
+  local accepted, rejected, pending = hunk_block_counts(hunk)
+  if pending > 0 then
+    hunk.status = nil
+    return
+  end
+  if rejected == 0 and accepted > 0 then
+    hunk.status = "accepted"
+  elseif accepted == 0 and rejected > 0 then
+    hunk.status = "rejected"
+  elseif accepted > 0 and rejected > 0 then
+    hunk.status = "partial"
+  else
+    hunk.status = "accepted"
+  end
+  if hunk.extmark_id and hunk.bufnr and vim.api.nvim_buf_is_valid(hunk.bufnr) then
+    pcall(vim.api.nvim_buf_del_extmark, hunk.bufnr, diff_ns, hunk.extmark_id)
+    hunk.extmark_id = nil
+  end
+end
+
+local function session_block_counts(session)
+  local accepted = 0
+  local rejected = 0
+  local pending = 0
+  for _, block in ipairs(session.blocks or {}) do
+    if block.status == "accepted" then
+      accepted = accepted + 1
+    elseif block.status == "rejected" then
+      rejected = rejected + 1
+    else
+      pending = pending + 1
+    end
+  end
+  return accepted, rejected, pending
+end
+
+local function session_hunk_counts(session)
+  local accepted = 0
+  local rejected = 0
+  local partial = 0
+  local pending = 0
+  for _, hunk in ipairs(session.hunks or {}) do
+    update_hunk_status(hunk)
+    if hunk.status == "accepted" then
+      accepted = accepted + 1
+    elseif hunk.status == "rejected" then
+      rejected = rejected + 1
+    elseif hunk.status == "partial" then
+      partial = partial + 1
+    else
+      pending = pending + 1
+    end
+  end
+  return accepted, rejected, partial, pending
 end
 
 local function write_files(session)
@@ -726,25 +811,14 @@ local function wait_for_fresh_diagnostics(session)
 end
 
 local function build_summary(session, write_error)
-  local accepted = 0
-  local rejected = 0
-  local pending = 0
-  for _, hunk in ipairs(session.hunks or {}) do
-    if hunk.status == "accepted" then
-      accepted = accepted + 1
-    elseif hunk.status == "rejected" then
-      rejected = rejected + 1
-    else
-      pending = pending + 1
-    end
-  end
+  local accepted, rejected, pending = session_block_counts(session)
 
   local lines = {
     "# NVIM APPLY PATCH REVIEW",
     "",
-    ("accepted_hunks: %d"):format(accepted),
-    ("rejected_hunks: %d"):format(rejected),
-    ("pending_hunks: %d"):format(pending),
+    ("accepted_blocks: %d"):format(accepted),
+    ("rejected_blocks: %d"):format(rejected),
+    ("pending_blocks: %d"):format(pending),
   }
   if write_error and write_error ~= "" then
     table.insert(lines, "write_error: " .. write_error)
@@ -752,7 +826,7 @@ local function build_summary(session, write_error)
   table.insert(lines, "")
   table.insert(lines, "## FILES")
   for _, file in ipairs(session.file_order or {}) do
-    local file_accepted, file_rejected, file_pending = file_hunk_counts(file)
+    local file_accepted, file_rejected, file_pending = file_block_counts(file)
     table.insert(
       lines,
       ("- %s: accepted=%d rejected=%d pending=%d"):format(
@@ -767,9 +841,9 @@ local function build_summary(session, write_error)
   if rejected > 0 then
     table.insert(lines, "")
     table.insert(lines, "## USER REJECTION FEEDBACK")
-    for _, hunk in ipairs(session.hunks or {}) do
-      if hunk.status == "rejected" then
-        table.insert(lines, ("- %s: %s"):format(hunk_label(hunk), hunk.reason or "no reason provided"))
+    for _, block in ipairs(session.blocks or {}) do
+      if block.status == "rejected" then
+        table.insert(lines, ("- %s: %s"):format(block_label(block), block.reason or "no reason provided"))
       end
     end
   end
@@ -825,21 +899,15 @@ local function complete(session, force_failure)
   wait_for_fresh_diagnostics(session)
   session.write_ok = write_ok
   session.write_error = write_error
-  local accepted = 0
-  local rejected = 0
-  local pending = 0
-  for _, hunk in ipairs(session.hunks or {}) do
-    if hunk.status == "accepted" then
-      accepted = accepted + 1
-    elseif hunk.status == "rejected" then
-      rejected = rejected + 1
-    else
-      pending = pending + 1
-    end
-  end
-  session.accepted_hunks = accepted
-  session.rejected_hunks = rejected
-  session.pending_hunks = pending
+  local accepted, rejected, pending = session_block_counts(session)
+  local accepted_hunks, rejected_hunks, partial_hunks, pending_hunks = session_hunk_counts(session)
+  session.accepted_blocks = accepted
+  session.rejected_blocks = rejected
+  session.pending_blocks = pending
+  session.accepted_hunks = accepted_hunks
+  session.rejected_hunks = rejected_hunks
+  session.partial_hunks = partial_hunks
+  session.pending_hunks = pending_hunks
   for _, file in ipairs(session.file_order or {}) do
     file.final_lines = normalized_final_lines(file)
   end
@@ -856,76 +924,109 @@ local function complete(session, force_failure)
 end
 
 local function finish_after_decision(session)
-  if #pending_hunks(session) == 0 then
+  if #pending_blocks(session) == 0 then
     complete(session, false)
   else
     navigate_next(session)
   end
 end
 
-local function accept_hunk(session, hunk)
-  hunk = hunk or current_hunk(session)
-  if not hunk or hunk.status then
+local function accept_block_without_finish(block)
+  if not block or block.status then
     return
   end
-  hunk.status = "accepted"
-  remove_hunk_marks(hunk)
+  block.status = "accepted"
+  remove_block_marks(block)
+  update_hunk_status(block.hunk)
+end
+
+local function accept_block(session, block)
+  block = block or current_block(session)
+  if not block or block.status then
+    return
+  end
+  accept_block_without_finish(block)
   finish_after_decision(session)
 end
 
-local function reject_hunk(session, hunk, reason)
-  hunk = hunk or current_hunk(session)
-  if not hunk or hunk.status then
+local function reject_block_without_finish(block, reason)
+  if not block or block.status then
     return
   end
-  local start_row, end_row = hunk_position(hunk)
-  if #(hunk.new_lines or {}) == 0 then
-    set_buffer_lines(hunk.bufnr, start_row, start_row, vim.deepcopy(hunk.old_lines or {}))
-  else
-    set_buffer_lines(hunk.bufnr, start_row, end_row, vim.deepcopy(hunk.old_lines or {}))
+  local bufnr = block_bufnr(block)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
   end
-  hunk.status = "rejected"
-  hunk.reason = util.trim(reason or "") ~= "" and util.trim(reason or "") or "no reason provided"
-  remove_hunk_marks(hunk)
+  local start_row, end_row = block_position(block)
+  if #(block.new_lines or {}) == 0 then
+    set_buffer_lines(bufnr, start_row, start_row, vim.deepcopy(block.old_lines or {}))
+  else
+    set_buffer_lines(bufnr, start_row, end_row, vim.deepcopy(block.old_lines or {}))
+  end
+  block.status = "rejected"
+  block.reason = util.trim(reason or "") ~= "" and util.trim(reason or "") or "no reason provided"
+  remove_block_marks(block)
+  update_hunk_status(block.hunk)
+end
+
+local function reject_block(session, block, reason)
+  block = block or current_block(session)
+  if not block or block.status then
+    return
+  end
+  reject_block_without_finish(block, reason)
+  finish_after_decision(session)
+end
+
+local function accept_hunk(session, hunk)
+  hunk = hunk or (current_block(session) and current_block(session).hunk)
+  if not hunk then
+    return
+  end
+  for _, block in ipairs(hunk.changed_blocks or {}) do
+    accept_block_without_finish(block)
+  end
   finish_after_decision(session)
 end
 
 local function reject_hunk_without_finish(session, hunk, reason)
-  if not hunk or hunk.status then
+  if not hunk then
     return
   end
-  local start_row, end_row = hunk_position(hunk)
-  if #(hunk.new_lines or {}) == 0 then
-    set_buffer_lines(hunk.bufnr, start_row, start_row, vim.deepcopy(hunk.old_lines or {}))
-  else
-    set_buffer_lines(hunk.bufnr, start_row, end_row, vim.deepcopy(hunk.old_lines or {}))
+  for _, block in ipairs(hunk.changed_blocks or {}) do
+    reject_block_without_finish(block, reason)
   end
-  hunk.status = "rejected"
-  hunk.reason = util.trim(reason or "") ~= "" and util.trim(reason or "") or "no reason provided"
-  remove_hunk_marks(hunk)
 end
 
-local function prompt_reject(session, hunk)
-  vim.ui.input({ prompt = "Why reject this Codex patch hunk? " }, function(reason)
-    reject_hunk(session, hunk, reason)
+local function reject_hunk(session, hunk, reason)
+  hunk = hunk or (current_block(session) and current_block(session).hunk)
+  if not hunk then
+    return
+  end
+  reject_hunk_without_finish(session, hunk, reason)
+  finish_after_decision(session)
+end
+
+local function prompt_reject(session, block)
+  vim.ui.input({ prompt = "Why reject this Codex patch block? " }, function(reason)
+    reject_block(session, block, reason)
   end)
 end
 
 local function accept_all(session)
-  for _, hunk in ipairs(session.hunks or {}) do
-    if not hunk.status then
-      hunk.status = "accepted"
-      remove_hunk_marks(hunk)
+  for _, block in ipairs(session.blocks or {}) do
+    if not block.status then
+      accept_block_without_finish(block)
     end
   end
   complete(session, false)
 end
 
 local function reject_all(session)
-  vim.ui.input({ prompt = "Why reject the remaining Codex patch hunks? " }, function(reason)
-    local pending = pending_hunks(session)
-    for _, hunk in ipairs(pending) do
-      reject_hunk_without_finish(session, hunk, reason)
+  vim.ui.input({ prompt = "Why reject the remaining Codex patch blocks? " }, function(reason)
+    local pending = pending_blocks(session)
+    for _, block in ipairs(pending) do
+      reject_block_without_finish(block, reason)
     end
     complete(session, true)
   end)
@@ -933,9 +1034,9 @@ end
 
 local function cancel(session)
   vim.ui.input({ prompt = "Why cancel this Codex patch review? " }, function(reason)
-    local pending = pending_hunks(session)
-    for _, hunk in ipairs(pending) do
-      reject_hunk_without_finish(session, hunk, reason or "patch review cancelled")
+    local pending = pending_blocks(session)
+    for _, block in ipairs(pending) do
+      reject_block_without_finish(block, reason or "patch review cancelled")
     end
     if not session.completed then
       complete(session, true)
@@ -958,17 +1059,17 @@ local function setup_keymaps(session, bufnr)
     return { buffer = bufnr, silent = true, desc = desc }
   end
   vim.keymap.set("n", keymaps.accept, function()
-    accept_hunk(session)
-  end, opts("Accept Codex patch hunk"))
+    accept_block(session)
+  end, opts("Accept Codex patch block"))
   vim.keymap.set("n", keymaps.reject, function()
-    prompt_reject(session, current_hunk(session))
-  end, opts("Reject Codex patch hunk"))
+    prompt_reject(session, current_block(session))
+  end, opts("Reject Codex patch block"))
   vim.keymap.set("n", keymaps.accept_all, function()
     accept_all(session)
-  end, opts("Accept all Codex patch hunks"))
+  end, opts("Accept all Codex patch blocks"))
   vim.keymap.set("n", keymaps.reject_all, function()
     reject_all(session)
-  end, opts("Reject all Codex patch hunks"))
+  end, opts("Reject all Codex patch blocks"))
   vim.keymap.set("n", keymaps.auto_apply, function()
     auto_apply(session)
   end, opts("Use Neovim auto-apply for this session"))
@@ -977,10 +1078,10 @@ local function setup_keymaps(session, bufnr)
   end, opts("Cancel Codex patch review"))
   vim.keymap.set("n", keymaps.next, function()
     navigate_next(session)
-  end, opts("Next Codex patch hunk"))
+  end, opts("Next Codex patch block"))
   vim.keymap.set("n", keymaps.prev, function()
     navigate_prev(session)
-  end, opts("Previous Codex patch hunk"))
+  end, opts("Previous Codex patch block"))
 end
 
 local function setup_autocmds(session)
@@ -1052,6 +1153,7 @@ local function prepare_files(session)
       is_new = vim.fn.filereadable(path) ~= 1 and (change.kind == "add" or change.type == "add"),
       change = change,
       hunks = {},
+      blocks = {},
       line_offset = 0,
     }
     table.insert(session.file_order, file)
@@ -1099,6 +1201,7 @@ end
 
 local function apply_preview(session)
   local hunk_index = 0
+  local block_index = 0
   for _, file in ipairs(session.file_order or {}) do
     local hunks = parse_change_hunks(file.change)
     for index, hunk in ipairs(hunks) do
@@ -1112,6 +1215,16 @@ local function apply_preview(session)
       end
       table.insert(file.hunks, hunk)
       table.insert(session.hunks, hunk)
+      for block_in_hunk, block in ipairs(hunk.changed_blocks or {}) do
+        block_index = block_index + 1
+        block.index = block_index
+        block.index_in_hunk = block_in_hunk
+        block.hunk = hunk
+        block.file = file
+        block.bufnr = hunk.bufnr
+        table.insert(file.blocks, block)
+        table.insert(session.blocks, block)
+      end
     end
   end
 
@@ -1141,6 +1254,7 @@ function M.open(opts)
     file_order = {},
     buffers = {},
     hunks = {},
+    blocks = {},
     current_index = 1,
     completed = false,
   }
@@ -1164,7 +1278,7 @@ function M.open(opts)
   end
   setup_autocmds(session)
 
-  if #session.hunks == 0 then
+  if #session.blocks == 0 then
     complete(session, false)
     return session
   end
@@ -1186,6 +1300,8 @@ function M._active_session(bufnr)
 end
 
 M._parse_change_hunks = parse_change_hunks
+M._reject_block = reject_block
+M._accept_block = accept_block
 M._reject_hunk = reject_hunk
 M._accept_hunk = accept_hunk
 M._keymaps = keymaps

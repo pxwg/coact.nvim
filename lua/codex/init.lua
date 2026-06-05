@@ -69,8 +69,8 @@ local function edit_tool_instruction()
     "codex.nvim edit mode is pair.",
     "When changing workspace files from codex.nvim, use the native apply_patch tool.",
     "codex.nvim registers a PreToolUse hook for native apply_patch that previews the patch in the affected Neovim file buffers before the native tool completes.",
-    "The Neovim review applies accepted hunks through the same file-buffer write path as nvim.apply_patch, then lets native apply_patch complete with a no-op updatedInput.command.",
-    "The Neovim review can approve the patch, apply a user-edited buffer state, partially apply accepted hunks, or reject it with a reason.",
+    "The Neovim review applies accepted changed blocks through the same file-buffer write path as nvim.apply_patch, then lets native apply_patch complete with a no-op updatedInput.command.",
+    "The Neovim review can approve the patch, apply a user-edited buffer state, partially apply accepted changed blocks, or reject it with a reason.",
     "Do not request dangerous approval or sandbox bypasses for file edits; codex.nvim approves apply_patch permission and file-change requests after Neovim review.",
     "Do not call nvim.apply_patch in pair mode; it is not exposed.",
   }, " ")
