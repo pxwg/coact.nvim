@@ -12,6 +12,7 @@ local M = {}
 local group = vim.api.nvim_create_augroup("codex.nvim.buffers", { clear = true })
 local view_autocmds_setup = false
 local window_snapshots = {}
+local prompt_refresh_pending = {}
 local save_draft
 
 local restorable_window_options = {
@@ -56,6 +57,16 @@ local prompt_window_options = {
   foldlevel = 99,
   winfixheight = true,
 }
+
+local function set_window_option(win, option, value)
+  local ok, current = pcall(function()
+    return vim.wo[win][option]
+  end)
+  if ok and current == value then
+    return
+  end
+  vim.wo[win][option] = value
+end
 
 local function valid_buf(bufnr)
   return bufnr and vim.api.nvim_buf_is_valid(bufnr)
@@ -143,6 +154,46 @@ local function composer_bounds()
   local min_height = math.max(2, dimension(opts.min_height, 2))
   local max_height = dimension(opts.max_height, math.max(min_height, math.floor(vim.o.lines * 0.33)))
   return min_height, math.max(min_height, max_height)
+end
+
+local function prompt_window_chrome_height(winid)
+  if valid_win(winid) then
+    local info = vim.fn.getwininfo(winid)[1]
+    if info and tonumber(info.winbar) then
+      return tonumber(info.winbar)
+    end
+    local ok, winbar = pcall(function()
+      return vim.wo[winid].winbar
+    end)
+    if ok and winbar and winbar ~= "" then
+      return 1
+    end
+  end
+  return 1
+end
+
+local function prompt_window_text_area_height(winid)
+  if valid_win(winid) then
+    local info = vim.fn.getwininfo(winid)[1]
+    if info and tonumber(info.height) then
+      return tonumber(info.height)
+    end
+    return math.max(1, vim.api.nvim_win_get_height(winid) - prompt_window_chrome_height(winid))
+  end
+  return 1
+end
+
+local function reveal_prompt_start_if_fits(winid, visual_height)
+  if not valid_win(winid) or prompt_window_text_area_height(winid) < visual_height then
+    return
+  end
+  pcall(vim.api.nvim_win_call, winid, function()
+    local view = vim.fn.winsaveview()
+    if view.topline ~= 1 then
+      view.topline = 1
+      vim.fn.winrestview(view)
+    end
+  end)
 end
 
 local function clamp(value, min_value, max_value)
@@ -447,13 +498,13 @@ function M.apply_window_options(win, bufnr)
   local is_prompt = M.is_prompt_buffer(bufnr)
   local options = is_prompt and prompt_window_options or history_window_options
   for option, value in pairs(options) do
-    vim.wo[win][option] = value
+    set_window_option(win, option, value)
   end
   if is_prompt then
-    vim.wo[win].conceallevel = 0
-    vim.wo[win].winbar = prompt_winbar(thread)
+    set_window_option(win, "conceallevel", 0)
+    set_window_option(win, "winbar", prompt_winbar(thread))
   else
-    vim.wo[win].conceallevel = math.max(vim.wo[win].conceallevel, 1)
+    set_window_option(win, "conceallevel", math.max(vim.wo[win].conceallevel, 1))
   end
 end
 
@@ -515,6 +566,24 @@ end
 
 local function setup_prompt_autocmds(bufnr)
   setup_view_autocmds()
+  local function schedule_prompt_refresh()
+    if prompt_refresh_pending[bufnr] then
+      return
+    end
+    prompt_refresh_pending[bufnr] = true
+    vim.defer_fn(function()
+      prompt_refresh_pending[bufnr] = nil
+      if not valid_buf(bufnr) then
+        return
+      end
+      local thread = state.thread_for_buf(bufnr)
+      if thread then
+        save_draft(thread)
+        M.refresh_composer(thread)
+      end
+    end, 16)
+  end
+
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
     group = group,
     buffer = bufnr,
@@ -533,6 +602,7 @@ local function setup_prompt_autocmds(bufnr)
     group = group,
     buffer = bufnr,
     callback = function()
+      prompt_refresh_pending[bufnr] = nil
       local thread = state.thread_for_buf(bufnr)
       if thread then
         save_draft(thread)
@@ -545,16 +615,7 @@ local function setup_prompt_autocmds(bufnr)
     group = group,
     buffer = bufnr,
     callback = function()
-      local thread = state.thread_for_buf(bufnr)
-      if not thread then
-        return
-      end
-      vim.schedule(function()
-        if valid_buf(bufnr) then
-          save_draft(thread)
-          M.refresh_composer(thread)
-        end
-      end)
+      schedule_prompt_refresh()
     end,
   })
 end
@@ -698,7 +759,8 @@ function M.resize_prompt(thread)
   local min_height, max_height = composer_bounds()
   local height = clamp(prompt_visual_height(thread), min_height, max_height)
   thread.prompt_height = height
-  window.apply_thread_layout(thread.winid, winid, height)
+  window.apply_thread_layout(thread.winid, winid, height + prompt_window_chrome_height(winid))
+  reveal_prompt_start_if_fits(winid, height)
 end
 
 function M.refresh_composer(thread)
@@ -793,7 +855,8 @@ function M.enter_compose(thread_or_id, opts)
   local prompt_winid = thread.prompt_winid
   if not (valid_win(prompt_winid) and current_window_buffer(prompt_winid) == prompt_bufnr) then
     local min_height = composer_bounds()
-    prompt_winid = window.open_composer(history_winid, prompt_bufnr, thread.prompt_height or min_height)
+    local prompt_height = (thread.prompt_height or min_height) + prompt_window_chrome_height()
+    prompt_winid = window.open_composer(history_winid, prompt_bufnr, prompt_height)
     thread.prompt_winid = prompt_winid
   end
   M.apply_window_options(history_winid, bufnr)

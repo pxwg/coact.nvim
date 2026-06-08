@@ -567,6 +567,11 @@ vim.tbl_map(function(index)
 end, vim.fn.range(1, 24))
 local context_thread_buf = buffers.open("smoke-context")
 local context_thread = state.get_thread("smoke-context")
+function _G.__codex_smoke_composer_text_area_height(winid)
+  local info = vim.fn.getwininfo(winid)[1]
+  return info and info.height or vim.api.nvim_win_get_height(winid)
+end
+
 assert(context_thread.prompt_bufnr, "opening a Codex thread should create a composer buffer")
 assert(
   vim.api.nvim_get_current_buf() == context_thread_buf,
@@ -617,10 +622,28 @@ assert(
   vim.wo[context_thread.prompt_winid].winbar:match("Codex input"),
   "composer window should render input metadata in its winbar"
 )
-local initial_composer_height = vim.api.nvim_win_get_height(context_thread.prompt_winid)
+local initial_composer_height = _G.__codex_smoke_composer_text_area_height(context_thread.prompt_winid)
+vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, {
+  "semantic first line",
+  "composer content line 2",
+  "composer content line 3",
+  "composer content line 4",
+  "composer content line 5",
+})
+vim.api.nvim_win_set_cursor(context_thread.prompt_winid, { 5, 0 })
+buffers.refresh_composer(context_thread)
+_G.__codex_smoke_composer_view = vim.fn.getwininfo(context_thread.prompt_winid)[1]
+assert(
+  _G.__codex_smoke_composer_view and _G.__codex_smoke_composer_view.height >= 5,
+  "composer text area should include all prompt rows below the configured cap"
+)
+assert(
+  _G.__codex_smoke_composer_view.topline == 1,
+  "composer growth should keep the first prompt line visible below the cap"
+)
 vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, { string.rep("wrapped input ", 40) })
 buffers.refresh_composer(context_thread)
-local grown_composer_height = vim.api.nvim_win_get_height(context_thread.prompt_winid)
+local grown_composer_height = _G.__codex_smoke_composer_text_area_height(context_thread.prompt_winid)
 assert(grown_composer_height > initial_composer_height, "composer should grow for wrapped input")
 assert(
   grown_composer_height <= math.max(2, math.floor(vim.o.lines * 0.33)),
@@ -636,6 +659,22 @@ assert(
   buffers.collect_prompt(context_thread.prompt_bufnr):match("wrapped input"),
   "compose should restore saved draft text"
 )
+_G.__codex_smoke_refresh_composer = buffers.refresh_composer
+_G.__codex_smoke_refresh_count = 0
+buffers.refresh_composer = function(...)
+  _G.__codex_smoke_refresh_count = _G.__codex_smoke_refresh_count + 1
+  return _G.__codex_smoke_refresh_composer(...)
+end
+vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, { "" })
+for index = 1, 30 do
+  vim.api.nvim_buf_set_text(context_thread.prompt_bufnr, 0, index - 1, 0, index - 1, { "x" })
+  vim.api.nvim_exec_autocmds("TextChangedI", { buffer = context_thread.prompt_bufnr })
+end
+vim.wait(1000, function()
+  return context_thread.draft_lines and #(context_thread.draft_lines[1] or "") >= 30
+end, 20)
+buffers.refresh_composer = _G.__codex_smoke_refresh_composer
+assert(_G.__codex_smoke_refresh_count <= 2, "composer input refresh should coalesce TextChangedI bursts")
 buffers.clear_prompt(context_thread_buf)
 buffers.enter_preview(context_thread, { source = "smoke", focus = true })
 assert(attached_buffers[context_thread_buf] == "smoke-context", "buffer.on_attach should run for Codex buffers")
