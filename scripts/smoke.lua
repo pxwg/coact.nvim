@@ -553,6 +553,18 @@ vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, {
 vim.bo[source_buf].filetype = "lua"
 vim.api.nvim_set_current_buf(source_buf)
 vim.api.nvim_win_set_cursor(0, { 2, 7 })
+vim.tbl_map(function(index)
+  state.upsert_item("smoke-context", "smoke-open-turn", {
+    id = "smoke-open-user-" .. index,
+    type = "userMessage",
+    content = {
+      {
+        type = "text",
+        text = ("opening preview history line %02d"):format(index),
+      },
+    },
+  })
+end, vim.fn.range(1, 24))
 local context_thread_buf = buffers.open("smoke-context")
 local context_thread = state.get_thread("smoke-context")
 assert(context_thread.prompt_bufnr, "opening a Codex thread should create a composer buffer")
@@ -569,6 +581,28 @@ assert(
 assert(vim.bo[context_thread_buf].filetype == "codex-history", "history buffer should use codex-history filetype")
 assert(vim.bo[context_thread.prompt_bufnr].filetype == "codex-input", "composer should use codex-input filetype")
 assert(not vim.bo[context_thread_buf].modifiable, "Codex history buffer should be read-only")
+_G.__codex_smoke_view = {
+  lines = vim.api.nvim_buf_line_count(context_thread_buf),
+  info = vim.fn.getwininfo(context_thread.winid)[1],
+}
+assert(
+  _G.__codex_smoke_view.info and _G.__codex_smoke_view.info.botline == _G.__codex_smoke_view.lines,
+  "opening preview should show the latest transcript lines"
+)
+state.upsert_item("smoke-context", "smoke-open-turn", {
+  id = "smoke-open-latest",
+  type = "agentMessage",
+  text = "latest idle refresh line",
+})
+buffers.render("smoke-context")
+_G.__codex_smoke_view = {
+  lines = vim.api.nvim_buf_line_count(context_thread_buf),
+  info = vim.fn.getwininfo(context_thread.winid)[1],
+}
+assert(
+  _G.__codex_smoke_view.info and _G.__codex_smoke_view.info.botline == _G.__codex_smoke_view.lines,
+  "idle preview refresh should keep following the latest transcript lines"
+)
 vim.api.nvim_set_current_win(context_thread.winid)
 vim.api.nvim_feedkeys("i", "x", false)
 vim.wait(1000, function()
@@ -1943,6 +1977,39 @@ local repaired_fence_block = events.block_for_item({
 assert(
   repaired_fence_block.text:match("```%s*\nnext prompt"),
   "userMessage rendering should repair flattened fenced context boundaries"
+)
+_G.__codex_smoke_user_block = events.block_for_item({
+  id = "user-reference-separate",
+  type = "userMessage",
+  content = {
+    {
+      type = "text",
+      text = parser._reference_context_text("Neovim context: listed buffers:\n- #1 README.md ft=markdown"),
+      text_elements = {},
+    },
+    { type = "text", text = "actual prompt", text_elements = {} },
+  },
+}, "turn-reference-separate")
+assert(
+  _G.__codex_smoke_user_block.text == "actual prompt",
+  "userMessage rendering should hide separate reference context inputs"
+)
+_G.__codex_smoke_user_block = events.block_for_item({
+  id = "user-reference-flattened",
+  type = "userMessage",
+  content = {
+    {
+      type = "text",
+      text = parser._reference_context_text(
+        "Neovim context: selection\n- file: smoke.typ\n- range: L1-L1\n\n```typst\nx\n```\n\nDiagnostics in selection:\n- ERROR L1:C1 bad"
+      ) .. "actual flattened prompt",
+      text_elements = {},
+    },
+  },
+}, "turn-reference-flattened")
+assert(
+  _G.__codex_smoke_user_block.text == "actual flattened prompt",
+  "userMessage rendering should hide flattened reference context prefixes"
 )
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "user-1",

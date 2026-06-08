@@ -323,7 +323,7 @@ function M.submit()
   local snapshot = buffers.snapshot_prompt(bufnr)
   buffers.clear_prompt(bufnr)
   if thread then
-    buffers.enter_preview(thread, { focus = true })
+    buffers.enter_preview(thread, { focus = true, follow_latest = true })
   end
   M.submit_text(text, thread_id, {
     on_error = function()

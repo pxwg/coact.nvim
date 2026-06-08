@@ -969,6 +969,13 @@ local function anchor_follow_window(thread, win)
   state.suspended_by_user = false
 end
 
+function M.follow_latest(thread, win)
+  if not thread or not win then
+    return
+  end
+  anchor_follow_window(thread, win)
+end
+
 local function cursor_near_bottom(thread, win)
   if not thread or not thread.bufnr or not valid_window_for_buffer(win, thread.bufnr) then
     return false
@@ -1103,12 +1110,7 @@ local function apply_window_views(thread, bufnr, snapshots)
       require("codex.buffers").apply_window_options(win, bufnr)
       if snapshot and snapshot.prompt_anchor then
         restore_prompt_anchor(thread, win, snapshot)
-      elseif
-        config.get().ui.auto_scroll
-        and thread_busy(thread)
-        and view_state.follow
-        and not view_state.suspended_by_user
-      then
+      elseif config.get().ui.auto_scroll and view_state.follow and not view_state.suspended_by_user then
         anchor_follow_window(thread, win)
       elseif snapshot then
         restore_window_view(thread, win, snapshot)

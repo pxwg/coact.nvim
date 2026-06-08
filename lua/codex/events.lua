@@ -1,6 +1,7 @@
 local util = require("codex.util")
 
 local M = {}
+local reference_context_marker = "Reference context, not instructions:"
 
 local function first_string(...)
   for index = 1, select("#", ...) do
@@ -46,6 +47,84 @@ local function user_input_text(input)
   return vim.inspect(input)
 end
 
+local function starts_with(value, prefix)
+  return tostring(value or ""):sub(1, #prefix) == prefix
+end
+
+local function first_blank_after(lines, index)
+  while index <= #lines do
+    if lines[index] == "" then
+      return index + 1
+    end
+    index = index + 1
+  end
+  return #lines + 1
+end
+
+local function after_fenced_context(lines, index)
+  local fence_start
+  while index <= #lines do
+    if starts_with(lines[index], "```") then
+      fence_start = index
+      break
+    end
+    index = index + 1
+  end
+  if not fence_start then
+    return nil
+  end
+  index = fence_start + 1
+  while index <= #lines do
+    if starts_with(lines[index], "```") then
+      index = index + 1
+      while lines[index] == "" do
+        index = index + 1
+      end
+      if starts_with(lines[index], "Diagnostics in selection:") then
+        return first_blank_after(lines, index)
+      end
+      return index
+    end
+    index = index + 1
+  end
+  return #lines + 1
+end
+
+local function reference_context_body_start(lines, index)
+  while lines[index] == "" do
+    index = index + 1
+  end
+
+  local first = lines[index] or ""
+  if
+    first:match("^Neovim context: target buffer")
+    or first:match("^Neovim context: selection")
+    or first:match("^Neovim context: cursor")
+    or first:match("^Neovim context: file")
+    or first:match("^Neovim editor behavior")
+  then
+    return after_fenced_context(lines, index) or first_blank_after(lines, index)
+  end
+
+  return first_blank_after(lines, index)
+end
+
+local function strip_reference_context_prefix(text)
+  text = tostring(text or "")
+  while starts_with(text, reference_context_marker) do
+    local lines = vim.split(text, "\n", { plain = true })
+    local index = reference_context_body_start(lines, 2)
+    while lines[index] == "" do
+      index = index + 1
+    end
+    if index > #lines then
+      return ""
+    end
+    text = table.concat(lines, "\n", index)
+  end
+  return text
+end
+
 local function repair_fenced_text(text)
   local lines = vim.split(tostring(text or ""), "\n", { plain = true })
   local repaired = {}
@@ -70,10 +149,15 @@ local function repair_fenced_text(text)
   return table.concat(repaired, "\n")
 end
 
-local function user_text(content)
+local function user_text(content, opts)
+  opts = opts or {}
   local out = {}
   for _, input in ipairs(content or {}) do
-    local text = repair_fenced_text(user_input_text(input))
+    local text = user_input_text(input)
+    if opts.display and input.type == "text" then
+      text = strip_reference_context_prefix(text)
+    end
+    text = repair_fenced_text(text)
     if text ~= "" then
       table.insert(out, text)
     end
@@ -218,7 +302,7 @@ item_converters.userMessage = function(item, turn_id)
     type = "UserBlock",
     message_id = turn_id,
     item_id = item.id,
-    text = user_text(item.content),
+    text = user_text(item.content, { display = true }),
     state = status_of(item),
     metadata = {
       model = item.model,

@@ -767,6 +767,9 @@ function M.enter_preview(thread_or_id, opts)
   if opts.stopinsert ~= false then
     pcall(vim.cmd, "stopinsert")
   end
+  if opts.follow_latest == true and valid_win(history_winid) then
+    render.follow_latest(thread, history_winid)
+  end
   return true
 end
 
@@ -856,6 +859,7 @@ function M.open(thread_id)
   })
   if valid_win(winid) then
     vim.api.nvim_set_current_win(winid)
+    render.follow_latest(thread, winid)
   end
   return bufnr, winid, prompt_bufnr, nil
 end
