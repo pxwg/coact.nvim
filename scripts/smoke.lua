@@ -483,6 +483,47 @@ assert(image_asset_parsed[1].path == vim.fs.normalize(image_asset), "@image shou
 local remote_image_parsed = parser.parse("@image:https://example.com/smoke.png")
 assert(remote_image_parsed[1] and remote_image_parsed[1].type == "image", "@image should attach image URLs")
 
+parsed = { behavior = require("codex.behavior"), original_cwd = vim.fn.getcwd(), dir = vim.fn.tempname() }
+vim.fn.mkdir(parsed.dir, "p")
+vim.cmd("cd " .. vim.fn.fnameescape(parsed.dir))
+parsed.file = vim.fs.joinpath(parsed.dir, "behavior-smoke.txt")
+vim.fn.writefile({ "before" }, parsed.file)
+vim.cmd("edit " .. vim.fn.fnameescape(parsed.file))
+parsed.buf = vim.api.nvim_get_current_buf()
+parsed.thread = state.ensure_thread("smoke-behavior")
+parsed.behavior.anchor(parsed.thread)
+vim.api.nvim_buf_set_lines(parsed.buf, 0, -1, false, { "before", "after" })
+parsed.context = parser.parse("@behavior", { thread = parsed.thread })
+parsed.text = parsed.context[1] and parsed.context[1].text or ""
+assert(
+  parsed.text:match("Neovim editor behavior since previous agent turn"),
+  "@behavior should expand editor diff context"
+)
+assert(parsed.text:match("files changed: 1"), "@behavior should report changed buffers")
+assert(parsed.text:match("includes unsaved buffers: true"), "@behavior should include unsaved buffer state")
+assert(parsed.text:match("%+after"), "@behavior should include unsaved editor diff lines")
+assert(parsed.text:match("behavior%-smoke%.txt"), "@behavior should include changed file labels")
+parsed.behavior.reset(parsed.thread)
+assert(
+  parsed.behavior.status_text(parsed.thread):match("changed buffers: 0"),
+  "behavior reset should refresh the diff anchor"
+)
+vim.bo[parsed.buf].modified = false
+vim.cmd("enew")
+parsed.new_buf = vim.api.nvim_get_current_buf()
+parsed.new_file = vim.fs.joinpath(parsed.dir, "behavior-new.txt")
+parsed.behavior.reset(parsed.thread)
+vim.api.nvim_buf_set_lines(parsed.new_buf, 0, -1, false, { "created after anchor" })
+vim.api.nvim_buf_set_name(parsed.new_buf, parsed.new_file)
+parsed.context = parser.parse("@behavior", { thread = parsed.thread })
+parsed.text = parsed.context[1] and parsed.context[1].text or ""
+assert(parsed.text:match("behavior%-new%.txt"), "@behavior should track unnamed buffers after they receive a path")
+assert(parsed.text:match("%+created after anchor"), "@behavior should diff unnamed buffer edits after naming")
+vim.bo[parsed.new_buf].modified = false
+vim.cmd("bwipeout! " .. parsed.new_buf)
+vim.cmd("bwipeout! " .. parsed.buf)
+vim.cmd("cd " .. vim.fn.fnameescape(parsed.original_cwd))
+
 local buffers = require("codex.buffers")
 local buffer_opened_events = {}
 local attached_buffers = {}
@@ -1319,7 +1360,15 @@ source:get_completions({
   cursor = { 1, 4 },
 }, function(result)
   assert(#result.items == 1 and result.items[1].label == "@diagnostics", "completion should return @diagnostics")
-  done = true
+  source:resolve(result.items[1], function(item)
+    assert(
+      item.documentation
+        and item.documentation:match("Context preview for @diagnostics")
+        and item.documentation:match("Target buffer diagnostics"),
+      "@diagnostics completion documentation should preview injected context"
+    )
+    done = true
+  end)
 end)
 assert(done, "completion callback should run synchronously for Neovim context items")
 
@@ -1330,13 +1379,15 @@ source:get_completions({
   cursor = { 1, 4 },
 }, function(result)
   assert(#result.items == 1 and result.items[1].label == "@selection", "completion should return @selection")
-  assert(
-    result.items[1].documentation
-      and result.items[1].documentation:match("local codex_context_smoke")
-      and result.items[1].documentation:match("L1%-L2"),
-    "@selection completion should preview source-buffer selection content"
-  )
-  selection_completion_done = true
+  source:resolve(result.items[1], function(item)
+    assert(
+      item.documentation
+        and item.documentation:match("local codex_context_smoke")
+        and item.documentation:match("L1%-L2"),
+      "@selection completion should preview source-buffer selection content"
+    )
+    selection_completion_done = true
+  end)
 end)
 assert(selection_completion_done, "selection completion callback should run synchronously")
 pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
@@ -1350,7 +1401,13 @@ source:get_completions({
 }, function(result)
   assert(#result.items >= 1, "file path completion should return path candidates")
   assert(result.items[1].label:match("^@file:`"), "file path completion should use backtick quoting")
-  path_done = true
+  source:resolve(result.items[1], function(item)
+    assert(
+      item.documentation and item.documentation:match("text asset with spaces"),
+      "file path completion documentation should preview injected file context"
+    )
+    path_done = true
+  end)
 end)
 assert(path_done, "path completion callback should run synchronously")
 
@@ -1364,7 +1421,13 @@ source:get_completions({
     #result.items == 1 and result.items[1].label:match("sample image%.png"),
     "image completion should return image files"
   )
-  image_path_done = true
+  source:resolve(result.items[1], function(item)
+    assert(
+      item.documentation and item.documentation:match("localImage") and item.documentation:match("sample image%.png"),
+      "image completion documentation should preview attached image context"
+    )
+    image_path_done = true
+  end)
 end)
 assert(image_path_done, "image path completion callback should run synchronously")
 

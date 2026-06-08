@@ -39,6 +39,7 @@ local function setup_once()
     config.setup()
     core.setup()
     require("codex.native_apply_patch_hook").setup()
+    require("codex.behavior").setup()
     did_setup = true
   end
   setup_lifecycle()
@@ -166,6 +167,7 @@ function M.setup(opts)
   config.setup(opts)
   core.setup()
   require("codex.native_apply_patch_hook").setup()
+  require("codex.behavior").setup()
   setup_lifecycle()
   did_setup = true
 end
@@ -250,6 +252,9 @@ function M.submit_text(text, thread_id)
   local input = parser.parse(text, { thread = thread })
   if #input == 0 then
     return util.notify("prompt is empty", vim.log.levels.WARN)
+  end
+  if thread_id then
+    require("codex.behavior").anchor(thread_id, { reason = "submit" })
   end
   ensure_server(function()
     if not thread_id then

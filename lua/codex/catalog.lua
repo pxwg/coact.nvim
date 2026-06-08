@@ -13,6 +13,7 @@ local static = {
     { label = "@quickfix", detail = "Attach the quickfix list" },
     { label = "@buffers", detail = "Attach the open buffer list" },
     { label = "@cwd", detail = "Attach Neovim cwd and project root" },
+    { label = "@behavior", detail = "Attach editor diff since the previous agent turn" },
     { label = "@file:", detail = "Attach a file by path" },
     { label = "@image:", detail = "Attach a local image by path or an image URL" },
   },

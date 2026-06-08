@@ -198,6 +198,10 @@ context_handlers.cwd = function()
   }, "\n")
 end
 
+context_handlers.behavior = function(_, opts)
+  return require("codex.behavior").context(nil, opts)
+end
+
 local function file_context(path)
   path = normalize_path(path)
   if not path or vim.fn.filereadable(path) ~= 1 then
@@ -233,6 +237,9 @@ end
 
 context_providers.file = file_context
 context_providers.image = image_input
+context_providers.behavior = function(arg, opts)
+  return require("codex.behavior").context(arg, opts)
+end
 
 local function parse_context_token(token)
   token = trim(token)

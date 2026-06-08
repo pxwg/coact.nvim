@@ -183,6 +183,7 @@ The blink source and parser recognize these prompt token families:
   @quickfix
   @buffers
   @cwd
+  @behavior
   @path/to/file
 <
 
@@ -209,13 +210,14 @@ Codex inputs before the turn is sent. Argument providers use
   @lua/codex/init.lua
 <
 The blink source completes paths after `@file:` and `@image:` using that
-backtick form. The `@selection` completion preview shows the current
-source-buffer selection content before insertion. In insert mode, pressing TAB
-immediately after `@file:` opens `snacks.picker.files` when available, with
-|vim.ui.select()| only as a fallback; the selected file is inserted as direct
-`@path/to/file` syntax. `@image:` keeps the provider form because image inputs
-need image-specific attachment metadata. Custom hooks can be registered with
-`require("codex.context").register_hook(name, callback)`.
+backtick form. Its documentation window previews the context that the selected
+`@...` completion will inject, including file contents, image attachment
+metadata, selections, diagnostics, and behavior diffs when available. In insert
+mode, pressing TAB immediately after `@file:` opens `snacks.picker.files` when
+available, with |vim.ui.select()| only as a fallback; the selected file is
+inserted as direct `@path/to/file` syntax. `@image:` keeps the provider form
+because image inputs need image-specific attachment metadata. Custom hooks can
+be registered with `require("codex.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, codex.nvim remembers that source
 buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,

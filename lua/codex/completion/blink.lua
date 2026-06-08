@@ -51,23 +51,120 @@ local function selection_documentation(ctx)
   }, "\n")
 end
 
-local function item_documentation(item, ctx)
-  if item.label == "@selection" then
-    return selection_documentation(ctx)
+local function completion_context(ctx)
+  return {
+    bufnr = ctx and ctx.bufnr or vim.api.nvim_get_current_buf(),
+  }
+end
+
+local function completion_preview_token(item)
+  if not item then
+    return nil
+  end
+  local label = item.insertText or item.label
+  if not label or label == "" then
+    return nil
+  end
+  if item.data and item.data.source == "codex.nvim.context_path" then
+    return label
+  end
+  if label:match("^@[%w_./~%-]+$") then
+    return label
+  end
+  if label:match("^@[%w_./~%-]+:.+$") then
+    return label
+  end
+  return nil
+end
+
+local function input_preview(input)
+  if type(input) ~= "table" then
+    return nil
+  end
+  if input.type == "text" then
+    return input.text
+  end
+  if input.type == "localImage" then
+    return table.concat({
+      "Image context that will be attached:",
+      "- type: localImage",
+      "- path: " .. tostring(input.path or ""),
+    }, "\n")
+  end
+  if input.type == "image" then
+    return table.concat({
+      "Image context that will be attached:",
+      "- type: image",
+      "- url: " .. tostring(input.url or ""),
+    }, "\n")
+  end
+  return vim.inspect(input)
+end
+
+local function resolved_context_documentation(item)
+  local data = item.data or {}
+  local token = data.context_preview_token or completion_preview_token(item)
+  if not token then
+    return nil
+  end
+  if token == "@selection" then
+    return selection_documentation(data.completion_context)
+  end
+
+  local ok, parser = pcall(require, "codex.parser")
+  if not ok then
+    return nil
+  end
+  local ctx = data.completion_context or {}
+  local thread = ctx.bufnr and state.thread_for_buf(ctx.bufnr) or nil
+  local resolved_ok, inputs = pcall(parser._resolve_context_token, token, { thread = thread })
+  if not resolved_ok or type(inputs) ~= "table" or #inputs == 0 then
+    return ("No injectable context preview is available for %s."):format(token)
+  end
+
+  local lines = {
+    "Context preview for " .. token,
+    "",
+    "This is what codex.nvim will inject when this token is submitted:",
+    "",
+  }
+  for index, input in ipairs(inputs) do
+    if index > 1 then
+      table.insert(lines, "")
+    end
+    table.insert(lines, input_preview(input) or vim.inspect(input))
+  end
+  return table.concat(lines, "\n")
+end
+
+local function item_data(item, ctx)
+  local data = vim.deepcopy(item.data or {})
+  local preview_token = completion_preview_token(item)
+  if preview_token then
+    data.context_preview_token = preview_token
+    data.completion_context = completion_context(ctx)
+  end
+  return data
+end
+
+local function item_documentation(item)
+  if completion_preview_token(item) then
+    return item.documentation or item.detail or "Focus this item to preview injected context."
   end
   return item.documentation
 end
 
 local function to_item(item, ctx)
   local kinds = completion_kind()
+  local data = item_data(item, ctx)
   return {
     label = item.label,
     insertText = item.insertText or item.label,
     kind = item.kind or kinds.Keyword or 14,
     detail = item.detail,
-    documentation = item_documentation(item, ctx),
+    documentation = item_documentation(item),
     filterText = item.filterText,
-    data = item.data,
+    data = data,
   }
 end
 
@@ -131,6 +228,15 @@ function Source:execute(ctx, item, callback, default_implementation)
     end
     callback()
   end)
+end
+
+function Source:resolve(item, callback)
+  callback = callback or function() end
+  local documentation = resolved_context_documentation(item)
+  if documentation then
+    item.documentation = documentation
+  end
+  callback(item)
 end
 
 function Source:get_completions(ctx, callback)

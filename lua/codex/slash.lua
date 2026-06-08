@@ -35,6 +35,7 @@ local commands = {
   { name = "logout", detail = "Sign out of Codex", category = "account" },
   { name = "mcp", detail = "List configured MCP tools", category = "tools" },
   { name = "mention", detail = "Attach a file to the conversation", category = "context" },
+  { name = "behavior", detail = "Inspect or reset editor behavior diff capture", category = "context" },
   { name = "model", detail = "Choose the active model and thinking effort", category = "settings" },
   { name = "fast", detail = "Toggle the current model's Fast tier", category = "settings" },
   { name = "reasoning", detail = "Choose reasoning effort and summary", category = "settings" },
@@ -84,6 +85,7 @@ local return_forms = {
   logout = "notify(account/logout)",
   mcp = "page(mcpServerStatus/list)",
   mention = "notify(use @file:/@image:)",
+  behavior = "notify(local editor diff capture status/reset)",
   model = "select(model/list) -> select(supported thinking effort) -> notify(thread/settings/update)",
   fast = "select(model/list service tiers) -> notify(thread/settings/update)",
   reasoning = "select(local reasoning effort + summary) -> notify(thread/settings/update)",
@@ -1463,6 +1465,18 @@ local handlers = {
     show_mcp(args, actions)
   end,
   mention = not_supported("mention", "use @file:`path` or @image:`path` in codex.nvim"),
+  behavior = function(args, actions, thread_id)
+    local behavior = require("codex.behavior")
+    local subcommand = args[1] or "status"
+    if subcommand == "reset" then
+      behavior.reset(thread_id)
+      return notify_result("behavior recorder anchor reset")
+    end
+    if subcommand ~= "status" then
+      return notify_result("usage: /behavior [status|reset]", vim.log.levels.WARN)
+    end
+    return notify_result(behavior.status_text(thread_id))
+  end,
   model = function(args, actions, thread_id)
     open_model(actions, thread_id)
   end,
