@@ -554,7 +554,56 @@ vim.bo[source_buf].filetype = "lua"
 vim.api.nvim_set_current_buf(source_buf)
 vim.api.nvim_win_set_cursor(0, { 2, 7 })
 local context_thread_buf = buffers.open("smoke-context")
-assert(vim.api.nvim_get_current_buf() == context_thread_buf, "opening a Codex thread should focus its buffer")
+local context_thread = state.get_thread("smoke-context")
+assert(context_thread.prompt_bufnr, "opening a Codex thread should create a composer buffer")
+assert(
+  vim.api.nvim_get_current_buf() == context_thread_buf,
+  "opening a Codex thread should focus its history buffer in preview state"
+)
+assert(context_thread.ui_state == "preview", "opening a Codex thread should start in preview state")
+assert(context_thread.prompt_winid == nil, "preview state should not show the composer window")
+assert(
+  vim.api.nvim_buf_get_name(context_thread.prompt_bufnr) == "",
+  "composer buffer should remain unnamed so path completions see a normal editing buffer"
+)
+assert(vim.bo[context_thread_buf].filetype == "codex-history", "history buffer should use codex-history filetype")
+assert(vim.bo[context_thread.prompt_bufnr].filetype == "codex-input", "composer should use codex-input filetype")
+assert(not vim.bo[context_thread_buf].modifiable, "Codex history buffer should be read-only")
+vim.api.nvim_set_current_win(context_thread.winid)
+vim.api.nvim_feedkeys("i", "x", false)
+vim.wait(1000, function()
+  return context_thread.ui_state == "compose"
+    and context_thread.prompt_winid
+    and vim.api.nvim_get_current_buf() == context_thread.prompt_bufnr
+end, 20)
+vim.cmd("stopinsert")
+assert(context_thread.ui_state == "compose", "entering compose should update the UI state")
+assert(vim.api.nvim_get_current_buf() == context_thread.prompt_bufnr, "compose state should focus the composer")
+assert(
+  vim.wo[context_thread.prompt_winid].winbar:match("Codex input"),
+  "composer window should render input metadata in its winbar"
+)
+local initial_composer_height = vim.api.nvim_win_get_height(context_thread.prompt_winid)
+vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, { string.rep("wrapped input ", 40) })
+buffers.refresh_composer(context_thread)
+local grown_composer_height = vim.api.nvim_win_get_height(context_thread.prompt_winid)
+assert(grown_composer_height > initial_composer_height, "composer should grow for wrapped input")
+assert(
+  grown_composer_height <= math.max(2, math.floor(vim.o.lines * 0.33)),
+  "composer growth should respect the configured cap"
+)
+buffers.enter_preview(context_thread, { source = "smoke", focus = true })
+assert(context_thread.ui_state == "preview", "leaving compose should restore preview state")
+assert(context_thread.prompt_winid == nil, "preview state should close the composer window")
+assert(vim.api.nvim_get_current_buf() == context_thread_buf, "preview state should focus history")
+assert(buffers.collect_prompt(context_thread_buf):match("wrapped input"), "preview should preserve the draft prompt")
+buffers.enter_compose("smoke-context", { source = "smoke", startinsert = false })
+assert(
+  buffers.collect_prompt(context_thread.prompt_bufnr):match("wrapped input"),
+  "compose should restore saved draft text"
+)
+buffers.clear_prompt(context_thread_buf)
+buffers.enter_preview(context_thread, { source = "smoke", focus = true })
 assert(attached_buffers[context_thread_buf] == "smoke-context", "buffer.on_attach should run for Codex buffers")
 assert(
   buffer_attached_events[1] and buffer_attached_events[1].bufnr == context_thread_buf,

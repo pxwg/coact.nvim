@@ -89,6 +89,8 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "CodexBlockPlaceholderHint", { default = true, link = "DiagnosticHint" })
 end
 
+M.setup_highlights = setup_highlights
+
 local function add(lines, value)
   local text_lines = util.split_lines(value)
   if #text_lines == 0 then
@@ -800,15 +802,34 @@ local function apply_composer_token_marks(thread, bufnr)
   end
 end
 
-local function existing_prompt(thread)
-  if not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) or not thread.prompt_start then
-    return { "" }
+function M.apply_prompt_marks(_, bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
   end
-  local ok, lines = pcall(vim.api.nvim_buf_get_lines, thread.bufnr, thread.prompt_start, -1, false)
-  if ok and #lines > 0 then
-    return lines
+  setup_highlights()
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for offset, line in ipairs(lines) do
+    local lnum0 = offset - 1
+    local search_from = 1
+    while search_from <= #line do
+      local start_col1, finish_col1, token, next_index = next_composer_candidate(line, search_from)
+      if not start_col1 then
+        break
+      end
+      local hl_group = composer_token_hl(token)
+      if hl_group then
+        vim.api.nvim_buf_set_extmark(bufnr, ns, lnum0, start_col1 - 1, {
+          end_col = finish_col1,
+          hl_group = hl_group,
+          hl_mode = "combine",
+          priority = 1300,
+          strict = false,
+        })
+      end
+      search_from = next_index
+    end
   end
-  return { "" }
 end
 
 local function header(thread)
@@ -1357,15 +1378,6 @@ local function assistant_meta(thread, block)
   return labels
 end
 
-local function composer_meta(thread)
-  local labels = metadata.composer_labels(thread)
-  local ctx = metadata.context_label(thread)
-  if ctx then
-    table.insert(labels, ctx)
-  end
-  return labels
-end
-
 local function assistant_group_id(block)
   if not block or not assistant_content_types[block.type] then
     return nil
@@ -1511,8 +1523,8 @@ function M.render(thread)
 
   local bufnr = thread.bufnr
   local snapshots = capture_window_views(thread, bufnr)
-  local prompt = thread.prompt_lines or existing_prompt(thread)
   thread.prompt_lines = nil
+  thread.prompt_start = nil
   thread.render_index = {}
   thread.placeholder_index = {}
   thread.placeholder_marks = {}
@@ -1549,15 +1561,6 @@ function M.render(thread)
     add(lines, "")
   end
 
-  local prompt_marker = config.get().render.prompt_marker
-  local prompt_line = add(lines, prompt_marker)
-  mark_header(thread, prompt_line, "user", "You", composer_meta(thread), nil)
-  add(lines, "")
-  local prompt_start = #lines
-  for _, prompt_text in ipairs(#prompt > 0 and prompt or { "" }) do
-    add(lines, prompt_text)
-  end
-  thread.prompt_start = prompt_start
   build_fold_levels(thread)
 
   vim.bo[bufnr].modifiable = true
@@ -1570,7 +1573,7 @@ function M.render(thread)
   apply_stream_decoration_marks(thread, bufnr)
   apply_spinner_marks(thread, bufnr)
   apply_composer_token_marks(thread, bufnr)
-  vim.bo[bufnr].modifiable = true
+  vim.bo[bufnr].modifiable = false
 
   local virt = workspace_virt_text(thread, bufnr, title_line)
   if virt then
@@ -1582,6 +1585,7 @@ function M.render(thread)
 
   apply_window_views(thread, bufnr, snapshots)
   prune_view_states(thread, bufnr)
+  require("codex.buffers").refresh_composer(thread)
   if thread_busy(thread) then
     schedule_spinner_tick(thread)
   end

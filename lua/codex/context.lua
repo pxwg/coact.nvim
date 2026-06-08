@@ -26,7 +26,12 @@ function M.is_codex_buffer(bufnr)
     return false
   end
   local name = vim.api.nvim_buf_get_name(bufnr)
-  return vim.b[bufnr].codex_thread_id ~= nil or vim.bo[bufnr].filetype == "codex" or name:match("^codex://") ~= nil
+  local filetype = vim.bo[bufnr].filetype
+  return vim.b[bufnr].codex_thread_id ~= nil
+    or filetype == "codex"
+    or filetype == "codex-history"
+    or filetype == "codex-input"
+    or name:match("^codex://") ~= nil
 end
 
 function M.is_context_buffer(bufnr)

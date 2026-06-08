@@ -12,7 +12,7 @@ end
 
 function Source:enabled()
   local bufnr = vim.api.nvim_get_current_buf()
-  return vim.bo[bufnr].filetype == "codex" or vim.b[bufnr].codex_thread_id ~= nil
+  return vim.bo[bufnr].filetype == "codex-input" or vim.b[bufnr].codex_composer == true
 end
 
 function Source:get_trigger_characters()

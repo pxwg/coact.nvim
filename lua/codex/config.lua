@@ -31,6 +31,10 @@ local defaults = {
     sidebar_width = 0.42,
     render_delay_ms = 35,
     auto_scroll = true,
+    composer = {
+      min_height = 2,
+      max_height = 0.33,
+    },
   },
   render = {
     prompt_marker = "## Prompt",

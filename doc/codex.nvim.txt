@@ -23,10 +23,18 @@ threads as Neovim buffers. A thread buffer is named:
   codex://thread/<thread-id>
 <
 
-The transcript is rendered above a `## Prompt` section. Type below that prompt
-section and press CTRL-S to submit. Reasoning, tools, patches, plans, and agent
-timeline items are rendered as extmark placeholder blocks. Unknown app-server
-events are retained as raw event blocks and can be shown for debugging.
+The transcript is rendered in a read-only `codex-history` thread buffer.
+Opening a thread starts in preview state, where the transcript uses the full UI
+height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`,
+`c`, `cc`, or `S` to enter compose state and open the unnamed `codex-input`
+composer below it. Type there and press CTRL-S or normal-mode ENTER to submit;
+normal-mode `q` returns to preview without discarding the draft. The composer
+grows with wrapped input up to the configured maximum height, then scrolls
+internally. It intentionally does not use a `codex://` buffer name so
+path-oriented completion sources keep a normal editing context. Reasoning,
+tools, patches, plans, and agent timeline items are rendered as extmark
+placeholder blocks. Unknown app-server events are retained as raw event blocks
+and can be shown for debugging.
 
 When a thread is opened from another buffer, codex.nvim tracks that source
 buffer as the thread target for prompt context and Neovim dynamic tools.
@@ -75,6 +83,10 @@ Default options:
       sidebar_width = 0.42,
       render_delay_ms = 35,
       auto_scroll = true,
+      composer = {
+        min_height = 2,
+        max_height = 0.33,
+      },
     },
     render = {
       prompt_marker = "## Prompt",
@@ -237,7 +249,7 @@ be registered with `require("codex.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, codex.nvim remembers that source
 buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
-`@diagnostics`, and Neovim dynamic tools do not read the chat buffer itself.
+`@diagnostics`, and Neovim dynamic tools do not read a Codex UI buffer itself.
 `@selection` reads the source buffer's visual selection marks and includes file
 and range metadata plus diagnostics in the selected range. Selection context is
 attached only when the prompt explicitly contains `@selection` or
@@ -362,10 +374,9 @@ blocks are placeholders with virtual body lines. Busy turns show a spinner
 whose label follows the current generation state: thinking, reasoning,
 streaming, tooling, patch review, syncing, or stopping.
 
-The renderer tracks per-window view state. A window near the prompt follows the
-composer while Codex streams. Cursor movement or scrolling away suspends that
-follow state for that window. The prompt line is restored by anchor instead of
-raw line number so streamed output does not shove the composer out of view.
+The renderer tracks per-window view state. A transcript window near the bottom
+follows the conversation while Codex streams. Cursor movement or scrolling away
+suspends that follow state for that window.
 
 Rendered user/assistant/error sections populate Vim fold ranges through
 `v:lua.CodexFoldExpr(v:lnum)`. Codex windows keep `foldlevel` high by default,
@@ -376,12 +387,14 @@ server-request resolution, context compaction, and model reroutes become
 timeline blocks. Set `render.show_raw_events = true` to also show retained raw
 notification blocks.
 
-Thread buffer keys:
+Thread/composer buffer keys:
 >
   CTRL-S    submit prompt
+  ENTER     submit prompt from composer normal mode
+  i/a/...   open composer from history preview
   za        expand/collapse placeholder block
   K         open full block detail
-  q         close window
+  q         close composer in compose state, close UI from history
 <
 
                                                         *:Codex-detail*
@@ -412,13 +425,15 @@ codex.nvim emits User autocmds for editor integrations:
 >
   CodexBufferAttached
 <
-    Fired after the Codex buffer attach hook point runs for a thread buffer.
-    `event.data` includes `bufnr`, `thread_id`, and `thread`.
+    Fired after the Codex buffer attach hook point runs for a transcript or
+    composer buffer. `event.data` includes `bufnr`, `thread_id`, `thread`, and
+    `is_composer`.
 >
   CodexBufferOpened
 <
     Fired after a thread buffer is opened in a window. `event.data` includes
-    `bufnr`, `winid`, `thread_id`, and `thread`.
+    `bufnr`, `winid`, `prompt_bufnr`, `prompt_winid`, `thread_id`, and
+    `thread`.
 >
   CodexThreadOpened
 <

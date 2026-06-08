@@ -234,7 +234,8 @@ function M.resume(thread_id)
   end)
 end
 
-function M.submit_text(text, thread_id)
+function M.submit_text(text, thread_id, opts)
+  opts = opts or {}
   if
     require("codex.slash").dispatch(text, thread_id, {
       ensure_server = ensure_server,
@@ -284,6 +285,9 @@ function M.submit_text(text, thread_id)
           failed_thread.generation = "idle"
           buffers.schedule_render(thread_id)
         end
+        if type(opts.on_error) == "function" then
+          opts.on_error(err)
+        end
         util.notify("turn/start failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
         return
       end
@@ -296,6 +300,9 @@ function M.submit_text(text, thread_id)
       if submitted_thread and submitted_thread.pending_request and turn.id then
         submitted_thread.pending_request.turn_id = turn.id
         state.set_turn_settings(thread_id, turn.id, submitted_thread.pending_request.settings)
+      end
+      if type(opts.on_success) == "function" then
+        opts.on_success(turn)
       end
       buffers.schedule_render(thread_id)
     end)
@@ -311,10 +318,18 @@ function M.submit()
   end
   local thread = state.get_thread(thread_id)
   if thread then
-    require("codex.ui.render").prepare_submit_follow(thread, vim.api.nvim_get_current_win())
+    require("codex.ui.render").prepare_submit_follow(thread, thread.winid or vim.api.nvim_get_current_win())
   end
+  local snapshot = buffers.snapshot_prompt(bufnr)
   buffers.clear_prompt(bufnr)
-  M.submit_text(text, thread_id)
+  if thread then
+    buffers.enter_preview(thread, { focus = true })
+  end
+  M.submit_text(text, thread_id, {
+    on_error = function()
+      buffers.restore_prompt(bufnr, snapshot)
+    end,
+  })
 end
 
 function M.stop()

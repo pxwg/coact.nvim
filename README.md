@@ -86,6 +86,10 @@ require("codex").setup({
     sidebar_width = 0.42,
     render_delay_ms = 35,
     auto_scroll = true,
+    composer = {
+      min_height = 2,
+      max_height = 0.33,
+    },
   },
   render = {
     prompt_marker = "## Prompt",
@@ -153,11 +157,11 @@ On macOS, `sanitize_malloc_env` removes inherited `MallocStackLogging*` variable
 :Codex add-selection
 ```
 
-Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, windows near the prompt keep following the composer; scrolling away suspends that follow state for the window.
+Opening a Codex thread starts in preview state with a read-only `codex-history` transcript buffer using the full UI height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, or `S` to open the unnamed `codex-input` composer below it. Type in the composer and press `<C-s>` or normal-mode `<CR>` to submit; normal-mode `q` closes the composer and returns to preview without discarding the draft. The composer grows with wrapped input up to `ui.composer.max_height`, then scrolls internally. The composer buffer is left unnamed rather than using a `codex://` URI so path-oriented completion sources keep a normal editing context. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, transcript windows near the bottom keep following the conversation; scrolling away suspends that follow state for the window.
 
 `:Codex status` reports whether app-server is running, current and active thread ids, pending request counts, and the current thread generation/status. The same data is available programmatically through `require("codex").status()` for statuslines or custom integrations.
 
-`:Codex attach` reruns the configured Codex buffer attach hook for the current thread buffer. `:Codex attach all` reruns it for every loaded Codex thread buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("codex").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after codex.nvim creates the chat buffer.
+`:Codex attach` reruns the configured Codex buffer attach hook for the current thread buffer. `:Codex attach all` reruns it for every loaded Codex transcript or composer buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("codex").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after codex.nvim creates a Codex buffer.
 
 `:Codex add-buffer` appends the current source buffer path to the active chat prompt using Codex's official `@path` syntax. `:Codex add-selection` appends `@selection` when the source buffer has a visual selection.
 
@@ -169,7 +173,7 @@ Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-s
 
 ## Prompt Tokens
 
-`codex.nvim` treats the chat buffer as the main UI surface. Prompt token completions are available through the `blink.cmp` source:
+Prompt token completions are available in the `codex-input` composer through the `blink.cmp` source:
 
 - `$skill:<name>` from Codex app-server `skills/list`
 - `/model`, `/permissions`, `/mcp`, `/status`, and other CLI-style slash commands handled by codex.nvim
@@ -201,7 +205,7 @@ require("blink.cmp").setup({
 
 The blink source completes paths after `@file:` and `@image:` using the same backtick form. Its documentation window previews the context that the selected `@...` completion will inject, including file contents, image attachment metadata, selections, diagnostics, and behavior diffs when available. In insert mode, pressing `<Tab>` immediately after `@file:` opens `snacks.picker.files` when available, with `vim.ui.select` only as a fallback; the selected file is inserted as direct `@path/to/file` syntax. `@image:` keeps the provider form because image inputs need image-specific attachment metadata. Custom hooks can be registered with `require("codex.context").register_hook(name, callback)`.
 
-When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@selection`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@selection` uses the source buffer's visual selection marks and includes file/range metadata plus diagnostics in the selected range. Selection context is attached only when the prompt explicitly contains `@selection` or you run `:Codex add-selection`, keeping context injection fully controlled by the prompt. Expanded text contexts are sent before the user request and are labeled as reference context, not instructions; the user request remains the final text input for semantic priority. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Slash commands are handled locally before `turn/start`, so `/...` entries are not sent as model-visible tool calls; accepting a slash completion removes the typed prefix and opens that command's page or picker instead of inserting text. Each slash command declares a return form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter for Neovim rendering. Settings commands such as `/model`, `/fast`, `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental` open Neovim pickers backed by Codex app-server catalog responses where available and update the active thread where app-server supports it. `/model` also offers the selected model's advertised thinking-effort choices when app-server returns them. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
+When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@selection`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read a Codex UI buffer itself. `@selection` uses the source buffer's visual selection marks and includes file/range metadata plus diagnostics in the selected range. Selection context is attached only when the prompt explicitly contains `@selection` or you run `:Codex add-selection`, keeping context injection fully controlled by the prompt. Expanded text contexts are sent before the user request and are labeled as reference context, not instructions; the user request remains the final text input for semantic priority. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Slash commands are handled locally before `turn/start`, so `/...` entries are not sent as model-visible tool calls; accepting a slash completion removes the typed prefix and opens that command's page or picker instead of inserting text. Each slash command declares a return form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter for Neovim rendering. Settings commands such as `/model`, `/fast`, `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental` open Neovim pickers backed by Codex app-server catalog responses where available and update the active thread where app-server supports it. `/model` also offers the selected model's advertised thinking-effort choices when app-server returns them. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
 ## Patch Review
 
@@ -256,8 +260,8 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/codex/core.lua`: app-server notification and server-request reducer; maps Codex lifecycle events to UI generation states and timeline/raw blocks.
 - `lua/codex/context.lua`: source-buffer tracking for prompt context and Neovim dynamic tools.
 - `lua/codex/events.lua`: Codex `ThreadItem` to modern Neovim TUI block normalization.
-- `lua/codex/buffers.lua`: `codex://thread/<id>` buffers, window option management, prompt collection, and block keymaps.
-- `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, prompt-anchor follow, and foldexpr ranges.
+- `lua/codex/buffers.lua`: `codex://thread/<id>` `codex-history` transcript buffers, unnamed `codex-input` composer buffers, window option management, prompt collection, and block keymaps.
+- `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, view follow, and foldexpr ranges.
 - `lua/codex/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
 - `lua/codex/ui/detail.lua`: scratch detail buffers for the block under cursor.
 - `lua/codex/patch_review.lua`: app-server patch proposal review UI.
