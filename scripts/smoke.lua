@@ -937,25 +937,87 @@ assert(
     and #session_hunk.changed_blocks[1].new_lines == 1,
   "patch session should distinguish changed lines from hunk context"
 )
-local session_add_mark = vim.api.nvim_buf_get_extmark_by_id(
-  session_hunk.bufnr,
-  diff_ns,
-  session_hunk.display_extmark_ids[1],
-  { details = true }
-)
-assert(
-  session_add_mark[1] == 1 and session_add_mark[3].end_row == 2,
-  "patch session should highlight only the changed replacement line"
-)
-local session_old_mark =
-  vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_extmark_ids[1], { details = true })
-local session_old_virtual = vim.inspect(session_old_mark[3].virt_lines)
-assert(
-  session_old_virtual:match("%- beta")
-    and not session_old_virtual:match("alpha")
-    and not session_old_virtual:match("gamma"),
-  "patch session should show only deleted lines as old virtual diff content"
-)
+do
+  local configured_review_keys = patch_session._configured_keymaps()
+  assert(
+    configured_review_keys.accept == "."
+      and configured_review_keys.reject == ","
+      and configured_review_keys.next == "n"
+      and configured_review_keys.prev == "p"
+      and configured_review_keys.accept_all == "ga"
+      and configured_review_keys.reject_all == "gr"
+      and configured_review_keys.cancel == "q"
+      and configured_review_keys.help == "?",
+    "patch session should default to short review keys"
+  )
+  local review_keymaps = {}
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(session_hunk.bufnr, "n")) do
+    review_keymaps[map.lhs] = true
+  end
+  assert(
+    review_keymaps["."]
+      and review_keymaps[","]
+      and review_keymaps.n
+      and review_keymaps.p
+      and review_keymaps.ga
+      and review_keymaps.gr
+      and review_keymaps.q
+      and review_keymaps["?"],
+    "patch session should register short buffer-local review keys"
+  )
+  assert(
+    not review_keymaps["<leader>ca"] and not review_keymaps["\\ca"] and not review_keymaps["<leader>cr"],
+    "patch session should not register legacy leader+c review keys"
+  )
+  local session_add_mark = vim.api.nvim_buf_get_extmark_by_id(
+    session_hunk.bufnr,
+    diff_ns,
+    session_hunk.display_extmark_ids[1],
+    { details = true }
+  )
+  assert(
+    session_add_mark[1] == 1 and session_add_mark[3].end_row == 2,
+    "patch session should highlight only the changed replacement line"
+  )
+  local session_marks = vim.api.nvim_buf_get_extmarks(session_hunk.bufnr, diff_ns, 0, -1, { details = true })
+  local has_after_char_mark = false
+  for _, mark in ipairs(session_marks) do
+    if
+      mark[4]
+      and mark[4].hl_group == "CodexPatchReviewAfterChar"
+      and mark[4].end_col
+      and mark[4].end_col > mark[3]
+    then
+      has_after_char_mark = true
+    end
+  end
+  assert(has_after_char_mark, "patch session should add character-level highlights to replacement text")
+  local session_old_mark =
+    vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_extmark_ids[1], { details = true })
+  local session_old_virtual = vim.inspect(session_old_mark[3].virt_lines)
+  assert(
+    session_old_virtual:match("CodexPatchReviewBefore")
+      and not session_old_virtual:match("alpha")
+      and not session_old_virtual:match("gamma")
+      and session_old_virtual:match("CodexPatchReviewBeforeChar"),
+    "patch session should show only deleted lines as old virtual diff content with character highlights"
+  )
+  local hint_ns = vim.api.nvim_get_namespaces()["codex.patch_session.hint"]
+  local hint_mark = vim.api.nvim_buf_get_extmarks(session_hunk.bufnr, hint_ns, 0, -1, { details = true })[1]
+  local hint_text = hint_mark and vim.inspect(hint_mark[4].virt_lines) or ""
+  assert(
+    hint_text:match('"%."')
+      and hint_text:match('","')
+      and hint_text:match('"n"')
+      and hint_text:match('"p"')
+      and hint_text:match("accept")
+      and hint_text:match("reject")
+      and hint_text:match("next")
+      and hint_text:match("prev")
+      and not hint_text:match("<leader>"),
+    "patch session should show visible short-key hints"
+  )
+end
 patch_session._reject_block(session, session_block, "keep beta")
 vim.wait(1000, function()
   return session_done
@@ -1034,13 +1096,77 @@ local delete_only_virtual = vim.inspect(delete_only_old_mark[3].virt_lines)
 assert(
   #delete_only_hunk.display_extmark_ids == 1
     and delete_only_mark[1] == 1
-    and delete_only_mark[3].virt_text[1][1]:match("%[deleted 1 line%]")
-    and delete_only_virtual:match("%- remove this")
+    and delete_only_mark[3].virt_text[1][1]:match("%[%-%sdeleted 1 line%]")
+    and delete_only_virtual:match("remove this")
     and not delete_only_virtual:match("left context")
     and not delete_only_virtual:match("right context"),
   "patch session should render deletion-only blocks without context lines"
 )
 patch_session._accept_block(delete_only_session, delete_only_session.blocks[1])
+do
+  local long_diff_file = vim.fs.joinpath(session_dir, "long-diff.txt")
+  local long_before_line = string.rep("before-", 28) .. "old-tail"
+  local long_after_line = string.rep("before-", 28) .. "new-tail"
+  vim.fn.writefile({ "top", long_before_line, "bottom" }, long_diff_file)
+  local long_diff_patch = table.concat({
+    "diff --git a/long-diff.txt b/long-diff.txt",
+    "--- a/long-diff.txt",
+    "+++ b/long-diff.txt",
+    "@@ -1,3 +1,3 @@",
+    " top",
+    "-" .. long_before_line,
+    "+" .. long_after_line,
+    " bottom",
+  }, "\n")
+  local long_diff_session = patch_session.open({
+    cwd = session_dir,
+    changes = dynamic_tools._changes_from_unified_patch(long_diff_patch),
+  })
+  local long_diff_hunk = long_diff_session.hunks[1]
+  local long_diff_old_mark = vim.api.nvim_buf_get_extmark_by_id(
+    long_diff_hunk.bufnr,
+    diff_ns,
+    long_diff_hunk.old_extmark_ids[1],
+    { details = true }
+  )
+  assert(
+    #(long_diff_old_mark[3].virt_lines or {}) >= 3,
+    "patch session should split long before lines into visible virtual lines"
+  )
+  patch_session._accept_block(long_diff_session, long_diff_session.blocks[1])
+end
+do
+  local budget_file = vim.fs.joinpath(session_dir, "char-budget.txt")
+  local budget_original = {}
+  local budget_patch = {
+    "diff --git a/char-budget.txt b/char-budget.txt",
+    "--- a/char-budget.txt",
+    "+++ b/char-budget.txt",
+    "@@ -1,130 +1,130 @@",
+  }
+  for index = 1, 130 do
+    local old = ("budget-%03d-old"):format(index)
+    local new = ("budget-%03d-new"):format(index)
+    table.insert(budget_original, old)
+    table.insert(budget_patch, "-" .. old)
+    table.insert(budget_patch, "+" .. new)
+  end
+  vim.fn.writefile(budget_original, budget_file)
+  local budget_session = patch_session.open({
+    cwd = session_dir,
+    changes = dynamic_tools._changes_from_unified_patch(table.concat(budget_patch, "\n")),
+  })
+  local budget_marks = vim.api.nvim_buf_get_extmarks(budget_session.hunks[1].bufnr, diff_ns, 0, -1, { details = true })
+  local has_budget_char_mark = false
+  for _, mark in ipairs(budget_marks) do
+    if mark[4] and mark[4].hl_group == "CodexPatchReviewAfterChar" then
+      has_budget_char_mark = true
+      break
+    end
+  end
+  assert(not has_budget_char_mark, "patch session should skip character extmarks over the review budget")
+  patch_session._accept_block(budget_session, budget_session.blocks[1])
+end
 local multi_file = vim.fs.joinpath(session_dir, "multi.txt")
 vim.fn.writefile({ "top", "old one", "middle", "old two", "bottom" }, multi_file)
 local multi_patch = table.concat({

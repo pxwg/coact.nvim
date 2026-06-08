@@ -9,16 +9,51 @@ local diff_ns = vim.api.nvim_create_namespace("codex.patch_session.diff")
 local hint_ns = vim.api.nvim_create_namespace("codex.patch_session.hint")
 local active_by_buf = {}
 
-local keymaps = {
-  accept = "<leader>ca",
-  reject = "<leader>cr",
-  accept_all = "<leader>cA",
-  reject_all = "<leader>cR",
-  auto_apply = "<leader>cf",
-  cancel = "<leader>cq",
-  next = "]c",
-  prev = "[c",
+local default_keymaps = {
+  accept = ".",
+  reject = ",",
+  accept_all = "ga",
+  reject_all = "gr",
+  auto_apply = "gA",
+  cancel = "q",
+  next = "n",
+  prev = "p",
+  help = "?",
 }
+
+local function setup_highlights()
+  vim.api.nvim_set_hl(0, "CodexPatchReviewHint", { default = true, link = "Comment" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewHintKey", { default = true, link = "Identifier" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewHintTitle", { default = true, link = "Special" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewBefore", { default = true, link = "DiffDelete" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewBeforeChar", { default = true, link = "DiffText" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewAfterChar", { default = true, link = "DiffText" })
+  vim.api.nvim_set_hl(0, "CodexPatchReviewDeleteMarker", { default = true, link = "DiffDelete" })
+end
+
+local function configured_keymaps()
+  local edit = config.get().edit or {}
+  local review = type(edit.review) == "table" and edit.review or {}
+  local user_keymaps = type(review.keymaps) == "table" and review.keymaps or {}
+  local resolved = vim.deepcopy(default_keymaps)
+  for name, _ in pairs(default_keymaps) do
+    if user_keymaps[name] ~= nil then
+      local value = user_keymaps[name]
+      resolved[name] = type(value) == "string" and value ~= "" and value or nil
+    end
+  end
+  return resolved
+end
+
+local function keymap_label(session, name)
+  local keymaps = session and session.keymaps or default_keymaps
+  return keymaps[name] or "-"
+end
+
+local function review_config()
+  local edit = config.get().edit or {}
+  return type(edit.review) == "table" and edit.review or {}
+end
 
 local function parse_hunk_header(line)
   local old_start, old_count, new_start, new_count = tostring(line or ""):match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
@@ -325,18 +360,264 @@ local function remove_block_marks(block)
     pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, block.old_extmark_id)
     block.old_extmark_id = nil
   end
+  for _, mark_id in ipairs(block.new_char_extmark_ids or {}) do
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, mark_id)
+  end
+  block.new_char_extmark_ids = nil
 end
 
-local function old_virtual_lines(hunk, block)
+local function review_width(bufnr)
+  local width = vim.o.columns
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if is_review_window(winid) then
+      width = vim.api.nvim_win_get_width(winid)
+      break
+    end
+  end
+  return math.max(32, math.min(width - 6, 132))
+end
+
+local function utf8_tokens(line)
+  local tokens = {}
+  line = tostring(line or "")
+  local index = 1
+  while index <= #line do
+    local byte = line:byte(index) or 0
+    local size
+    if byte < 0x80 then
+      size = 1
+    elseif byte < 0xE0 then
+      size = 2
+    elseif byte < 0xF0 then
+      size = 3
+    elseif byte < 0xF8 then
+      size = 4
+    else
+      size = 1
+    end
+    local finish = math.min(#line, index + size - 1)
+    table.insert(tokens, {
+      text = line:sub(index, finish),
+      start_col = index - 1,
+      end_col = finish,
+    })
+    index = finish + 1
+  end
+  return tokens
+end
+
+local function token_text(tokens)
+  if not tokens or #tokens == 0 then
+    return ""
+  end
+  local lines = {}
+  for _, token in ipairs(tokens) do
+    table.insert(lines, token.text)
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+local function prefix_suffix_char_spans(old_tokens, new_tokens)
+  local prefix = 1
+  while prefix <= #old_tokens and prefix <= #new_tokens and old_tokens[prefix].text == new_tokens[prefix].text do
+    prefix = prefix + 1
+  end
+
+  if prefix > #old_tokens and prefix > #new_tokens then
+    return {}, {}
+  end
+
+  local old_suffix = #old_tokens
+  local new_suffix = #new_tokens
+  while old_suffix >= prefix and new_suffix >= prefix and old_tokens[old_suffix].text == new_tokens[new_suffix].text do
+    old_suffix = old_suffix - 1
+    new_suffix = new_suffix - 1
+  end
+
+  local old_spans = {}
+  local new_spans = {}
+  if old_suffix >= prefix and old_tokens[prefix] then
+    table.insert(old_spans, {
+      start_col = old_tokens[prefix].start_col,
+      end_col = old_tokens[old_suffix].end_col,
+    })
+  end
+  if new_suffix >= prefix and new_tokens[prefix] then
+    table.insert(new_spans, {
+      start_col = new_tokens[prefix].start_col,
+      end_col = new_tokens[new_suffix].end_col,
+    })
+  end
+  return old_spans, new_spans
+end
+
+local function line_char_spans(old_line, new_line)
+  local old_tokens = utf8_tokens(old_line)
+  local new_tokens = utf8_tokens(new_line)
+  if #old_tokens == 0 and #new_tokens == 0 then
+    return {}, {}
+  end
+
+  local ok, indices = pcall(vim.diff, token_text(old_tokens), token_text(new_tokens), {
+    result_type = "indices",
+  })
+  if not ok or type(indices) ~= "table" then
+    return prefix_suffix_char_spans(old_tokens, new_tokens)
+  end
+
+  local old_spans = {}
+  local new_spans = {}
+  for _, range in ipairs(indices) do
+    local old_start = tonumber(range[1]) or 0
+    local old_count = tonumber(range[2]) or 0
+    local new_start = tonumber(range[3]) or 0
+    local new_count = tonumber(range[4]) or 0
+    if old_count > 0 and old_tokens[old_start] then
+      local last = old_tokens[old_start + old_count - 1]
+      table.insert(old_spans, {
+        start_col = old_tokens[old_start].start_col,
+        end_col = last and last.end_col or old_tokens[old_start].end_col,
+      })
+    end
+    if new_count > 0 and new_tokens[new_start] then
+      local last = new_tokens[new_start + new_count - 1]
+      table.insert(new_spans, {
+        start_col = new_tokens[new_start].start_col,
+        end_col = last and last.end_col or new_tokens[new_start].end_col,
+      })
+    end
+  end
+  return old_spans, new_spans
+end
+
+local function block_char_spans(block)
+  if block.old_char_spans and block.new_char_spans then
+    return block.old_char_spans, block.new_char_spans
+  end
+
+  local old_spans = {}
+  local new_spans = {}
+  local pairs_count = math.min(#(block.old_lines or {}), #(block.new_lines or {}))
+  for index = 1, pairs_count do
+    old_spans[index], new_spans[index] = line_char_spans(block.old_lines[index], block.new_lines[index])
+  end
+  block.old_char_spans = old_spans
+  block.new_char_spans = new_spans
+  return old_spans, new_spans
+end
+
+local function block_char_diff_allowed(block)
+  local review = review_config()
+  local max_lines = math.max(0, tonumber(review.char_diff_max_lines) or 120)
+  local max_line_bytes = math.max(0, tonumber(review.char_diff_max_line_bytes) or 1000)
+  local max_total_bytes = math.max(0, tonumber(review.char_diff_max_total_bytes) or 20000)
+  local pairs_count = math.min(#(block.old_lines or {}), #(block.new_lines or {}))
+  if pairs_count == 0 or pairs_count > max_lines then
+    return false
+  end
+  local total = 0
+  for index = 1, pairs_count do
+    local old_len = #(block.old_lines[index] or "")
+    local new_len = #(block.new_lines[index] or "")
+    if old_len > max_line_bytes or new_len > max_line_bytes then
+      return false
+    end
+    total = total + old_len + new_len
+    if total > max_total_bytes then
+      return false
+    end
+  end
+  return true
+end
+
+local function span_hl_for_col(spans, start_col, end_col)
+  for _, span in ipairs(spans or {}) do
+    if start_col < span.end_col and end_col > span.start_col then
+      return true
+    end
+  end
+  return false
+end
+
+local function line_chunks(prefix, line, spans, base_hl, char_hl, width)
+  local virt_lines = {}
+  local has_spans = spans and #spans > 0
+  local prefix_width = vim.fn.strdisplaywidth(prefix)
+  local available = math.max(12, width - prefix_width)
+  if not has_spans and not line:find("[\128-\255]") then
+    if vim.fn.strdisplaywidth(line) <= available then
+      return { { { prefix, base_hl }, { line, base_hl } } }
+    end
+    local chunks = {}
+    local index = 1
+    while index <= #line do
+      local part = line:sub(index, index + available - 1)
+      table.insert(chunks, { { index == 1 and prefix or string.rep(" ", prefix_width), base_hl }, { part, base_hl } })
+      index = index + #part
+      if part == "" then
+        break
+      end
+    end
+    return chunks
+  end
+
+  local tokens = utf8_tokens(line)
+  local chunks = { { prefix, base_hl } }
+  local used = 0
+  local current_text = ""
+  local current_hl = nil
+
+  local function flush_text()
+    if current_text ~= "" then
+      table.insert(chunks, { current_text, current_hl or base_hl })
+      current_text = ""
+    end
+  end
+
+  local function push_line()
+    flush_text()
+    table.insert(virt_lines, chunks)
+    chunks = { { string.rep(" ", prefix_width), base_hl } }
+    used = 0
+    current_hl = nil
+  end
+
+  if #tokens == 0 then
+    return { chunks }
+  end
+
+  for _, token in ipairs(tokens) do
+    local token_width = math.max(1, vim.fn.strdisplaywidth(token.text))
+    if used > 0 and used + token_width > available then
+      push_line()
+    end
+    local hl = span_hl_for_col(spans, token.start_col, token.end_col) and char_hl or base_hl
+    if current_hl ~= hl then
+      flush_text()
+      current_hl = hl
+    end
+    current_text = current_text .. token.text
+    used = used + token_width
+  end
+  flush_text()
+  table.insert(virt_lines, chunks)
+  return virt_lines
+end
+
+local function old_virtual_lines(hunk, block, width, detailed)
   local old_lines = block.old_lines or {}
   if #old_lines == 0 then
     return {}
   end
   local virt_lines = {}
   local label = #(hunk.changed_blocks or {}) > 1 and block_label(block) or hunk_label(hunk)
-  table.insert(virt_lines, { { ("--- before %s"):format(label), "DiffDelete" } })
-  for _, line in ipairs(old_lines) do
-    table.insert(virt_lines, { { "- " .. line, "DiffDelete" } })
+  table.insert(virt_lines, { { ("before %s"):format(label), "CodexPatchReviewHintTitle" } })
+  local old_spans = detailed and block_char_spans(block) or {}
+  for index, line in ipairs(old_lines) do
+    vim.list_extend(
+      virt_lines,
+      line_chunks("- ", line, old_spans[index], "CodexPatchReviewBefore", "CodexPatchReviewBeforeChar", width)
+    )
   end
   return virt_lines
 end
@@ -346,7 +627,105 @@ local function clamp_extmark_row(bufnr, row)
   return math.max(0, math.min(row or 0, line_count))
 end
 
-local function mark_hunk(hunk)
+local function mark_new_char_spans(bufnr, block, block_start)
+  if not block_char_diff_allowed(block) then
+    return
+  end
+  local _, new_spans = block_char_spans(block)
+  block.new_char_extmark_ids = {}
+  for line_index, spans in pairs(new_spans or {}) do
+    local row = block_start + line_index - 1
+    for _, span in ipairs(spans or {}) do
+      if span.end_col > span.start_col then
+        local mark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, row, span.start_col, {
+          end_row = row,
+          end_col = span.end_col,
+          hl_group = "CodexPatchReviewAfterChar",
+          hl_mode = "combine",
+          priority = 20002,
+          right_gravity = false,
+          end_right_gravity = true,
+        })
+        table.insert(block.new_char_extmark_ids, mark_id)
+      end
+    end
+  end
+end
+
+local function block_start_row(block)
+  local hunk = block and block.hunk or nil
+  local bufnr = block_bufnr(block)
+  if not block or not hunk or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil
+  end
+  return clamp_extmark_row(bufnr, (hunk.applied_start_row or 0) + (block.new_start or 0))
+end
+
+local function set_block_old_mark(block, detailed)
+  local bufnr = block_bufnr(block)
+  local hunk = block and block.hunk or nil
+  local start_row = block_start_row(block)
+  if not bufnr or not hunk or not start_row then
+    return
+  end
+  local previous_old_extmark_id = block.old_extmark_id
+  if block.old_extmark_id then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, block.old_extmark_id)
+    block.old_extmark_id = nil
+  end
+  local use_detail = detailed == true and block_char_diff_allowed(block)
+  local virt_lines = old_virtual_lines(hunk, block, review_width(bufnr), use_detail)
+  if #virt_lines > 0 then
+    block.old_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, start_row, 0, {
+      virt_lines = virt_lines,
+      virt_lines_above = true,
+      priority = use_detail and 20004 or 19999,
+      right_gravity = false,
+    })
+    if previous_old_extmark_id and hunk.old_extmark_ids then
+      for index, mark_id in ipairs(hunk.old_extmark_ids) do
+        if mark_id == previous_old_extmark_id then
+          hunk.old_extmark_ids[index] = block.old_extmark_id
+          break
+        end
+      end
+    end
+  end
+end
+
+local function clear_block_char_marks(block)
+  local bufnr = block_bufnr(block)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  for _, mark_id in ipairs(block.new_char_extmark_ids or {}) do
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, diff_ns, mark_id)
+  end
+  block.new_char_extmark_ids = nil
+end
+
+local function render_block_detail(session, block)
+  if session.detail_block == block or not block or block.status then
+    return
+  end
+  if session.detail_block and not session.detail_block.status then
+    clear_block_char_marks(session.detail_block)
+    set_block_old_mark(session.detail_block, false)
+  end
+  session.detail_block = block
+  if block_char_diff_allowed(block) then
+    local bufnr = block_bufnr(block)
+    local start_row = block_start_row(block)
+    if not bufnr or not start_row then
+      return
+    end
+    clear_block_char_marks(block)
+    mark_new_char_spans(bufnr, block, start_row)
+    set_block_old_mark(block, true)
+  end
+end
+
+local function mark_hunk(session, hunk)
   local bufnr = hunk.bufnr
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -363,41 +742,52 @@ local function mark_hunk(hunk)
   })
 
   for index, block in ipairs(hunk.changed_blocks or {}) do
-    block.index_in_hunk = index
-    local block_start = clamp_extmark_row(bufnr, (hunk.applied_start_row or 0) + (block.new_start or 0))
-    if #(block.new_lines or {}) > 0 then
-      block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-        end_row = clamp_extmark_row(bufnr, block_start + #block.new_lines),
-        hl_group = "DiffAdd",
-        hl_eol = true,
-        hl_mode = "combine",
-        priority = 20000,
-        right_gravity = false,
-        end_right_gravity = true,
-      })
-      table.insert(hunk.display_extmark_ids, block.display_extmark_id)
-    else
-      block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-        virt_text = {
-          { ("[deleted %d line%s]"):format(#block.old_lines, #block.old_lines == 1 and "" or "s"), "DiffDelete" },
-        },
-        virt_text_pos = "right_align",
-        priority = 20000,
-        right_gravity = false,
-      })
-      table.insert(hunk.display_extmark_ids, block.display_extmark_id)
-    end
+    if not block.status then
+      block.index_in_hunk = index
+      local block_start = clamp_extmark_row(bufnr, (hunk.applied_start_row or 0) + (block.new_start or 0))
+      if #(block.new_lines or {}) > 0 then
+        block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+          end_row = clamp_extmark_row(bufnr, block_start + #block.new_lines),
+          hl_group = "DiffAdd",
+          hl_eol = true,
+          hl_mode = "combine",
+          priority = 20000,
+          right_gravity = false,
+          end_right_gravity = true,
+        })
+        table.insert(hunk.display_extmark_ids, block.display_extmark_id)
+      else
+        block.display_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
+          virt_text = {
+            {
+              ("[- deleted %d line%s]"):format(#block.old_lines, #block.old_lines == 1 and "" or "s"),
+              "CodexPatchReviewDeleteMarker",
+            },
+          },
+          virt_text_pos = "eol",
+          priority = 20000,
+          right_gravity = false,
+        })
+        table.insert(hunk.display_extmark_ids, block.display_extmark_id)
+      end
 
-    local virt_lines = old_virtual_lines(hunk, block)
-    if #virt_lines > 0 then
-      block.old_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, diff_ns, block_start, 0, {
-        virt_lines = virt_lines,
-        virt_lines_above = true,
-        priority = 19999,
-        right_gravity = false,
-      })
-      table.insert(hunk.old_extmark_ids, block.old_extmark_id)
+      set_block_old_mark(block, false)
+      if block.old_extmark_id then
+        table.insert(hunk.old_extmark_ids, block.old_extmark_id)
+      end
     end
+  end
+end
+
+local function refresh_diff_marks(session)
+  session.detail_block = nil
+  for bufnr in pairs(session.buffers or {}) do
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_clear_namespace(bufnr, diff_ns, 0, -1)
+    end
+  end
+  for _, hunk in ipairs(session.hunks or {}) do
+    mark_hunk(session, hunk)
   end
 end
 
@@ -415,6 +805,95 @@ local function pending_blocks(session)
   return pending
 end
 
+local function chunks_display_width(chunks)
+  local width = 0
+  for _, chunk in ipairs(chunks or {}) do
+    width = width + vim.fn.strdisplaywidth(chunk[1] or "")
+  end
+  return width
+end
+
+local function review_hint_lines(session, block, width)
+  local total = #(session.blocks or {})
+  local pending = #pending_blocks(session)
+  local header = {
+    { "Codex Review", "CodexPatchReviewHintTitle" },
+    { ("  %d/%d"):format(block.index or 0, total), "CodexPatchReviewHint" },
+    { ("  %d pending"):format(pending), "CodexPatchReviewHint" },
+  }
+  local lines = { header }
+  local current = {}
+
+  local function push_action(name, label)
+    local key = keymap_label(session, name)
+    if key == "-" then
+      return
+    end
+    local action = {
+      { key, "CodexPatchReviewHintKey" },
+      { " " .. label .. "  ", "CodexPatchReviewHint" },
+    }
+    if #current > 0 and chunks_display_width(current) + chunks_display_width(action) > width then
+      table.insert(lines, current)
+      current = {}
+    end
+    vim.list_extend(current, action)
+  end
+
+  push_action("accept", "accept")
+  push_action("reject", "reject")
+  push_action("next", "next")
+  push_action("prev", "prev")
+  push_action("accept_all", "accept rest")
+  push_action("reject_all", "reject rest")
+  if session.on_auto_apply then
+    push_action("auto_apply", "auto")
+  end
+  push_action("cancel", "cancel")
+  push_action("help", "help")
+  if #current > 0 then
+    table.insert(lines, current)
+  end
+  return lines
+end
+
+local review_window_option_names = {
+  "wrap",
+  "linebreak",
+  "breakindent",
+  "foldenable",
+}
+
+local function apply_review_window_options(session, winid)
+  if not winid or not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+  session.window_options = session.window_options or {}
+  if not session.window_options[winid] then
+    local stored = {}
+    for _, name in ipairs(review_window_option_names) do
+      stored[name] = vim.wo[winid][name]
+    end
+    session.window_options[winid] = stored
+  end
+  vim.wo[winid].wrap = true
+  vim.wo[winid].linebreak = true
+  vim.wo[winid].breakindent = true
+  vim.wo[winid].foldenable = false
+end
+
+local function restore_review_window_options(session)
+  for winid, options in pairs(session.window_options or {}) do
+    if vim.api.nvim_win_is_valid(winid) then
+      for name, value in pairs(options) do
+        pcall(function()
+          vim.wo[winid][name] = value
+        end)
+      end
+    end
+  end
+end
+
 local function update_hints(session)
   for bufnr in pairs(session.buffers or {}) do
     if vim.api.nvim_buf_is_valid(bufnr) then
@@ -428,27 +907,13 @@ local function update_hints(session)
     return
   end
 
+  render_block_detail(session, block)
   local start_row = block_position(block)
-  local total = #(session.blocks or {})
-  local pending = #pending_blocks(session)
   vim.api.nvim_buf_set_extmark(bufnr, hint_ns, start_row, 0, {
-    virt_text = {
-      {
-        ("Codex patch block %d/%d (%d pending): %s accept, %s reject, %s all, %s reject-all, %s auto-apply"):format(
-          block.index,
-          total,
-          pending,
-          keymaps.accept,
-          keymaps.reject,
-          keymaps.accept_all,
-          keymaps.reject_all,
-          keymaps.auto_apply
-        ),
-        "Comment",
-      },
-    },
-    virt_text_pos = "right_align",
-    priority = 20001,
+    virt_lines = review_hint_lines(session, block, review_width(bufnr)),
+    virt_lines_above = true,
+    priority = 20003,
+    right_gravity = false,
   })
 end
 
@@ -459,6 +924,7 @@ local function ensure_block_window(session, block)
   if vim.api.nvim_win_get_buf(winid) ~= bufnr then
     vim.api.nvim_win_set_buf(winid, bufnr)
   end
+  apply_review_window_options(session, winid)
   return winid
 end
 
@@ -477,7 +943,7 @@ local function navigate_to(session, index)
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   vim.api.nvim_win_set_cursor(winid, { math.max(1, math.min(line_count, start_row + 1)), 0 })
   vim.api.nvim_win_call(winid, function()
-    vim.cmd("normal! zz")
+    vim.cmd("normal! zvzz")
   end)
   update_hints(session)
   return true
@@ -876,11 +1342,14 @@ local function cleanup(session)
       vim.api.nvim_buf_clear_namespace(bufnr, diff_ns, 0, -1)
       vim.api.nvim_buf_clear_namespace(bufnr, hint_ns, 0, -1)
       active_by_buf[bufnr] = nil
-      for _, lhs in pairs(keymaps) do
-        pcall(vim.api.nvim_buf_del_keymap, bufnr, "n", lhs)
+      for _, lhs in pairs(session.keymaps or {}) do
+        if lhs then
+          pcall(vim.api.nvim_buf_del_keymap, bufnr, "n", lhs)
+        end
       end
     end
   end
+  restore_review_window_options(session)
   if session.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
   end
@@ -1054,34 +1523,93 @@ local function auto_apply(session)
   accept_all(session)
 end
 
+local function show_help(session)
+  local lines = {
+    "Codex Patch Review",
+    "",
+    ("  %s  accept current change"):format(keymap_label(session, "accept")),
+    ("  %s  reject current change with a reason"):format(keymap_label(session, "reject")),
+    ("  %s  next pending change"):format(keymap_label(session, "next")),
+    ("  %s  previous pending change"):format(keymap_label(session, "prev")),
+    ("  %s  accept remaining changes"):format(keymap_label(session, "accept_all")),
+    ("  %s  reject remaining changes"):format(keymap_label(session, "reject_all")),
+    ("  %s  cancel review"):format(keymap_label(session, "cancel")),
+  }
+  if session.on_auto_apply then
+    table.insert(
+      lines,
+      #lines,
+      ("  %s  auto-apply future nvim.apply_patch calls"):format(keymap_label(session, "auto_apply"))
+    )
+  end
+
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.bo[bufnr].buftype = "nofile"
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].swapfile = false
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.bo[bufnr].modifiable = false
+  local width = math.min(58, math.max(36, vim.o.columns - 8))
+  local height = math.min(#lines, math.max(8, vim.o.lines - 6))
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    style = "minimal",
+    border = "single",
+    width = width,
+    height = height,
+    row = math.max(0, math.floor((vim.o.lines - height) / 2)),
+    col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+    title = " Codex Review Keys ",
+    title_pos = "center",
+  })
+  local close = function()
+    if vim.api.nvim_win_is_valid(winid) then
+      vim.api.nvim_win_close(winid, true)
+    end
+  end
+  vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, desc = "Close Codex review help" })
+  vim.keymap.set("n", "?", close, { buffer = bufnr, silent = true, desc = "Close Codex review help" })
+end
+
 local function setup_keymaps(session, bufnr)
   local opts = function(desc)
     return { buffer = bufnr, silent = true, desc = desc }
   end
-  vim.keymap.set("n", keymaps.accept, function()
+  local set = function(name, callback, desc)
+    local lhs = session.keymaps and session.keymaps[name] or nil
+    if lhs then
+      vim.keymap.set("n", lhs, callback, opts(desc))
+    end
+  end
+  set("accept", function()
     accept_block(session)
-  end, opts("Accept Codex patch block"))
-  vim.keymap.set("n", keymaps.reject, function()
+  end, "Accept Codex patch block")
+  set("reject", function()
     prompt_reject(session, current_block(session))
-  end, opts("Reject Codex patch block"))
-  vim.keymap.set("n", keymaps.accept_all, function()
+  end, "Reject Codex patch block")
+  set("accept_all", function()
     accept_all(session)
-  end, opts("Accept all Codex patch blocks"))
-  vim.keymap.set("n", keymaps.reject_all, function()
+  end, "Accept all Codex patch blocks")
+  set("reject_all", function()
     reject_all(session)
-  end, opts("Reject all Codex patch blocks"))
-  vim.keymap.set("n", keymaps.auto_apply, function()
-    auto_apply(session)
-  end, opts("Use Neovim auto-apply for this session"))
-  vim.keymap.set("n", keymaps.cancel, function()
+  end, "Reject all Codex patch blocks")
+  if session.on_auto_apply then
+    set("auto_apply", function()
+      auto_apply(session)
+    end, "Use Neovim auto-apply for this session")
+  end
+  set("cancel", function()
     cancel(session)
-  end, opts("Cancel Codex patch review"))
-  vim.keymap.set("n", keymaps.next, function()
+  end, "Cancel Codex patch review")
+  set("next", function()
     navigate_next(session)
-  end, opts("Next Codex patch block"))
-  vim.keymap.set("n", keymaps.prev, function()
+  end, "Next Codex patch block")
+  set("prev", function()
     navigate_prev(session)
-  end, opts("Previous Codex patch block"))
+  end, "Previous Codex patch block")
+  set("help", function()
+    show_help(session)
+  end, "Show Codex patch review keys")
 end
 
 local function setup_autocmds(session)
@@ -1091,6 +1619,7 @@ local function setup_autocmds(session)
       group = session.augroup,
       buffer = bufnr,
       callback = function()
+        apply_review_window_options(session, visible_review_window(bufnr))
         update_hints(session)
       end,
     })
@@ -1104,6 +1633,15 @@ local function setup_autocmds(session)
       end,
     })
   end
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = session.augroup,
+    callback = function()
+      if not session.completed then
+        refresh_diff_marks(session)
+        update_hints(session)
+      end
+    end,
+  })
 end
 
 local function open_buffer_for_file(session, file, focus)
@@ -1228,9 +1766,7 @@ local function apply_preview(session)
     end
   end
 
-  for _, hunk in ipairs(session.hunks) do
-    mark_hunk(hunk)
-  end
+  refresh_diff_marks(session)
   for _, file in ipairs(session.file_order or {}) do
     file.proposed_lines = normalized_final_lines(file)
   end
@@ -1239,6 +1775,7 @@ end
 
 function M.open(opts)
   opts = opts or {}
+  setup_highlights()
   local thread = opts.thread or (opts.thread_id and state.get_thread(opts.thread_id)) or nil
   local session = {
     id = opts.request_id or tostring(vim.uv.hrtime()),
@@ -1255,6 +1792,8 @@ function M.open(opts)
     buffers = {},
     hunks = {},
     blocks = {},
+    keymaps = opts.keymaps or configured_keymaps(),
+    window_options = {},
     current_index = 1,
     completed = false,
   }
@@ -1304,6 +1843,8 @@ M._reject_block = reject_block
 M._accept_block = accept_block
 M._reject_hunk = reject_hunk
 M._accept_hunk = accept_hunk
-M._keymaps = keymaps
+M._keymaps = default_keymaps
+M._configured_keymaps = configured_keymaps
+M._line_char_spans = line_char_spans
 
 return M

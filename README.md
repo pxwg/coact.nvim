@@ -103,6 +103,22 @@ require("codex").setup({
   },
   edit = {
     mode = "pair", -- "pair" or "yolo"
+    review = {
+      char_diff_max_lines = 120,
+      char_diff_max_line_bytes = 1000,
+      char_diff_max_total_bytes = 20000,
+      keymaps = {
+        accept = ".",
+        reject = ",",
+        accept_all = "ga",
+        reject_all = "gr",
+        auto_apply = "gA",
+        cancel = "q",
+        next = "n",
+        prev = "p",
+        help = "?",
+      },
+    },
     native_apply_patch_hook = {
       enabled = true,
       timeout_sec = 600,
@@ -205,19 +221,20 @@ The review buffer indexes file changes and unified-diff hunk headers with extmar
 
 `edit.mode = "pair"` is the default. In pair mode, codex.nvim tells Codex to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the app-server process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Accepting the review writes accepted changed blocks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
 
-The pair-mode native review uses the file-buffer changed-block controls: `<leader>ca` accepts the current changed block, `<leader>cr` rejects it with a reason, `<leader>cA` accepts the rest, `<leader>cR` rejects the rest, and `<leader>cq` cancels. You can edit the previewed file buffer before accepting; codex.nvim writes the final accepted buffer state and returns the review summary to Codex as hook context, including rejection reasons and any diff between Codex's proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
+The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` accepts the current changed block, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` accepts the rest, `gr` rejects the rest, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before accepting; codex.nvim writes the final accepted buffer state and returns the review summary to Codex as hook context, including rejection reasons and any diff between Codex's proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
 
 `edit.mode = "yolo"` tells Codex to use the native `apply_patch` tool directly without the Neovim PreToolUse review hook. Calls to `nvim.apply_patch` are rejected while the tool is not exposed. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` still selects yolo mode unless `edit.mode` is set explicitly.
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 
-- `<leader>ca`: accept current changed block
-- `<leader>cr`: reject current changed block and prompt for a reason
-- `<leader>cA`: accept all remaining changed blocks
-- `<leader>cR`: reject all remaining changed blocks and prompt for a reason
-- `<leader>cf`: use Neovim auto-apply for the session
-- `<leader>cq`: cancel the review
-- `[c` / `]c`: jump between pending changed blocks
+- `.`: accept current changed block
+- `,`: reject current changed block and prompt for a reason
+- `ga`: accept all remaining changed blocks
+- `gr`: reject all remaining changed blocks and prompt for a reason
+- `gA`: use Neovim auto-apply for the session
+- `q`: cancel the review
+- `n` / `p`: jump between pending changed blocks
+- `?`: show review keys
 
 Rejected changed-block reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to Codex as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
 

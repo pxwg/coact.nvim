@@ -55,6 +55,22 @@ local defaults = {
     mode = "pair",
     diagnostics_settle_ms = 200,
     stale_context_lines = 80,
+    review = {
+      char_diff_max_lines = 120,
+      char_diff_max_line_bytes = 1000,
+      char_diff_max_total_bytes = 20000,
+      keymaps = {
+        accept = ".",
+        reject = ",",
+        accept_all = "ga",
+        reject_all = "gr",
+        auto_apply = "gA",
+        cancel = "q",
+        next = "n",
+        prev = "p",
+        help = "?",
+      },
+    },
     native_apply_patch_hook = {
       enabled = true,
       timeout_sec = 600,
