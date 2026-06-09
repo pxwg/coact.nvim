@@ -8,7 +8,7 @@ local function stringify(value)
     return ""
   end
   if type(value) == "string" then
-    return value
+    return util.clean_tool_output(value)
   end
   local ok, encoded = pcall(vim.json.encode, value)
   return ok and encoded or vim.inspect(value)
@@ -20,11 +20,11 @@ local function split_lines(value)
 end
 
 local function first_line(value)
-  return util.trim((tostring(value or ""):gsub("\r\n", "\n"):gsub("\r", "\n"):match("^[^\n]+") or ""))
+  return util.trim((util.clean_tool_output(value):gsub("\r\n", "\n"):gsub("\r", "\n"):match("^[^\n]+") or ""))
 end
 
 local function truncate(value, limit)
-  value = tostring(value or "")
+  value = util.clean_tool_output(value)
   limit = limit or 96
   if #value <= limit then
     return value

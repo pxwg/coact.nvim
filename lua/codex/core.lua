@@ -207,7 +207,7 @@ local function decode_output_delta(params)
   end
   local delta = util.value(params.delta)
   if delta and delta ~= "" then
-    return tostring(delta)
+    return util.clean_tool_output(delta)
   end
   local delta_base64 = util.value(params.deltaBase64)
   if not delta_base64 or delta_base64 == "" then
@@ -217,7 +217,7 @@ local function decode_output_delta(params)
   if vim.base64 and vim.base64.decode then
     local ok, decoded = pcall(vim.base64.decode, delta_base64)
     if ok and decoded ~= nil then
-      return tostring(decoded)
+      return util.clean_tool_output(decoded)
     end
   end
   return "[base64 output: " .. util.truncate(delta_base64, 80) .. "]"
@@ -258,6 +258,14 @@ local function append_field(item, field, delta)
     return
   end
   item[field] = text_value(item[field]) .. tostring(delta)
+end
+
+local function append_output_field(item, field, delta)
+  delta = util.value(delta)
+  if delta == nil then
+    return
+  end
+  item[field] = text_value(item[field]) .. util.clean_tool_output(delta)
 end
 
 local function handle_thread(thread)
@@ -505,7 +513,7 @@ end
 
 handlers["item/commandExecution/outputDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
-  append_field(item, "aggregatedOutput", params.delta)
+  append_output_field(item, "aggregatedOutput", params.delta)
   set_generation(state.get_thread(params.threadId), "tool_running", "Codex is running a command...")
   schedule(params.threadId)
 end
@@ -535,8 +543,8 @@ end
 handlers["process/exited"] = function(params)
   local block, thread = process_output_block("process/exited", params, "process/spawn")
   if block and thread then
-    local stdout_text = text_value(params.stdout)
-    local stderr_text = text_value(params.stderr)
+    local stdout_text = util.clean_tool_output(text_value(params.stdout))
+    local stderr_text = util.clean_tool_output(text_value(params.stderr))
     local stdout = stdout_text ~= "" and ("\nstdout:\n" .. stdout_text) or ""
     local stderr = stderr_text ~= "" and ("\nstderr:\n" .. stderr_text) or ""
     if stdout ~= "" or stderr ~= "" then
@@ -804,7 +812,7 @@ function M.setup()
     stderr = function(text)
       if text:match("%S") then
         vim.schedule(function()
-          vim.notify(text, vim.log.levels.DEBUG, { title = "codex app-server" })
+          vim.notify(util.clean_tool_output(text), vim.log.levels.DEBUG, { title = "codex app-server" })
         end)
       end
     end,

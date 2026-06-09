@@ -2649,6 +2649,35 @@ assert_handles_notification({
   },
 }, "command output should ignore null delta")
 assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command delta should not alter output")
+state.upsert_item("smoke-extmarks", "turn-1", {
+  id = "tool-ansi",
+  type = "commandExecution",
+  command = "apply_patch",
+  cwd = vim.fn.getcwd(),
+  status = "inProgress",
+})
+assert_handles_notification({
+  method = "item/commandExecution/outputDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "tool-ansi",
+    delta = table.concat({
+      "\27[2m2026-06-09T19:06:55Z\27[0m \27[31mERROR\27[0m codex_core::tools::router:",
+      "Command blocked by PreToolUse hook: User rejected Codex native apply_patch in Neovim.",
+      "Command: *** Begin Patch",
+      "*** Update File: sample.txt",
+      "*** End Patch",
+    }, " "),
+  },
+}, "command output should sanitize PreToolUse blocked output")
+_G.__codex_smoke_sanitized_ansi_output = thread.items["tool-ansi"].aggregatedOutput
+assert(not _G.__codex_smoke_sanitized_ansi_output:match("\27"), "command output should strip ANSI escape sequences")
+assert(
+  _G.__codex_smoke_sanitized_ansi_output
+    == "Command blocked by PreToolUse hook: User rejected Codex native apply_patch in Neovim.",
+  "command output should hide the rejected native apply_patch command body"
+)
 
 local reasoning_before = thread.items["reasoning-1"].content[1]
 local summary_before = thread.items["reasoning-1"].summary[1]

@@ -1,8 +1,31 @@
 local M = {}
 
+local function strip_ansi_text(text)
+  text = tostring(text or "")
+  text = text:gsub("\27%][^\7]*\7", "")
+  text = text:gsub("\27%][^\27]*\27\\", "")
+  text = text:gsub("\27%[[0-?]*[ -/]*[@-~]", "")
+  text = text:gsub("\27[@-_]", "")
+  return text
+end
+
+function M.strip_ansi(text)
+  return strip_ansi_text(text)
+end
+
+function M.clean_tool_output(text)
+  text = strip_ansi_text(text)
+  local reason = text:match("Command blocked by PreToolUse hook:%s*(.-)%s*Command:%s*%*%*%* Begin Patch")
+  if reason and reason ~= "" then
+    reason = reason:match("^(.-)\n\n# NVIM APPLY PATCH REVIEW") or reason
+    return "Command blocked by PreToolUse hook: " .. M.trim(reason)
+  end
+  return text
+end
+
 function M.notify(message, level)
   vim.schedule(function()
-    vim.notify(message, level or vim.log.levels.INFO, { title = "codex.nvim" })
+    vim.notify(strip_ansi_text(message), level or vim.log.levels.INFO, { title = "codex.nvim" })
   end)
 end
 
