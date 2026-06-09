@@ -218,6 +218,11 @@ function M.resume(thread_id)
   if not thread_id or thread_id == "" then
     return util.notify("usage: :Codex resume <thread-id>", vim.log.levels.WARN)
   end
+  local existing = state.get_thread(thread_id)
+  if existing and existing.bufnr and vim.api.nvim_buf_is_valid(existing.bufnr) then
+    buffers.open(thread_id)
+    return
+  end
   ensure_server(function()
     rpc.request(
       "thread/resume",

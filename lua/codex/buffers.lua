@@ -525,6 +525,10 @@ function M.restore_window_options(win)
 end
 
 local function setup_history_autocmds(bufnr)
+  if vim.b[bufnr].codex_history_autocmds then
+    return
+  end
+  vim.b[bufnr].codex_history_autocmds = true
   setup_view_autocmds()
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
     group = group,
@@ -565,6 +569,10 @@ local function setup_history_autocmds(bufnr)
 end
 
 local function setup_prompt_autocmds(bufnr)
+  if vim.b[bufnr].codex_prompt_autocmds then
+    return
+  end
+  vim.b[bufnr].codex_prompt_autocmds = true
   setup_view_autocmds()
   local function schedule_prompt_refresh()
     if prompt_refresh_pending[bufnr] then
@@ -678,6 +686,29 @@ function M.ensure_prompt(thread_id)
   render.apply_prompt_marks(thread, bufnr)
   setup_prompt_autocmds(bufnr)
   return bufnr
+end
+
+local function history_buffer_name(thread_id)
+  return "codex://thread/" .. tostring(thread_id)
+end
+
+local function find_history_buffer(thread_id)
+  local name = history_buffer_name(thread_id)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if valid_buf(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
+      return bufnr
+    end
+  end
+  return nil
+end
+
+local function start_history_treesitter(bufnr)
+  if pcall(vim.treesitter.start, bufnr, "markdown") then
+    vim.bo[bufnr].syntax = ""
+    vim.b[bufnr].current_syntax = nil
+  else
+    vim.bo[bufnr].syntax = "markdown"
+  end
 end
 
 function M.collect_prompt(bufnr)
@@ -883,19 +914,20 @@ function M.ensure(thread_id)
     M.ensure_prompt(thread_id)
     return thread.bufnr
   end
-  local bufnr = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(bufnr, "codex://thread/" .. thread_id)
+
+  local bufnr = find_history_buffer(thread_id)
+  local created = false
+  if not bufnr then
+    bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(bufnr, history_buffer_name(thread_id))
+    created = true
+  end
   configure_history_buffer(bufnr, thread_id)
   state.bind_buffer(thread, bufnr)
   M.ensure_prompt(thread_id)
-  if pcall(vim.treesitter.start, bufnr, "markdown") then
-    vim.bo[bufnr].syntax = ""
-    vim.b[bufnr].current_syntax = nil
-  else
-    vim.bo[bufnr].syntax = "markdown"
-  end
+  start_history_treesitter(bufnr)
   setup_history_autocmds(bufnr)
-  M.render(thread_id, {})
+  M.render(thread_id, created and {} or nil)
   return bufnr
 end
 

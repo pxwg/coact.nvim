@@ -572,6 +572,17 @@ function _G.__codex_smoke_composer_text_area_height(winid)
   return info and info.height or vim.api.nvim_win_get_height(winid)
 end
 
+function _G.__codex_smoke_count_thread_history_buffers(thread_id)
+  local total = 0
+  local name = "codex://thread/" .. tostring(thread_id)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
+      total = total + 1
+    end
+  end
+  return total
+end
+
 assert(context_thread.prompt_bufnr, "opening a Codex thread should create a composer buffer")
 assert(
   vim.api.nvim_get_current_buf() == context_thread_buf,
@@ -586,6 +597,33 @@ assert(
 assert(vim.bo[context_thread_buf].filetype == "codex-history", "history buffer should use codex-history filetype")
 assert(vim.bo[context_thread.prompt_bufnr].filetype == "codex-input", "composer should use codex-input filetype")
 assert(not vim.bo[context_thread_buf].modifiable, "Codex history buffer should be read-only")
+context_thread.bufnr = nil
+_G.__codex_smoke_rebound_context_buf = buffers.ensure("smoke-context")
+assert(
+  _G.__codex_smoke_rebound_context_buf == context_thread_buf,
+  "thread ensure should rebind an existing named history buffer"
+)
+assert(
+  _G.__codex_smoke_count_thread_history_buffers("smoke-context") == 1,
+  "thread ensure should not duplicate existing history buffers"
+)
+_G.__codex_smoke_rpc_for_resume = require("codex.rpc")
+_G.__codex_smoke_original_rpc_start_for_resume = _G.__codex_smoke_rpc_for_resume.start
+_G.__codex_smoke_resume_started_rpc = false
+_G.__codex_smoke_rpc_for_resume.start = function()
+  _G.__codex_smoke_resume_started_rpc = true
+  error("resume should reuse the existing Neovim thread buffer")
+end
+codex.resume("smoke-context")
+_G.__codex_smoke_rpc_for_resume.start = _G.__codex_smoke_original_rpc_start_for_resume
+assert(
+  not _G.__codex_smoke_resume_started_rpc,
+  "resume should not call app-server when the thread buffer is already open"
+)
+assert(
+  state.get_thread("smoke-context").bufnr == context_thread_buf,
+  "resume should keep using the existing thread buffer"
+)
 _G.__codex_smoke_view = {
   lines = vim.api.nvim_buf_line_count(context_thread_buf),
   info = vim.fn.getwininfo(context_thread.winid)[1],
