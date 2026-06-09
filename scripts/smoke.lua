@@ -217,6 +217,15 @@ do
     return native_hook_reject_session ~= nil
   end, 20)
   assert(native_hook_reject_session, "native apply_patch hook should open rejected block review")
+  vim.diagnostic.set(native_hook_diag_ns, native_hook_reject_session.blocks[1].bufnr, {
+    {
+      lnum = 1,
+      col = 0,
+      message = "native hook reject diagnostic",
+      severity = vim.diagnostic.severity.WARN,
+      source = "smoke",
+    },
+  }, {})
   require("codex.patch_session")._reject_block(
     native_hook_reject_session,
     native_hook_reject_session.blocks[1],
@@ -225,12 +234,20 @@ do
   vim.wait(1000, function()
     return native_hook_reject_output ~= nil
   end, 20)
+  _G.__codex_smoke_native_hook_reject = vim.json.decode(native_hook_reject_output).hookSpecificOutput
+  _G.__codex_smoke_native_hook_reject_context = _G.__codex_smoke_native_hook_reject
+      and _G.__codex_smoke_native_hook_reject.additionalContext
+    or ""
   assert(
-    native_hook_reject_output
-      and native_hook_reject_output:match('"permissionDecision":"deny"')
-      and native_hook_reject_output:match("User rejected Codex native apply_patch")
-      and native_hook_reject_output:match("keep right"),
-    "native apply_patch hook should deny all-rejected patches with user rejection feedback"
+    _G.__codex_smoke_native_hook_reject
+      and _G.__codex_smoke_native_hook_reject.permissionDecision == "deny"
+      and _G.__codex_smoke_native_hook_reject.permissionDecisionReason == "User rejected Codex native apply_patch in Neovim."
+      and _G.__codex_smoke_native_hook_reject_context:match("User rejected Codex native apply_patch")
+      and _G.__codex_smoke_native_hook_reject_context:match("keep right")
+      and _G.__codex_smoke_native_hook_reject_context:match("## nvim%.diagnostics")
+      and _G.__codex_smoke_native_hook_reject_context:match("native hook reject diagnostic")
+      and not _G.__codex_smoke_native_hook_reject.permissionDecisionReason:match("NVIM APPLY PATCH REVIEW"),
+    "native apply_patch hook should deny with concise reason and contextual rejection diagnostics"
   )
   assert(
     vim.fn.readfile(native_hook_reject_file)[2] == "right",

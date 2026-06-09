@@ -418,11 +418,15 @@ local function allow_output_with_context(patch, additional_context)
   return hook_output(output)
 end
 
-local function deny_output(reason)
-  return hook_output({
+local function deny_output(reason, additional_context)
+  local output = {
     permissionDecision = "deny",
     permissionDecisionReason = reason or "Patch rejected in Neovim.",
-  })
+  }
+  if type(additional_context) == "string" and util.trim(additional_context) ~= "" then
+    output.additionalContext = additional_context
+  end
+  return hook_output(output)
 end
 
 local function tool_item_id(payload)
@@ -649,6 +653,10 @@ local function rejection_context(summary)
   return table.concat(lines, "\n")
 end
 
+local function rejected_patch_output(summary)
+  return deny_output("User rejected Codex native apply_patch in Neovim.", rejection_context(summary))
+end
+
 local function finish_session_review(payload, patch, changes, done)
   local cwd = util.value(payload.cwd) or config.cwd()
   local item_id = tool_item_id(payload)
@@ -675,7 +683,7 @@ local function finish_session_review(payload, patch, changes, done)
         session_result and (session_result.rejected_blocks or session_result.rejected_hunks) or 0
       ) or 0
       if session_result and session_result.force_failure then
-        done(deny_output(rejection_context(summary)))
+        done(rejected_patch_output(summary))
         return
       end
       if session_result and session_result.write_ok == false then
@@ -683,7 +691,7 @@ local function finish_session_review(payload, patch, changes, done)
         return
       end
       if accepted_blocks == 0 and rejected_blocks > 0 then
-        done(deny_output(rejection_context(summary)))
+        done(rejected_patch_output(summary))
         return
       end
 
