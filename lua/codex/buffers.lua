@@ -975,4 +975,14 @@ function M.schedule_render(thread_id)
   render.schedule(thread, config.get().ui.render_delay_ms)
 end
 
+function M.try_stream_delta(thread_id, item_id, delta)
+  local thread = state.get_thread(thread_id)
+  return render.try_stream_delta(thread, item_id, delta)
+end
+
+function M.try_stream_placeholder_delta(thread_id, item_id)
+  local thread = state.get_thread(thread_id)
+  return render.try_stream_placeholder_delta(thread, item_id)
+end
+
 return M

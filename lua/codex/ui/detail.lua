@@ -1,4 +1,5 @@
 local events = require("codex.events")
+local activity_summary = require("codex.ui.activity_summary")
 local state = require("codex.state")
 local tool_renderers = require("codex.ui.tool_renderers")
 local util = require("codex.util")
@@ -74,7 +75,9 @@ function M.lines_for(block)
   table.insert(lines, "---")
   table.insert(lines, "")
 
-  if block and (block.type == "ToolCallBlock" or block.type == "PatchBlock") then
+  if block and block.type == "ActivitySummaryBlock" then
+    vim.list_extend(lines, activity_summary.lines(block.children))
+  elseif block and (block.type == "ToolCallBlock" or block.type == "PatchBlock") then
     for _, line in ipairs(tool_renderers.render(block)) do
       table.insert(lines, line)
     end

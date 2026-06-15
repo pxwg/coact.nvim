@@ -1,5 +1,6 @@
 local config = require("codex.config")
 local events = require("codex.events")
+local activity_summary = require("codex.ui.activity_summary")
 local metadata = require("codex.ui.metadata")
 local tool_renderers = require("codex.ui.tool_renderers")
 local util = require("codex.util")
@@ -147,7 +148,7 @@ local function add_guarded_text(thread, lines, value)
   local text_lines = util.split_lines(value)
   if #text_lines == 0 then
     local line = add(lines, "")
-    return line, line
+    return line, line, nil
   end
 
   local start_line = #lines + 1
@@ -156,12 +157,14 @@ local function add_guarded_text(thread, lines, value)
   end
 
   local open = unclosed_fence(text_lines)
+  local auto_closed_line = nil
   if open then
     table.insert(lines, string.rep(open.char, open.len))
+    auto_closed_line = #lines
     mark_auto_closed_fence(thread, #lines)
   end
 
-  return start_line, #lines
+  return start_line, #lines, auto_closed_line
 end
 
 local function compact_text(value)
@@ -446,7 +449,7 @@ end
 
 local function placeholder_body_lines(block)
   if block.type == "ActivitySummaryBlock" then
-    return util.split_lines(events.block_text(block))
+    return activity_summary.lines(block.children)
   end
   if block.type == "ReasoningBlock" or block.type == "PlanBlock" or block.type == "AgentTimelineBlock" then
     return util.split_lines(events.block_text(block))
@@ -482,6 +485,10 @@ local function mark_placeholder(thread, line, key, block, body_lines)
   table.insert(thread.placeholder_marks, mark)
   thread.placeholder_index[line] = mark
   thread.render_index[line] = block
+  if block.item_id then
+    thread.placeholder_by_item_id = thread.placeholder_by_item_id or {}
+    thread.placeholder_by_item_id[tostring(block.item_id)] = mark
+  end
   return mark
 end
 
@@ -933,6 +940,36 @@ local function restore_window_view(thread, win, snapshot)
   end)
 end
 
+local anchor_follow_window
+
+local function capture_follow_windows(thread, bufnr)
+  local wins = {}
+  if not config.get().ui.auto_scroll then
+    return wins
+  end
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if valid_window_for_buffer(win, bufnr) then
+      local state = view_state_for_win(thread, win)
+      if state.follow == nil then
+        state.follow = M.window_near_bottom(thread, win)
+        state.suspended_by_user = not state.follow
+      end
+      if state.follow and not state.suspended_by_user then
+        table.insert(wins, win)
+      end
+    end
+  end
+  return wins
+end
+
+local function apply_follow_windows(thread, wins)
+  for _, win in ipairs(wins or {}) do
+    if valid_window_for_buffer(win, thread.bufnr) then
+      anchor_follow_window(thread, win)
+    end
+  end
+end
+
 local function follow_cursor_line(thread, line_count_value)
   if thread.prompt_start then
     return clamp_lnum(thread.prompt_start + 1, line_count_value)
@@ -940,7 +977,7 @@ local function follow_cursor_line(thread, line_count_value)
   return line_count_value
 end
 
-local function anchor_follow_window(thread, win)
+anchor_follow_window = function(thread, win)
   local bufnr = thread.bufnr
   if not valid_window_for_buffer(win, bufnr) then
     return
@@ -1208,6 +1245,84 @@ local function build_fold_levels(thread)
   thread.fold_levels = levels
 end
 
+local function update_fold_finish(thread, range, finish)
+  if not range.fold_index or not thread.folds or not thread.folds[range.fold_index] then
+    return
+  end
+  thread.folds[range.fold_index].finish = finish
+  build_fold_levels(thread)
+end
+
+local function remove_auto_closed_fence_line(thread, line)
+  if not line then
+    return
+  end
+  for index = #(thread.auto_closed_fence_lines or {}), 1, -1 do
+    if thread.auto_closed_fence_lines[index] == line then
+      table.remove(thread.auto_closed_fence_lines, index)
+    end
+  end
+end
+
+local function guarded_text_lines(value)
+  local lines = util.split_lines(value)
+  if #lines == 0 then
+    return { "" }, nil
+  end
+  local open = unclosed_fence(lines)
+  if open then
+    local copy = vim.deepcopy(lines)
+    table.insert(copy, string.rep(open.char, open.len))
+    return copy, #copy
+  end
+  return lines, nil
+end
+
+local function text_has_fence(value)
+  for _, line in ipairs(util.split_lines(value)) do
+    if fence_match(line) then
+      return true
+    end
+  end
+  return false
+end
+
+local function set_modifiable_text(bufnr, fn)
+  local previous_modifiable = vim.bo[bufnr].modifiable
+  local previous_undolevels = vim.bo[bufnr].undolevels
+  vim.bo[bufnr].modifiable = true
+  vim.bo[bufnr].undolevels = -1
+  local ok, err = pcall(fn)
+  vim.bo[bufnr].undolevels = previous_undolevels
+  vim.bo[bufnr].modifiable = previous_modifiable
+  if not ok then
+    error(err)
+  end
+end
+
+local function set_render_index_range(thread, range, block)
+  for lnum = range.start, range.finish do
+    thread.render_index[lnum] = block
+  end
+end
+
+local function clear_render_index_range(thread, start_line, finish_line)
+  for lnum = start_line, finish_line do
+    thread.render_index[lnum] = nil
+  end
+end
+
+local function record_stream_range(thread, block, range)
+  if not block.item_id then
+    return
+  end
+  thread.stream_ranges_by_item_id = thread.stream_ranges_by_item_id or {}
+  thread.stream_ranges_by_item_id[tostring(block.item_id)] = vim.tbl_extend("force", range, {
+    block = block,
+    item_id = tostring(block.item_id),
+  })
+end
+
 local compact_hook_timeline_blocks
 
 local activity_summary_types = {
@@ -1240,69 +1355,6 @@ local function compactable_turn_ids(_, blocks)
   return ids
 end
 
-local function activity_child_title(block)
-  if block.type == "ReasoningBlock" then
-    return "Reasoning" .. (block.state and (" [" .. block.state .. "]") or "")
-  end
-  if block.type == "ToolCallBlock" or block.type == "PatchBlock" then
-    return tostring(block.tool or "tool") .. (block.state and (" [" .. block.state .. "]") or "")
-  end
-  if block.type == "AgentTimelineBlock" then
-    return "Agent: " .. tostring(block.title or "event") .. (block.state and (" [" .. block.state .. "]") or "")
-  end
-  if block.type == "PlanBlock" then
-    return "Plan" .. (block.state and (" [" .. block.state .. "]") or "")
-  end
-  if block.type == "RawEventBlock" then
-    return "Raw Event: " .. tostring(block.title or "unknown")
-  end
-  return tostring(block.type or "Block")
-end
-
-local function append_activity_child_lines(lines, child)
-  local has_meta = false
-  table.insert(lines, "### " .. activity_child_title(child))
-  if child.item_id then
-    table.insert(lines, "item: " .. tostring(child.item_id))
-    has_meta = true
-  end
-  if child.tool_call_id then
-    table.insert(lines, "tool_call_id: " .. tostring(child.tool_call_id))
-    has_meta = true
-  end
-  if child.metadata and child.metadata.source then
-    table.insert(lines, "source: " .. tostring(child.metadata.source))
-    has_meta = true
-  end
-  if has_meta then
-    table.insert(lines, "")
-  end
-  if child.type == "ToolCallBlock" or child.type == "PatchBlock" then
-    for _, rendered_line in ipairs(tool_renderers.render(child)) do
-      table.insert(lines, rendered_line)
-    end
-  else
-    local text = events.block_text(child)
-    if text ~= "" then
-      util.list_extend(lines, util.split_lines(text))
-    else
-      table.insert(lines, "(no rendered content)")
-    end
-  end
-  table.insert(lines, "")
-end
-
-local function activity_summary_text(children)
-  local lines = {}
-  for _, child in ipairs(children or {}) do
-    append_activity_child_lines(lines, child)
-  end
-  while #lines > 0 and lines[#lines] == "" do
-    table.remove(lines)
-  end
-  return table.concat(lines, "\n")
-end
-
 local function activity_summary_block(turn_id, children)
   return {
     type = "ActivitySummaryBlock",
@@ -1310,7 +1362,6 @@ local function activity_summary_block(turn_id, children)
     item_id = "activity-summary:" .. tostring(turn_id),
     title = "Thinking finished",
     state = "finished",
-    text = activity_summary_text(children),
     children = children,
     raw = {
       children = children,
@@ -1462,6 +1513,9 @@ end
 render_block = function(thread, lines, block, opts)
   opts = opts or {}
   local start = #lines + 1
+  local text_start = nil
+  local text_finish = nil
+  local auto_closed_line = nil
   if block.type == "UserBlock" then
     local line = add(lines, "## You")
     mark_header(thread, line, "user", "You", user_meta(thread, block), block)
@@ -1473,7 +1527,7 @@ render_block = function(thread, lines, block, opts)
       mark_header(thread, line, "assistant", "Codex", assistant_meta(thread, block), block)
       add(lines, "")
     end
-    add_guarded_text(thread, lines, block.text)
+    text_start, text_finish, auto_closed_line = add_guarded_text(thread, lines, block.text)
   elseif placeholder_types[block.type] then
     render_placeholder(thread, lines, block, opts)
   elseif block.type == "ErrorBlock" then
@@ -1493,13 +1547,26 @@ render_block = function(thread, lines, block, opts)
   if block.type == "ReasoningBlock" and finish > start then
     mark_reasoning_lines(thread, start, finish)
   end
+  local fold_index = nil
   if foldable_types[block.type] and finish > start then
     table.insert(thread.folds, { start = start, finish = finish })
+    fold_index = #thread.folds
   end
   local decoration = stream_decoration_for_block(block)
   if decoration and not placeholder_types[block.type] then
     local decoration_start = finish > start and start + 1 or start
     mark_stream_decoration(thread, decoration_start, finish, decoration, block)
+  end
+  if block.type == "AssistantBlock" and text_start and text_finish then
+    record_stream_range(thread, block, {
+      start = start,
+      finish = finish,
+      text_start = text_start,
+      text_finish = text_finish,
+      auto_closed_line = auto_closed_line,
+      fold_index = fold_index,
+      has_fence = text_has_fence(block.text),
+    })
   end
   add(lines, "")
 end
@@ -1529,6 +1596,8 @@ function M.render(thread)
   thread.prompt_start = nil
   thread.render_index = {}
   thread.placeholder_index = {}
+  thread.placeholder_by_item_id = {}
+  thread.stream_ranges_by_item_id = {}
   thread.placeholder_marks = {}
   thread.header_marks = {}
   thread.auto_closed_fence_lines = {}
@@ -1591,6 +1660,115 @@ function M.render(thread)
   if thread_busy(thread) then
     schedule_spinner_tick(thread)
   end
+end
+
+local function tail_stream_range(thread, range)
+  if not thread or not range or not thread_busy(thread) or not thread.spinner_mark then
+    return false
+  end
+  local bufnr = thread.bufnr
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  return vim.api.nvim_buf_line_count(bufnr) == range.finish + 3 and thread.spinner_mark.line == range.finish + 2
+end
+
+local function refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, new_auto_closed_line)
+  clear_render_index_range(thread, range.start, math.max(old_finish, new_finish))
+  range.finish = new_finish
+  range.text_finish = new_finish
+  range.auto_closed_line = new_auto_closed_line
+  range.has_fence = range.has_fence or new_auto_closed_line ~= nil
+  set_render_index_range(thread, range, range.block)
+  update_fold_finish(thread, range, new_finish)
+  if thread.spinner_mark then
+    thread.spinner_mark.line = new_finish + 2
+    apply_spinner_mark(thread, thread.bufnr, thread.spinner_mark)
+    schedule_spinner_tick(thread)
+  end
+end
+
+local function replace_stream_block_text(thread, range, value)
+  local bufnr = thread.bufnr
+  local old_finish = range.finish
+  local old_auto_closed_line = range.auto_closed_line
+  local lines, auto_closed_index = guarded_text_lines(value)
+  local follows = capture_follow_windows(thread, bufnr)
+  set_modifiable_text(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, range.text_start - 1, range.text_finish, false, lines)
+  end)
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, range.text_start - 1, math.max(old_finish, range.text_start - 1))
+  remove_auto_closed_fence_line(thread, old_auto_closed_line)
+  local new_finish = range.text_start + #lines - 1
+  local new_auto_closed_line = auto_closed_index and (range.text_start + auto_closed_index - 1) or nil
+  if new_auto_closed_line then
+    mark_auto_closed_fence(thread, new_auto_closed_line)
+    vim.api.nvim_buf_set_extmark(bufnr, ns, new_auto_closed_line - 1, 0, {
+      end_col = buffer_line_length(bufnr, new_auto_closed_line),
+      hl_group = "Comment",
+      priority = 1200,
+      strict = false,
+    })
+  end
+  refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, new_auto_closed_line)
+  apply_follow_windows(thread, follows)
+  return true
+end
+
+local function append_stream_block_delta(thread, range, delta)
+  local bufnr = thread.bufnr
+  local old_finish = range.finish
+  local current_line = vim.api.nvim_buf_get_lines(bufnr, old_finish - 1, old_finish, false)[1] or ""
+  local parts = vim.split(delta, "\n", { plain = true })
+  local follows = capture_follow_windows(thread, bufnr)
+  set_modifiable_text(bufnr, function()
+    vim.api.nvim_buf_set_text(bufnr, old_finish - 1, #current_line, old_finish - 1, #current_line, parts)
+  end)
+  local new_finish = old_finish + #parts - 1
+  refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, nil)
+  apply_follow_windows(thread, follows)
+  return true
+end
+
+function M.try_stream_delta(thread, item_id, delta)
+  delta = util.value(delta)
+  if not thread or not item_id or delta == nil or delta == "" then
+    return false
+  end
+  local bufnr = thread.bufnr
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  local range = thread.stream_ranges_by_item_id and thread.stream_ranges_by_item_id[tostring(item_id)]
+  if not tail_stream_range(thread, range) then
+    return false
+  end
+  local item = thread.items and thread.items[tostring(item_id)]
+  if not item or item.type ~= "agentMessage" then
+    return false
+  end
+  range.block.text = item.text or ""
+  range.block.raw = item
+  range.block.state = item.status or item.phase or item.state or range.block.state
+  if range.auto_closed_line or delta:find("```", 1, true) or delta:find("~~~", 1, true) then
+    return replace_stream_block_text(thread, range, item.text or "")
+  end
+  return append_stream_block_delta(thread, range, tostring(delta))
+end
+
+function M.try_stream_placeholder_delta(thread, item_id)
+  if not thread or not item_id or not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) then
+    return false
+  end
+  local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id[tostring(item_id)]
+  if not mark or mark.expanded then
+    return false
+  end
+  if thread_busy(thread) and thread.spinner_mark then
+    apply_spinner_mark(thread, thread.bufnr, thread.spinner_mark)
+    schedule_spinner_tick(thread)
+  end
+  return true
 end
 
 function M.toggle_under_cursor()

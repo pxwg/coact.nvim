@@ -180,7 +180,7 @@ end
 
 local function command_output(item)
   return {
-    stdout = util.clean_tool_output(item.aggregatedOutput),
+    stdout = item.aggregatedOutput,
     exitCode = item.exitCode,
     durationMs = item.durationMs,
   }
@@ -189,7 +189,7 @@ end
 local function file_change_output(item)
   return {
     changes = item.changes or {},
-    output = util.clean_tool_output(item.output),
+    output = item.output,
   }
 end
 

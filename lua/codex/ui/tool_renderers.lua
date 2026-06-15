@@ -60,7 +60,7 @@ local function render_bash(block)
   end
   if output.stdout and output.stdout ~= "" then
     table.insert(lines, "output:")
-    code_block(lines, "text", output.stdout)
+    code_block(lines, "text", util.clean_tool_output(output.stdout))
   end
   if output.exitCode ~= nil then
     table.insert(lines, "exit: " .. tostring(output.exitCode))

@@ -2813,12 +2813,7 @@ codex.setup();
     summary_block.children and #summary_block.children == 3,
     "completed activity summary should retain reasoning, tool, and agent timeline children"
   )
-  assert(
-    summary_block.text:match("### Reasoning")
-      and summary_block.text:match("echo done")
-      and summary_block.text:match("Agent: Model rerouted"),
-    "completed activity summary should preserve child details"
-  )
+  assert(summary_block.text == nil, "completed activity summary should lazily render child details")
   local final_compact_buf = vim.api.nvim_create_buf(false, true)
   state.bind_buffer(final_compact_thread, final_compact_buf)
   render.render(final_compact_thread)
@@ -2834,6 +2829,12 @@ codex.setup();
   assert(
     table.concat(final_detail_lines, "\n"):match("# Thinking finished"),
     "activity summary detail should have a clear title"
+  )
+  assert(
+    table.concat(final_detail_lines, "\n"):match("### Reasoning")
+      and table.concat(final_detail_lines, "\n"):match("echo done")
+      and table.concat(final_detail_lines, "\n"):match("Agent: Model rerouted"),
+    "activity summary detail should preserve child details"
   )
 
   local busy_activity_thread = state.ensure_thread("smoke-busy-activity", {
@@ -3081,6 +3082,75 @@ local function assert_handles_notification(message, label)
   assert(ok, label .. ": " .. tostring(err))
 end
 
+(function()
+  local smoke_config = require("codex.config")
+  local fast_thread = state.ensure_thread("smoke-stream-fast-path", {
+    title = "Smoke stream fast path",
+    cwd = vim.fn.getcwd(),
+    generation = "streaming",
+  })
+  state.upsert_item("smoke-stream-fast-path", "turn-fast", {
+    id = "fast-user",
+    type = "userMessage",
+    content = { { type = "text", text = "hello?" } },
+    status = "completed",
+  })
+  state.upsert_item("smoke-stream-fast-path", "turn-fast", {
+    id = "fast-assistant",
+    type = "agentMessage",
+    text = "hello",
+    status = "inProgress",
+  })
+  buffers.ensure("smoke-stream-fast-path")
+  vim.api.nvim_set_current_buf(fast_thread.bufnr)
+
+  local original_render = render.render
+  local render_count = 0
+  render.render = function(render_thread)
+    if render_thread == fast_thread then
+      render_count = render_count + 1
+    end
+    return original_render(render_thread)
+  end
+  local ok, err = pcall(function()
+    assert_handles_notification({
+      method = "item/agentMessage/delta",
+      params = {
+        threadId = "smoke-stream-fast-path",
+        turnId = "turn-fast",
+        itemId = "fast-assistant",
+        delta = " world",
+      },
+    }, "assistant text delta should use stream fast path")
+    local lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
+    assert(table.concat(lines, "\n"):match("hello world"), "assistant delta should update visible text immediately")
+    vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
+      return false
+    end, 5)
+    assert(render_count == 0, "assistant text delta fast path should not schedule a full render")
+
+    local line_count = vim.api.nvim_buf_line_count(fast_thread.bufnr)
+    assert_handles_notification({
+      method = "item/agentMessage/delta",
+      params = {
+        threadId = "smoke-stream-fast-path",
+        turnId = "turn-fast",
+        itemId = "fast-assistant",
+        delta = "\nnext line",
+      },
+    }, "assistant newline delta should use stream fast path")
+    lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
+    assert(table.concat(lines, "\n"):match("next line"), "assistant newline delta should update visible text")
+    assert(vim.api.nvim_buf_line_count(fast_thread.bufnr) == line_count + 1, "newline delta should append one line")
+    vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
+      return false
+    end, 5)
+    assert(render_count == 0, "assistant newline delta fast path should not schedule a full render")
+  end)
+  render.render = original_render
+  assert(ok, err)
+end)()
+
 local command_before = thread.items["tool-1"].aggregatedOutput
 assert_handles_notification({
   method = "item/commandExecution/outputDelta",
@@ -3091,7 +3161,56 @@ assert_handles_notification({
     delta = vim.NIL,
   },
 }, "command output should ignore null delta")
-assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command delta should not alter output")
+assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command delta should not alter output");
+(function()
+  local smoke_config = require("codex.config")
+  local original_render = render.render
+  local render_count = 0
+  render.render = function(render_thread)
+    if render_thread == thread then
+      render_count = render_count + 1
+    end
+    return original_render(render_thread)
+  end
+  local ok, err = pcall(function()
+    assert_handles_notification({
+      method = "item/commandExecution/outputDelta",
+      params = {
+        threadId = "smoke-extmarks",
+        turnId = "turn-1",
+        itemId = "tool-1",
+        delta = "\nmore hidden output",
+      },
+    }, "command output delta should use placeholder fast path")
+    assert(
+      thread.items["tool-1"].aggregatedOutput:match("more hidden output"),
+      "command output delta should still update item state"
+    )
+    vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
+      return false
+    end, 5)
+    assert(render_count == 0, "hidden command output delta should not schedule a full render")
+
+    local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id["tool-1"]
+    assert(mark, "tool placeholder should remain indexed by item id")
+    mark.expanded = true
+    assert_handles_notification({
+      method = "item/commandExecution/outputDelta",
+      params = {
+        threadId = "smoke-extmarks",
+        turnId = "turn-1",
+        itemId = "tool-1",
+        delta = "\nvisible output",
+      },
+    }, "expanded command output delta should fall back to full render")
+    vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
+      return render_count > 0
+    end, 5)
+    assert(render_count > 0, "expanded command output delta should schedule a full render")
+  end)
+  render.render = original_render
+  assert(ok, err)
+end)()
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "tool-ansi",
   type = "commandExecution",

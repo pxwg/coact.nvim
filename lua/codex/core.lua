@@ -481,7 +481,9 @@ handlers["item/agentMessage/delta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "agentMessage")
   append_field(item, "text", params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is responding...")
-  schedule(params.threadId)
+  if not buffers.try_stream_delta(params.threadId, params.itemId, params.delta) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/reasoning/textDelta"] = function(params)
@@ -520,7 +522,9 @@ handlers["item/commandExecution/outputDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
   append_output_field(item, "aggregatedOutput", params.delta)
   set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is running a command...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["command/exec/outputDelta"] = function(params)
