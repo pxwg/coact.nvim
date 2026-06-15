@@ -234,6 +234,17 @@ function M.update_thread_from_payload(payload)
     status_payload = util.value(payload.status),
     title = util.value(payload.name) or util.value(payload.preview),
   })
+  if payload.replaceTurns == true or payload.replace_turns == true then
+    thread.turns = {}
+    thread.turn_order = {}
+    thread.items = {}
+    thread.item_order = {}
+    thread.item_turns = {}
+    thread.turn_settings = {}
+    thread.render_index = {}
+    thread.folds = {}
+    thread.fold_levels = {}
+  end
   M.apply_thread_settings(thread, payload)
   if payload.turns then
     for _, turn in ipairs(payload.turns) do

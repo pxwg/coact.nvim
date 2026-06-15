@@ -364,7 +364,132 @@ async function readExistingFile(path) {
   return normalizeToLF(stripped.text);
 }
 
+function textContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((block) => {
+      if (!block || typeof block !== "object") {
+        return "";
+      }
+      if (block.type === "text") {
+        return block.text || "";
+      }
+      if (block.type === "thinking") {
+        return block.thinking || "";
+      }
+      if (block.type === "image") {
+        return "[image]";
+      }
+      if (block.type === "toolCall") {
+        return "[" + (block.name || "tool") + " tool call]";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function entryEditorText(entry) {
+  if (!entry || typeof entry !== "object") {
+    return undefined;
+  }
+  if (entry.type === "message" && entry.message?.role === "user") {
+    return textContent(entry.message.content);
+  }
+  if (entry.type === "custom_message") {
+    return textContent(entry.content);
+  }
+  return undefined;
+}
+
+function collectEntries(nodes, out = new Map()) {
+  for (const node of nodes || []) {
+    if (node?.entry?.id) {
+      out.set(node.entry.id, node.entry);
+    }
+    collectEntries(node?.children || [], out);
+  }
+  return out;
+}
+
+async function handleTreeCommand(ctx) {
+  await ctx.waitForIdle();
+  const tree = ctx.sessionManager.getTree() || [];
+  if (!tree.length) {
+    ctx.ui.notify("No entries in session", "warning");
+    return;
+  }
+
+  const leafId = ctx.sessionManager.getLeafId();
+  const branchIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
+  const entriesById = collectEntries(tree);
+  const selectedId = await ctx.ui.select("Pi session tree", [
+    {
+      __codexNvimPiTree: true,
+      tree,
+      leafId,
+      activePathIds: Array.from(branchIds),
+    },
+  ]);
+  if (!selectedId) {
+    ctx.ui.notify("Tree navigation cancelled", "info");
+    return;
+  }
+  const target = entriesById.get(String(selectedId));
+  if (!target) {
+    ctx.ui.notify("Tree navigation target not found", "error");
+    return;
+  }
+  if (target.id === leafId) {
+    ctx.ui.notify("Already at this point", "info");
+    return;
+  }
+
+  let summarize = false;
+  let customInstructions;
+  const summaryChoice = await ctx.ui.select("Summarize branch?", [
+    "No summary",
+    "Summarize",
+    "Summarize with custom prompt",
+  ]);
+  if (!summaryChoice) {
+    ctx.ui.notify("Tree navigation cancelled", "info");
+    return;
+  }
+  summarize = summaryChoice !== "No summary";
+  if (summaryChoice === "Summarize with custom prompt") {
+    customInstructions = await ctx.ui.editor("Custom summarization instructions");
+    if (customInstructions === undefined) {
+      ctx.ui.notify("Tree navigation cancelled", "info");
+      return;
+    }
+  }
+
+  const editorText = entryEditorText(target);
+  const result = await ctx.navigateTree(target.id, { summarize, customInstructions });
+  if (result?.cancelled) {
+    ctx.ui.notify("Tree navigation cancelled", "warning");
+    return;
+  }
+  if (editorText !== undefined) {
+    ctx.ui.setEditorText(editorText);
+  }
+  ctx.ui.notify("Navigated to selected point", "info");
+}
+
 export default function (pi) {
+  pi.registerCommand("codex-nvim-tree", {
+    description: "Navigate the current session tree from codex.nvim",
+    handler: async (_args, ctx) => {
+      await handleTreeCommand(ctx);
+    },
+  });
+
   pi.registerTool({
     name: "edit",
     label: "edit",

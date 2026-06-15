@@ -421,6 +421,149 @@ do
     pi_extension_source:match('name: "edit"') and pi_extension_source:match('name: "write"'),
     "Pi edit bridge extension should override edit and write tools"
   )
+  assert(
+    pi_extension_source:match('registerCommand%("codex%-nvim%-tree"') and pi_extension_source:match("navigateTree"),
+    "Pi edit bridge extension should register tree navigation"
+  );
+  (function()
+    local pi_tree = require("codex.providers.pi_tree")
+    local rendered_tree = pi_tree._render_for_test({
+      __codexNvimPiTree = true,
+      leafId = "branch-user",
+      tree = {
+        {
+          entry = {
+            id = "root-user",
+            type = "message",
+            message = { role = "user", content = { { type = "text", text = "root prompt" } } },
+          },
+          children = {
+            {
+              entry = {
+                id = "assistant",
+                parentId = "root-user",
+                type = "message",
+                message = {
+                  role = "assistant",
+                  content = {
+                    { type = "text", text = "assistant answer" },
+                    { type = "toolCall", id = "tool-call", name = "bash", arguments = { command = "echo smoke" } },
+                  },
+                },
+              },
+              children = {
+                {
+                  entry = {
+                    id = "tool-result",
+                    parentId = "assistant",
+                    type = "message",
+                    message = { role = "toolResult", toolCallId = "tool-call", toolName = "bash" },
+                  },
+                  children = {},
+                },
+                {
+                  entry = {
+                    id = "branch-user",
+                    parentId = "assistant",
+                    type = "message",
+                    message = { role = "user", content = { { type = "text", text = "branch prompt" } } },
+                  },
+                  children = {},
+                },
+              },
+            },
+          },
+        },
+      },
+    }, { width = 140, height = 20 })
+    local root_col, assistant_col
+    local body = table.concat(rendered_tree.lines, "\n")
+    for _, line in ipairs(rendered_tree.lines) do
+      if line:find("user: root prompt", 1, true) then
+        root_col = line:find("user:", 1, true)
+      elseif line:find("assistant: assistant answer", 1, true) then
+        assistant_col = line:find("assistant:", 1, true)
+      end
+    end
+    assert(root_col == assistant_col, "Pi tree renderer should keep single-child chains visually flat")
+    assert(body:find("├", 1, true) and body:find("└", 1, true), "Pi tree renderer should draw branch connectors")
+    local seen_hl = {}
+    for _, spans in pairs(rendered_tree.spans) do
+      for _, span in ipairs(spans) do
+        seen_hl[span.hl_group] = true
+      end
+    end
+    assert(
+      seen_hl.CodexPiTreeUser
+        and seen_hl.CodexPiTreeAssistant
+        and seen_hl.CodexPiTreeTool
+        and seen_hl.CodexPiTreeConnector,
+      "Pi tree renderer should expose role and connector highlights"
+    )
+    assert(
+      rendered_tree.lines[2]:find("j/k ctrl%-n/p move") and not rendered_tree.lines[2]:find("↑", 1, true),
+      "Pi tree help should advertise native Neovim navigation without arrow hints"
+    )
+    local picker_payload = {
+      __codexNvimPiTree = true,
+      leafId = "root-user",
+      tree = {
+        {
+          entry = {
+            id = "root-user",
+            type = "message",
+            message = { role = "user", content = { { type = "text", text = "root prompt" } } },
+          },
+          children = {
+            {
+              entry = {
+                id = "assistant",
+                parentId = "root-user",
+                type = "message",
+                message = { role = "assistant", content = { { type = "text", text = "second row" } } },
+              },
+              children = {},
+            },
+          },
+        },
+      },
+    }
+    pi_tree.select({ options = { picker_payload } }, function() end)
+    local picker_bufnr = vim.api.nvim_get_current_buf()
+    assert(vim.bo[picker_bufnr].filetype == "codex-pi-tree", "Pi tree picker should open its own buffer")
+    assert(not vim.bo[picker_bufnr].modifiable and vim.bo[picker_bufnr].readonly, "Pi tree picker should be read-only")
+    assert(vim.fn.mode() ~= "i", "Pi tree picker should enter normal mode")
+    assert(vim.fn.maparg("i", "n", false, true).rhs == "<Nop>", "Pi tree picker should block insert mode")
+    assert(type(vim.fn.maparg("j", "n", false, true).callback) == "function", "Pi tree picker should bind j")
+    assert(type(vim.fn.maparg("<C-n>", "n", false, true).callback) == "function", "Pi tree picker should bind ctrl-n")
+    assert(type(vim.fn.maparg("<C-p>", "n", false, true).callback) == "function", "Pi tree picker should bind ctrl-p")
+    assert(
+      type(vim.fn.maparg("<Down>", "n", false, true).callback) == "function",
+      "Pi tree picker should allow down arrow"
+    )
+    assert(
+      type(vim.fn.maparg("<Right>", "n", false, true).callback) == "function",
+      "Pi tree picker should allow right arrow"
+    )
+    assert(type(vim.fn.maparg("<C-d>", "n", false, true).callback) == "function", "Pi tree picker should bind ctrl-d")
+    assert(type(vim.fn.maparg("gg", "n", false, true).callback) == "function", "Pi tree picker should bind gg")
+    local assistant_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(picker_bufnr, 0, -1, false)) do
+      if line:find("assistant: second row", 1, true) then
+        assistant_row = row
+        break
+      end
+    end
+    assert(assistant_row, "Pi tree picker smoke should find the second row")
+    vim.api.nvim_win_set_cursor(vim.api.nvim_get_current_win(), { assistant_row, 0 })
+    vim.cmd("doautocmd <nomodeline> CursorMoved")
+    local synced_line = vim.api.nvim_buf_get_lines(picker_bufnr, assistant_row - 1, assistant_row, false)[1] or ""
+    assert(
+      synced_line:match("^›") and synced_line:find("assistant: second row", 1, true),
+      "Pi tree picker should sync selection from native cursor movement"
+    )
+    pcall(vim.api.nvim_win_close, vim.api.nvim_get_current_win(), true)
+  end)()
   local pi_thread = pi_provider._thread_from_state({
     sessionId = "smoke-session",
     sessionName = "Smoke Pi",
@@ -484,7 +627,54 @@ do
     pi_state_thread.items["tool-smoke"].command == "pwd"
       and pi_state_thread.items["tool-smoke"].aggregatedOutput:match("one\ntwo"),
     "Pi bash tool events should normalize to commandExecution items"
-  )
+  );
+  (function()
+    local pi_ui_sent = {}
+    local pi_ui_rpc = {
+      send = function(message)
+        table.insert(pi_ui_sent, message)
+      end,
+    }
+    local original_pi_ui_select = vim.ui.select
+    vim.ui.select = function(items, opts, callback)
+      assert(opts.prompt == "Pi session tree", "Pi extension select should use the request title")
+      callback(items[2])
+    end
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-select-smoke",
+        method = "select",
+        title = "Pi session tree",
+        options = { "first", "second" },
+      }, pi_ui_rpc),
+      "Pi provider should handle extension select requests"
+    )
+    vim.wait(1000, function()
+      return #pi_ui_sent == 1
+    end, 10)
+    vim.ui.select = original_pi_ui_select
+    assert(
+      pi_ui_sent[1]
+        and pi_ui_sent[1].type == "extension_ui_response"
+        and pi_ui_sent[1].id == "pi-select-smoke"
+        and pi_ui_sent[1].value == "second",
+      "Pi extension select should respond with the selected value"
+    )
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-editor-smoke",
+        method = "set_editor_text",
+        text = "restored prompt",
+      }, pi_ui_rpc),
+      "Pi provider should handle extension editor text updates"
+    )
+    assert(
+      pi_state_thread.draft_lines and pi_state_thread.draft_lines[1] == "restored prompt",
+      "Pi set_editor_text should restore the current composer prompt"
+    )
+  end)()
   local pi_cwd = require("codex.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")
   vim.fn.mkdir(pi_session_dir, "p")
@@ -629,7 +819,65 @@ do
       and pi_resume_result.thread.turns
       and #pi_resume_result.thread.turns == 1,
     "Pi resume should return the selected historical thread"
-  )
+  );
+  (function()
+    local pi_tree_result = nil
+    local pi_tree_calls = {}
+    local pi_tree_handled = pi_provider.custom_request(
+      {
+        _request_message = function(method, params, callback)
+          table.insert(pi_tree_calls, { method = method, params = params })
+          if method == "prompt" then
+            assert(params.message == "/codex-nvim-tree", "Pi thread/tree should invoke the bridge command")
+            callback(nil, {})
+          elseif method == "get_state" then
+            callback(nil, {
+              sessionId = "pi-old",
+              sessionFile = pi_old_session_file,
+              sessionName = "Old Pi",
+            })
+          elseif method == "get_messages" then
+            callback(nil, {
+              messages = {
+                {
+                  role = "user",
+                  content = {
+                    {
+                      type = "text",
+                      text = "tree-selected prompt",
+                    },
+                  },
+                },
+              },
+            })
+          else
+            error("unexpected Pi tree smoke request: " .. tostring(method))
+          end
+        end,
+      },
+      "thread/tree",
+      { cwd = pi_cwd, threadId = "pi:pi-old" },
+      function(err, result)
+        assert(not err, "Pi thread/tree should not fail in smoke")
+        pi_tree_result = result
+      end
+    )
+    assert(pi_tree_handled, "Pi provider should handle thread/tree")
+    assert(
+      #pi_tree_calls == 3
+        and pi_tree_calls[1].method == "prompt"
+        and pi_tree_calls[2].method == "get_state"
+        and pi_tree_calls[3].method == "get_messages",
+      "Pi thread/tree should navigate before refreshing current messages"
+    )
+    assert(
+      pi_tree_result
+        and pi_tree_result.thread.replaceTurns == true
+        and pi_tree_result.thread.turns
+        and pi_tree_result.thread.turns[1].items[1].content[1].text == "tree-selected prompt",
+      "Pi thread/tree should return a replacement branch snapshot"
+    )
+  end)()
   codex.setup({
     provider = "pi",
     providers = {
@@ -653,7 +901,36 @@ local parser = require("codex.parser")
 local parsed = parser.parse("hello\n>diagnostics")
 assert(#parsed >= 1, "parser should produce user input")
 
-local state = require("codex.state")
+local state = require("codex.state");
+(function()
+  local replace_turns_thread = state.update_thread_from_payload({
+    id = "smoke-replace-turns",
+    turns = {
+      {
+        id = "old-turn",
+        items = {
+          { id = "old-item", type = "agentMessage", text = "old" },
+        },
+      },
+    },
+  })
+  state.update_thread_from_payload({
+    id = "smoke-replace-turns",
+    replaceTurns = true,
+    turns = {
+      {
+        id = "new-turn",
+        items = {
+          { id = "new-item", type = "agentMessage", text = "new" },
+        },
+      },
+    },
+  })
+  assert(
+    replace_turns_thread.items["new-item"] and not replace_turns_thread.items["old-item"],
+    "thread replacement payloads should clear stale items"
+  )
+end)()
 local status_thread = state.update_thread_from_payload({
   id = "smoke-status-object",
   status = { type = "active", activeFlags = {} },
@@ -2254,6 +2531,13 @@ assert(
 )
 assert(slash_new_prompt == "start here", "slash /new should call the local thread action")
 assert(slash._sandbox_policy("read-only").type == "readOnly", "slash sandbox helper should map app-server policy")
+codex.setup();
+(function()
+  local codex_slash_labels = vim.tbl_map(function(item)
+    return item.label
+  end, slash.items(""))
+  assert(not vim.tbl_contains(codex_slash_labels, "/tree"), "Codex slash completion should hide Pi-only commands")
+end)()
 
 do
   local function smoke_pi_slash_provider()
@@ -2266,6 +2550,7 @@ do
       "Pi slash completion should include provider-supported model command"
     )
     assert(vim.tbl_contains(pi_slash_labels, "/reasoning"), "Pi slash completion should include thinking command")
+    assert(vim.tbl_contains(pi_slash_labels, "/tree"), "Pi slash completion should include tree navigation")
     assert(not vim.tbl_contains(pi_slash_labels, "/permissions"), "Pi slash completion should hide Codex permissions")
     assert(not vim.tbl_contains(pi_slash_labels, "/fast"), "Pi slash completion should hide Codex service tiers")
     assert(not vim.tbl_contains(pi_slash_labels, "/goal"), "Pi slash completion should hide Codex goals")
@@ -2320,6 +2605,40 @@ do
     assert(pi_reasoning_update.threadId == "pi-thread-reasoning", "Pi /reasoning should target the active thread")
     assert(pi_reasoning_update.effort == "high", "Pi /reasoning should send the selected thinking level")
     assert(pi_reasoning_update.summary == nil, "Pi /reasoning should not send Codex reasoning summary")
+
+    local pi_tree_request = nil
+    local pi_tree_notice = nil
+    util.notify = function(message)
+      pi_tree_notice = message
+    end
+    rpc.request = function(method, params, callback)
+      assert(method == "thread/tree", "Pi /tree should request thread/tree")
+      pi_tree_request = params
+      callback(nil, {
+        thread = {
+          id = "pi-thread-tree",
+          replaceTurns = true,
+          turns = {
+            {
+              id = "tree-turn",
+              items = {
+                { id = "tree-item", type = "agentMessage", text = "tree" },
+              },
+            },
+          },
+        },
+      })
+    end
+    slash.dispatch("/tree", "pi-thread-tree", {
+      ensure_server = function(callback)
+        callback()
+      end,
+    })
+    rpc.request = original_rpc_request
+    util.notify = original_notify
+    assert(pi_tree_request.threadId == "pi-thread-tree", "Pi /tree should target the active thread")
+    assert(pi_tree_notice == "Pi tree updated", "Pi /tree should notify after refreshing the thread")
+    assert(state.get_thread("pi-thread-tree").items["tree-item"], "Pi /tree should update thread state from result")
     codex.setup()
   end
 

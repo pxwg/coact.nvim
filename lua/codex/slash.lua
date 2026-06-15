@@ -50,6 +50,7 @@ local commands = {
   { name = "raw", detail = "Toggle raw event scrollback", category = "ui" },
   { name = "resume", detail = "Resume a saved conversation", category = "threads" },
   { name = "new", detail = "Start a new conversation", category = "threads" },
+  { name = "tree", detail = "Navigate the current Pi session tree", category = "threads", providers = { pi = true } },
   { name = "review", detail = "Ask Codex to review the working tree", category = "workspace" },
   { name = "status", detail = "Display session configuration and token usage", category = "status" },
   { name = "debug-config", detail = "Print config layer and requirements diagnostics", category = "status" },
@@ -100,6 +101,7 @@ local return_forms = {
   raw = "action(local render toggle) -> notify",
   resume = "action(thread/resume or picker)",
   new = "action(thread/start)",
+  tree = "select(Pi session tree) -> notify(thread/tree) -> refresh thread",
   review = "notify(review/start)",
   status = "page(config/read + account/rateLimits/read + local thread status)",
   ["debug-config"] = "page(config/read + configRequirements/read)",
@@ -136,6 +138,9 @@ local function provider_return_form(command)
 end
 
 local function command_supported(command)
+  if type(command.providers) == "table" and command.providers[providers.current_id()] ~= true then
+    return false
+  end
   local supported = provider_slash().commands
   if supported == nil or supported == "all" then
     return true
@@ -1337,6 +1342,29 @@ local function fork_thread(actions, thread_id, ephemeral)
   end)
 end
 
+local function open_tree(actions, thread_id)
+  local id = need_thread(thread_id)
+  if not id then
+    return
+  end
+  ensure_server(actions, function()
+    rpc.request("thread/tree", { threadId = id, cwd = config.cwd() }, function(err, result)
+      if err then
+        present_result(notify_result("thread/tree failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
+        return
+      end
+      local thread_payload = as_table_or_nil(field(result, "thread"))
+      if not thread_payload then
+        present_result(notify_result("thread/tree returned no thread", vim.log.levels.ERROR))
+        return
+      end
+      local thread = state.update_thread_from_payload(thread_payload)
+      require("codex.buffers").schedule_render(thread.id)
+      present_result(notify_result(provider_title() .. " tree updated"))
+    end)
+  end)
+end
+
 local function open_goal(args, actions, thread_id)
   local id = need_thread(thread_id)
   if not id then
@@ -1629,6 +1657,9 @@ local handlers = {
     if actions.new_thread then
       actions.new_thread({ prompt = table.concat(args, " "), session_start_source = "new" })
     end
+  end,
+  tree = function(args, actions, thread_id)
+    open_tree(actions, thread_id)
   end,
   review = function(args, actions, thread_id)
     start_review(actions, thread_id)

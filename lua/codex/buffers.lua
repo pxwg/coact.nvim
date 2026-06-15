@@ -737,6 +737,26 @@ function M.clear_prompt(bufnr)
   vim.api.nvim_buf_set_lines(bufnr, start, -1, false, {})
 end
 
+function M.set_prompt_text(thread_id, text)
+  local thread = state.get_thread(thread_id)
+  if not thread then
+    return false
+  end
+  local lines = vim.split(tostring(text or ""), "\n", { plain = true })
+  if #lines == 0 then
+    lines = { "" }
+  end
+  thread.draft_lines = lines
+  thread.draft_cursor = { #lines, #(lines[#lines] or "") }
+  local prompt_bufnr = M.ensure_prompt(thread_id)
+  set_prompt_lines(prompt_bufnr, lines)
+  M.refresh_composer(thread)
+  if valid_win(thread.prompt_winid) and current_window_buffer(thread.prompt_winid) == prompt_bufnr then
+    pcall(vim.api.nvim_win_set_cursor, thread.prompt_winid, thread.draft_cursor)
+  end
+  return true
+end
+
 function M.append_prompt_line(bufnr, line)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local prompt_bufnr, thread = prompt_bufnr_for(bufnr, true)

@@ -22,6 +22,7 @@ local M = {
       skills = true,
       status = true,
       stop = true,
+      tree = true,
     },
     reasoning_label = "thinking",
     reasoning_effort_title = "thinking level",
@@ -39,6 +40,7 @@ local M = {
       reasoning = "select(Pi thinking level) -> notify(set_thinking_level)",
       skills = "select(get_commands source=skill) -> insert($skill:<name>)",
       status = "page(get_state + get_session_stats + local thread status)",
+      tree = "select(Pi session tree) -> notify(thread/tree) -> refresh thread",
     },
   },
 }
@@ -694,6 +696,28 @@ local function normalize_commands_as_skills(commands)
   }
 end
 
+local function read_current_thread(rpc, params, callback, opts)
+  opts = opts or {}
+  rpc._request_message("get_state", {}, function(err, state_result)
+    if err then
+      callback(err, nil)
+      return
+    end
+    local thread = thread_from_state(state_result, params)
+    if opts.replace_turns == true then
+      thread.replaceTurns = true
+    end
+    rpc._request_message("get_messages", {}, function(messages_err, messages_result)
+      if messages_err then
+        callback(nil, { thread = thread })
+        return
+      end
+      thread.turns = M._turns_from_messages(messages_result and messages_result.messages, thread.id)
+      callback(nil, { thread = thread })
+    end)
+  end)
+end
+
 function M.custom_request(rpc, method, params, callback)
   params = params or {}
   if method == "thread/start" then
@@ -719,23 +743,6 @@ function M.custom_request(rpc, method, params, callback)
 
   if method == "thread/read" or method == "thread/resume" then
     local session_file = resolve_session_file(params.cwd or config.cwd(), params.threadId)
-    local function read_selected_thread()
-      rpc._request_message("get_state", {}, function(err, state_result)
-        if err then
-          callback(err, nil)
-          return
-        end
-        local thread = thread_from_state(state_result, params)
-        rpc._request_message("get_messages", {}, function(messages_err, messages_result)
-          if messages_err then
-            callback(nil, { thread = thread })
-            return
-          end
-          thread.turns = M._turns_from_messages(messages_result and messages_result.messages, thread.id)
-          callback(nil, { thread = thread })
-        end)
-      end)
-    end
     if session_file then
       rpc._request_message("switch_session", { sessionPath = session_file }, function(err, result)
         if err then
@@ -746,11 +753,27 @@ function M.custom_request(rpc, method, params, callback)
           callback({ message = "Pi switch_session was cancelled" }, nil)
           return
         end
-        read_selected_thread()
+        read_current_thread(rpc, params, callback)
       end)
     else
-      read_selected_thread()
+      read_current_thread(rpc, params, callback)
     end
+    return true
+  end
+
+  if method == "thread/tree" then
+    runtime.current_thread_id = params.threadId or current_thread_id()
+    rpc._request_message("prompt", { message = "/codex-nvim-tree" }, function(err, result)
+      if err then
+        callback(err, nil)
+        return
+      end
+      if result and result.cancelled then
+        callback({ message = "Pi tree navigation was cancelled" }, nil)
+        return
+      end
+      read_current_thread(rpc, params, callback, { replace_turns = true })
+    end)
     return true
   end
 
@@ -1234,6 +1257,20 @@ function M.decode_notification(message)
   )
 end
 
+local function extension_response(rpc, message, payload)
+  if not (rpc and rpc.send and message and message.id) then
+    return
+  end
+  payload = payload or {}
+  payload.type = "extension_ui_response"
+  payload.id = message.id
+  rpc.send(payload)
+end
+
+local function extension_prompt(message, fallback)
+  return util.value(message.title) or util.value(message.message) or fallback
+end
+
 function M.handle_raw_message(message, rpc)
   if type(message) ~= "table" or message.type ~= "extension_ui_request" then
     return false
@@ -1245,14 +1282,71 @@ function M.handle_raw_message(message, rpc)
     util.notify(message.message or "Pi notification", level)
     return true
   end
+  if message.method == "select" then
+    local ok, pi_tree = pcall(require, "codex.providers.pi_tree")
+    if ok and pi_tree.is_request(message) then
+      vim.schedule(function()
+        pi_tree.select(message, function(choice)
+          if choice == nil then
+            extension_response(rpc, message, { cancelled = true })
+          else
+            extension_response(rpc, message, { value = choice })
+          end
+        end)
+      end)
+      return true
+    end
+    vim.schedule(function()
+      local options = type(message.options) == "table" and message.options or {}
+      vim.ui.select(options, { prompt = extension_prompt(message, "Pi select") }, function(choice)
+        if choice == nil then
+          extension_response(rpc, message, { cancelled = true })
+        else
+          extension_response(rpc, message, { value = choice })
+        end
+      end)
+    end)
+    return true
+  end
+  if message.method == "confirm" then
+    vim.schedule(function()
+      local prompt = extension_prompt(message, "Pi confirm")
+      vim.ui.select({ "Yes", "No" }, { prompt = prompt }, function(choice)
+        if choice == nil then
+          extension_response(rpc, message, { cancelled = true })
+        else
+          extension_response(rpc, message, { confirmed = choice == "Yes" })
+        end
+      end)
+    end)
+    return true
+  end
+  if message.method == "input" or message.method == "editor" then
+    vim.schedule(function()
+      vim.ui.input({
+        prompt = extension_prompt(message, message.method == "editor" and "Pi editor" or "Pi input") .. ": ",
+        default = util.value(message.prefill) or "",
+      }, function(value)
+        if value == nil then
+          extension_response(rpc, message, { cancelled = true })
+        else
+          extension_response(rpc, message, { value = value })
+        end
+      end)
+    end)
+    return true
+  end
+  if message.method == "set_editor_text" then
+    local ok, buffers = pcall(require, "codex.buffers")
+    if ok and buffers.set_prompt_text then
+      buffers.set_prompt_text(current_thread_id(), util.value(message.text) or "")
+    end
+    return true
+  end
   if message.method == "setTitle" or message.method == "setStatus" or message.method == "setWidget" then
     return true
   end
-  rpc.send({
-    type = "extension_ui_response",
-    id = message.id,
-    cancelled = true,
-  })
+  extension_response(rpc, message, { cancelled = true })
   return true
 end
 
