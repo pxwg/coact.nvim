@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local providers = require("codex.providers")
 local rpc = require("codex.rpc")
 local state = require("codex.state")
 local util = require("codex.util")
@@ -117,6 +118,60 @@ for _, command in ipairs(commands) do
   end
 end
 
+local function provider_title()
+  return providers.title()
+end
+
+local function provider_slash()
+  local provider = providers.current()
+  return type(provider.slash) == "table" and provider.slash or {}
+end
+
+local function provider_return_form(command)
+  local forms = provider_slash().return_forms
+  if type(forms) == "table" then
+    return forms[command.name]
+  end
+  return nil
+end
+
+local function command_supported(command)
+  local supported = provider_slash().commands
+  if supported == nil or supported == "all" then
+    return true
+  end
+  if type(supported) == "function" then
+    return supported(command.name, command) ~= false
+  end
+  if type(supported) == "table" then
+    return supported[command.name] == true
+  end
+  return true
+end
+
+local function active_commands()
+  local items = {}
+  for _, command in ipairs(commands) do
+    if command_supported(command) then
+      table.insert(items, command)
+    end
+  end
+  return items
+end
+
+local function return_form(command)
+  return provider_return_form(command) or return_forms[command.name] or "notify(unsupported)"
+end
+
+local function command_detail(command)
+  local detail = command.detail == nil and "" or tostring(command.detail)
+  local title = provider_title()
+  if title ~= "Codex" then
+    detail = detail:gsub("Codex", title)
+  end
+  return detail
+end
+
 local function trim(value)
   return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
@@ -180,7 +235,7 @@ local function ensure_server(actions, callback)
   end
   rpc.start(function(err)
     if err then
-      notify("codex app-server failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+      notify(providers.title() .. " provider failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
       return
     end
     callback()
@@ -201,7 +256,7 @@ end
 local function need_thread(thread_id)
   local id = current_thread_id(thread_id)
   if not id then
-    notify("no active Codex thread", vim.log.levels.WARN)
+    notify("no active " .. provider_title() .. " thread", vim.log.levels.WARN)
     return nil
   end
   return id
@@ -259,12 +314,12 @@ local function open_lines(title, lines)
     if vim.api.nvim_win_is_valid(winid) then
       vim.api.nvim_win_close(winid, true)
     end
-  end, { buffer = bufnr, silent = true, desc = "Close Codex slash page" })
+  end, { buffer = bufnr, silent = true, desc = "Close provider slash page" })
   vim.keymap.set("n", "<Esc>", function()
     if vim.api.nvim_win_is_valid(winid) then
       vim.api.nvim_win_close(winid, true)
     end
-  end, { buffer = bufnr, silent = true, desc = "Close Codex slash page" })
+  end, { buffer = bufnr, silent = true, desc = "Close provider slash page" })
 end
 
 local present_result
@@ -356,7 +411,7 @@ present_result = function(value)
         table.insert(lines, insert_at + 1, "")
       end
     end
-    open_lines(value.title or "Codex", lines)
+    open_lines(value.title or provider_title(), lines)
     return
   end
   if value.kind == "select" then
@@ -440,7 +495,7 @@ end
 local function apply_thread_settings(thread_id, params, message, actions)
   local id = current_thread_id(thread_id)
   if not id then
-    present_result(notify_result(message .. " for future Codex turns"))
+    present_result(notify_result(message .. " for future " .. provider_title() .. " turns"))
     return
   end
   params.threadId = id
@@ -578,8 +633,8 @@ end
 local function open_model(actions, thread_id)
   request_models(actions, function(models)
     present_result(select_result({
-      title = "Codex model",
-      empty_message = "no Codex models available",
+      title = provider_title() .. " model",
+      empty_message = "no " .. provider_title() .. " models available",
       items = models,
       format_item = model_label,
       on_select = function(model)
@@ -589,7 +644,7 @@ local function open_model(actions, thread_id)
           return
         end
         return select_result({
-          title = "Codex thinking effort",
+          title = provider_title() .. " " .. (provider_slash().reasoning_effort_title or "thinking effort"),
           items = efforts,
           format_item = reasoning_effort_label,
           on_select = function(effort)
@@ -663,7 +718,7 @@ local function open_fast(args, actions, thread_id)
       })
     end
     present_result(select_result({
-      title = "Codex service tier",
+      title = provider_title() .. " service tier",
       items = choices,
       format_item = function(choice)
         local line = text(choice.label)
@@ -698,7 +753,7 @@ local approval_choices = {
     label = "read only",
     approval_policy = "on-request",
     sandbox = "read-only",
-    detail = "No writes unless Codex asks for approval",
+    detail = "No writes unless the provider asks for approval",
   },
   {
     label = "never ask",
@@ -743,12 +798,12 @@ local function open_permissions(actions, thread_id)
           table.insert(choices, {
             label = "profile: " .. text(profile.id),
             profile = profile,
-            detail = text_or_nil(profile.description) or "Codex permission profile",
+            detail = text_or_nil(profile.description) or (provider_title() .. " permission profile"),
           })
         end
       end
       present_result(select_result({
-        title = "Codex permissions",
+        title = provider_title() .. " permissions",
         items = choices,
         format_item = function(choice)
           local detail = text_or_nil(choice.detail)
@@ -773,7 +828,7 @@ local function open_sandbox(actions, thread_id)
     { label = "danger-full-access", detail = "Disable sandboxing" },
   }
   return select_result({
-    title = "Codex sandbox",
+    title = provider_title() .. " sandbox",
     items = choices,
     format_item = function(choice)
       return text(choice.label) .. " - " .. text(choice.detail)
@@ -792,8 +847,8 @@ local function open_sandbox(actions, thread_id)
   })
 end
 
-local function open_reasoning(actions, thread_id)
-  local efforts = {
+local function default_reasoning_efforts()
+  return {
     { label = "default", value = vim.NIL },
     { label = "none", value = "none" },
     { label = "minimal", value = "minimal" },
@@ -802,19 +857,62 @@ local function open_reasoning(actions, thread_id)
     { label = "high", value = "high" },
     { label = "xhigh", value = "xhigh" },
   }
+end
+
+local function default_reasoning_summaries()
+  return {
+    { label = "default", value = vim.NIL },
+    { label = "auto", value = "auto" },
+    { label = "concise", value = "concise" },
+    { label = "detailed", value = "detailed" },
+    { label = "none", value = "none" },
+  }
+end
+
+local function provider_choice_table(key, fallback)
+  local value = provider_slash()[key]
+  if type(value) == "function" then
+    return value()
+  end
+  if type(value) == "table" then
+    return vim.deepcopy(value)
+  end
+  if value == false then
+    return false
+  end
+  return fallback()
+end
+
+local function provider_reasoning_label()
+  return provider_slash().reasoning_label or "reasoning"
+end
+
+local function provider_reasoning_effort_title()
+  return provider_slash().reasoning_effort_title or (provider_reasoning_label() .. " effort")
+end
+
+local function provider_reasoning_summary_title()
+  return provider_slash().reasoning_summary_title or (provider_reasoning_label() .. " summary")
+end
+
+local function open_reasoning(actions, thread_id)
+  local efforts = provider_choice_table("reasoning_efforts", default_reasoning_efforts)
   return select_result({
-    title = "Codex reasoning effort",
+    title = provider_title() .. " " .. provider_reasoning_effort_title(),
     items = efforts,
     on_select = function(effort)
-      local summaries = {
-        { label = "default", value = vim.NIL },
-        { label = "auto", value = "auto" },
-        { label = "concise", value = "concise" },
-        { label = "detailed", value = "detailed" },
-        { label = "none", value = "none" },
-      }
+      local summaries = provider_choice_table("reasoning_summaries", default_reasoning_summaries)
+      if summaries == false then
+        local cfg = current_cfg()
+        cfg.reasoning_effort = is_nil(effort.value) and nil or effort.value
+        cfg.reasoning_summary = nil
+        apply_thread_settings(thread_id, {
+          effort = cfg.reasoning_effort or vim.NIL,
+        }, ("%s set to %s"):format(provider_reasoning_label(), setting_value(cfg.reasoning_effort)), actions)
+        return
+      end
       return select_result({
-        title = "Codex reasoning summary",
+        title = provider_title() .. " " .. provider_reasoning_summary_title(),
         items = summaries,
         on_select = function(summary)
           local cfg = current_cfg()
@@ -843,10 +941,10 @@ local function open_personality(actions, thread_id)
     { label = "none", value = "none", detail = "Disable personality instructions" },
     { label = "friendly", value = "friendly", detail = "Use a friendly communication style" },
     { label = "pragmatic", value = "pragmatic", detail = "Use a direct engineering style" },
-    { label = "default", value = vim.NIL, detail = "Use the app-server default" },
+    { label = "default", value = vim.NIL, detail = "Use the provider default" },
   }
   return select_result({
-    title = "Codex personality",
+    title = provider_title() .. " personality",
     items = choices,
     format_item = function(choice)
       return text(choice.label) .. " - " .. text(choice.detail)
@@ -883,7 +981,7 @@ local function open_experimental(actions, thread_id)
           return text(a.displayName or a.name) < text(b.displayName or b.name)
         end)
         present_result(select_result({
-          title = "Codex experimental feature",
+          title = provider_title() .. " experimental feature",
           empty_message = "no experimental features available",
           items = features,
           format_item = function(feature)
@@ -934,8 +1032,12 @@ local function open_settings(actions, thread_id)
     },
     { label = "experimental", fn = open_experimental },
   }
+  choices = vim.tbl_filter(function(choice)
+    local command = by_name[choice.label]
+    return command ~= nil and command_supported(command)
+  end, choices)
   return select_result({
-    title = "Codex settings",
+    title = provider_title() .. " settings",
     items = choices,
     on_select = function(choice)
       return choice.fn(actions, thread_id)
@@ -947,11 +1049,12 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
   codex_config = as_table_or_nil(codex_config)
   rate_limits = as_table_or_nil(rate_limits)
   errors = as_table(errors)
+  local title = provider_title()
   local id = current_thread_id(thread_id)
   local thread = id and state.get_thread(id) or nil
   local cfg = current_cfg()
   local lines = {
-    "# Codex Status",
+    "# " .. title .. " Status",
     "",
     "server: " .. (rpc.is_running() and "running" or "stopped"),
     "initialized: " .. tostring(rpc.initialized),
@@ -977,7 +1080,7 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
 
   if codex_config then
     table.insert(lines, "")
-    table.insert(lines, "## Codex Config")
+    table.insert(lines, "## " .. title .. " Config")
     table.insert(lines, "model: " .. setting_value(codex_config.model))
     table.insert(lines, "service tier: " .. setting_value(codex_config.service_tier))
     table.insert(lines, "approval policy: " .. setting_value(codex_config.approval_policy))
@@ -999,7 +1102,7 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
     vim.list_extend(lines, errors)
   end
 
-  return page("Codex Status", lines, { source = return_forms.status })
+  return page(title .. " Status", lines, { source = return_form(by_name.status) })
 end
 
 local function show_status(actions, thread_id)
@@ -1020,17 +1123,18 @@ local function show_status(actions, thread_id)
 end
 
 local function show_help()
+  local title = provider_title()
   local lines = {
-    "# Codex Slash Commands",
+    "# " .. title .. " Slash Commands",
     "",
     "Type / and filter the command list. Slash commands are handled by codex.nvim and are not sent as model tool calls.",
     "",
   }
-  for _, command in ipairs(commands) do
-    table.insert(lines, ("/%-22s %s"):format(command.name, command.detail))
-    table.insert(lines, ("  returns: %s"):format(return_forms[command.name] or "notify(unsupported)"))
+  for _, command in ipairs(active_commands()) do
+    table.insert(lines, ("/%-22s %s"):format(command.name, command_detail(command)))
+    table.insert(lines, ("  returns: %s"):format(return_form(command)))
   end
-  return page("Codex Slash Commands", lines, { source = return_forms.help })
+  return page(title .. " Slash Commands", lines, { source = return_form(by_name.help) })
 end
 
 local function show_mcp(args, actions)
@@ -1041,7 +1145,8 @@ local function show_mcp(args, actions)
         notify("mcpServerStatus/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
         return
       end
-      local lines = { "# Codex MCP", "" }
+      local title = provider_title()
+      local lines = { "# " .. title .. " MCP", "" }
       for _, server in ipairs(as_table(field(result, "data"))) do
         table.insert(lines, "## " .. tostring(server.name))
         table.insert(lines, "auth: " .. vim.inspect(server.authStatus))
@@ -1060,7 +1165,7 @@ local function show_mcp(args, actions)
       if #lines == 2 then
         table.insert(lines, "No MCP servers are configured.")
       end
-      present_result(page("Codex MCP", lines, { source = return_forms.mcp }))
+      present_result(page(title .. " MCP", lines, { source = return_form(by_name.mcp) }))
     end)
   end)
 end
@@ -1072,7 +1177,8 @@ local function show_hooks(actions)
         notify("hooks/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
         return
       end
-      local lines = { "# Codex Hooks", "" }
+      local title = provider_title()
+      local lines = { "# " .. title .. " Hooks", "" }
       for _, entry in ipairs(as_table(field(result, "data"))) do
         table.insert(lines, "## " .. tostring(entry.cwd))
         local warnings = as_table(field(entry, "warnings"))
@@ -1100,14 +1206,15 @@ local function show_hooks(actions)
         end
         table.insert(lines, "")
       end
-      present_result(page("Codex Hooks", lines, { source = return_forms.hooks }))
+      present_result(page(title .. " Hooks", lines, { source = return_form(by_name.hooks) }))
     end)
   end)
 end
 
 local function show_diff()
   local cwd = config.cwd()
-  local lines = { "# Codex Diff", "" }
+  local title = provider_title()
+  local lines = { "# " .. title .. " Diff", "" }
   local status = vim.fn.systemlist({ "git", "-C", cwd, "status", "--short", "--untracked-files=all" })
   if vim.v.shell_error == 0 and #status > 0 then
     table.insert(lines, "## Status")
@@ -1123,7 +1230,7 @@ local function show_diff()
     table.insert(lines, "## Diff")
     vim.list_extend(lines, diff)
   end
-  return page("Codex Diff", lines, { source = return_forms.diff })
+  return page(title .. " Diff", lines, { source = return_form(by_name.diff) })
 end
 
 local function show_debug_config(actions)
@@ -1134,8 +1241,9 @@ local function show_debug_config(actions)
         return
       end
       local result_table = as_table(result)
+      local title = provider_title()
       local lines = {
-        "# Codex Debug Config",
+        "# " .. title .. " Debug Config",
         "",
         "config:",
         vim.inspect(as_table(result_table.config)),
@@ -1152,7 +1260,7 @@ local function show_debug_config(actions)
           table.insert(lines, "requirements:")
           table.insert(lines, vim.inspect(as_table(req_result)))
         end
-        present_result(page("Codex Debug Config", lines, { source = return_forms["debug-config"] }))
+        present_result(page(title .. " Debug Config", lines, { source = return_form(by_name["debug-config"]) }))
       end)
     end)
   end)
@@ -1171,7 +1279,7 @@ local function start_compact(actions, thread_id)
         )
         return
       end
-      present_result(notify_result("Codex compaction started"))
+      present_result(notify_result(provider_title() .. " compaction started"))
     end)
   end)
 end
@@ -1195,7 +1303,7 @@ local function start_review(actions, thread_id)
           state.add_turn(id, turn)
           require("codex.buffers").schedule_render(id)
         end
-        present_result(notify_result("Codex review started"))
+        present_result(notify_result(provider_title() .. " review started"))
       end
     )
   end)
@@ -1246,11 +1354,11 @@ local function open_goal(args, actions, thread_id)
         end
         local goal = as_table_or_nil(field(result, "goal"))
         if not goal then
-          present_result(notify_result("no active Codex goal"))
+          present_result(notify_result("no active " .. provider_title() .. " goal"))
           return
         end
-        present_result(page("Codex Goal", {
-          "# Codex Goal",
+        present_result(page(provider_title() .. " Goal", {
+          "# " .. provider_title() .. " Goal",
           "",
           "status: " .. tostring(goal.status),
           "tokens: " .. tostring(goal.tokensUsed) .. "/" .. tostring(goal.tokenBudget or "unlimited"),
@@ -1268,7 +1376,7 @@ local function open_goal(args, actions, thread_id)
           )
           return
         end
-        present_result(notify_result("Codex goal cleared"))
+        present_result(notify_result(provider_title() .. " goal cleared"))
       end)
       return
     end
@@ -1280,7 +1388,7 @@ local function open_goal(args, actions, thread_id)
           )
           return
         end
-        present_result(notify_result("Codex goal " .. (raw == "pause" and "paused" or "resumed")))
+        present_result(notify_result(provider_title() .. " goal " .. (raw == "pause" and "paused" or "resumed")))
       end)
       return
     end
@@ -1293,7 +1401,7 @@ local function open_goal(args, actions, thread_id)
         present_result(notify_result("thread/goal/set failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
         return
       end
-      present_result(notify_result("Codex goal set"))
+      present_result(notify_result(provider_title() .. " goal set"))
     end)
   end)
 end
@@ -1317,7 +1425,7 @@ local function open_memories(args, actions, thread_id)
           )
           return
         end
-        present_result(notify_result("Codex memory mode set to " .. mode))
+        present_result(notify_result(provider_title() .. " memory mode set to " .. mode))
       end)
     end)
   end
@@ -1330,7 +1438,7 @@ local function open_memories(args, actions, thread_id)
     return
   end
   return select_result({
-    title = "Codex memories",
+    title = provider_title() .. " memories",
     items = choices,
     on_select = function(choice)
       apply(choice.value)
@@ -1355,8 +1463,8 @@ local function open_skills(actions)
         return tostring(a.name) < tostring(b.name)
       end)
       present_result(select_result({
-        title = "Codex skill",
-        empty_message = "no Codex skills available",
+        title = provider_title() .. " skill",
+        empty_message = "no " .. provider_title() .. " skills available",
         items = skills,
         format_item = function(skill)
           local description = text_or_nil(skill.shortDescription)
@@ -1377,7 +1485,7 @@ local function copy_latest_output(thread_id)
   end
   local thread = state.get_thread(id)
   if not thread then
-    return notify_result("no active Codex thread", vim.log.levels.WARN)
+    return notify_result("no active " .. provider_title() .. " thread", vim.log.levels.WARN)
   end
   local item_order = as_table(thread.item_order)
   for index = #item_order, 1, -1 do
@@ -1391,11 +1499,11 @@ local function copy_latest_output(thread_id)
       if output then
         vim.fn.setreg("+", output)
         vim.fn.setreg('"', output)
-        return notify_result("latest Codex output copied")
+        return notify_result("latest " .. provider_title() .. " output copied")
       end
     end
   end
-  return notify_result("no completed Codex output to copy", vim.log.levels.WARN)
+  return notify_result("no completed " .. provider_title() .. " output to copy", vim.log.levels.WARN)
 end
 
 local function raw_toggle()
@@ -1411,7 +1519,7 @@ local function logout(actions)
         present_result(notify_result("account/logout failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
         return
       end
-      present_result(notify_result("Codex account logged out"))
+      present_result(notify_result(provider_title() .. " account logged out"))
     end)
   end)
 end
@@ -1419,7 +1527,11 @@ end
 local function not_supported(name, detail)
   return function()
     return notify_result(
-      ("/%s is a Codex CLI command; %s"):format(name, detail or "codex.nvim does not implement this page yet"),
+      ("/%s is not implemented for the %s provider; %s"):format(
+        name,
+        provider_title(),
+        detail or "codex.nvim does not implement this page yet"
+      ),
       vim.log.levels.WARN
     )
   end
@@ -1562,13 +1674,14 @@ end
 function M.items(prefix)
   prefix = tostring(prefix or "")
   local items = {}
-  for _, command in ipairs(commands) do
+  for _, command in ipairs(active_commands()) do
     local label = "/" .. command.name
+    local detail = command_detail(command)
     table.insert(items, {
       label = label,
       insertText = label,
-      detail = command.detail,
-      filterText = label .. " " .. command.category .. " " .. command.detail,
+      detail = detail,
+      filterText = label .. " " .. command.category .. " " .. detail,
       data = {
         source = "codex.nvim.slash",
         command = command.name,
@@ -1607,21 +1720,25 @@ function M.dispatch(text, thread_id, actions)
   end
   local command = by_name[parsed.name]
   if not command then
-    notify("unknown Codex slash command: /" .. parsed.name, vim.log.levels.WARN)
+    notify("unknown " .. provider_title() .. " slash command: /" .. parsed.name, vim.log.levels.WARN)
+    return true
+  end
+  if not command_supported(command) then
+    notify(("/%s is unavailable for the %s provider"):format(parsed.name, provider_title()), vim.log.levels.WARN)
     return true
   end
   local handler = handlers[parsed.name] or handlers[command.name]
   if handler then
     present_result(handler(parsed.args, actions or {}, thread_id, parsed))
   else
-    notify("unsupported Codex slash command: /" .. parsed.name, vim.log.levels.WARN)
+    notify("unsupported " .. provider_title() .. " slash command: /" .. parsed.name, vim.log.levels.WARN)
   end
   return true
 end
 
 function M.command_names()
   local names = {}
-  for _, command in ipairs(commands) do
+  for _, command in ipairs(active_commands()) do
     table.insert(names, command.name)
   end
   table.sort(names)

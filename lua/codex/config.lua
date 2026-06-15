@@ -1,10 +1,34 @@
 local M = {}
 
 local defaults = {
+  provider = "codex",
   app_server = {
     command = { "codex", "app-server", "--listen", "stdio://" },
     initialize_timeout_ms = 10000,
     sanitize_malloc_env = true,
+  },
+  providers = {
+    codex = {},
+    pi = {
+      command = { "pi", "--mode", "rpc" },
+      config_dir = nil,
+      session_dir = nil,
+      provider = nil,
+      model = nil,
+      thinking = nil,
+      no_session = false,
+      no_extensions = nil,
+      no_skills = nil,
+      no_context_files = nil,
+      offline = nil,
+      tools = nil,
+      exclude_tools = nil,
+      extra_args = {},
+      edit_bridge = {
+        enabled = true,
+        timeout_sec = 600,
+      },
+    },
   },
   thread = {
     model = nil,
@@ -141,6 +165,14 @@ end
 
 function M.get()
   return options
+end
+
+function M.provider_id()
+  local provider = options.provider
+  if type(provider) ~= "string" or provider == "" then
+    return "codex"
+  end
+  return provider
 end
 
 function M.edit_mode()

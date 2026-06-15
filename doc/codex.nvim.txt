@@ -1,4 +1,4 @@
-*codex.nvim.txt*        Neovim client for Codex app-server
+*codex.nvim.txt*        Neovim client for coding-agent providers
 
 ==============================================================================
 CONTENTS                                                        *codex.nvim*
@@ -17,8 +17,10 @@ CONTENTS                                                        *codex.nvim*
 ==============================================================================
 OVERVIEW                                               *codex.nvim-overview*
 
-codex.nvim runs `codex app-server --listen stdio://` and presents Codex
-threads as Neovim buffers. A thread buffer is named:
+codex.nvim runs a coding-agent provider and presents provider threads as
+Neovim buffers. Codex is the default provider and uses
+`codex app-server --listen stdio://`; Pi can be selected with `provider = "pi"`
+and uses `pi --mode rpc`. A thread buffer is named:
 >
   codex://thread/<thread-id>
 <
@@ -33,7 +35,7 @@ grows with wrapped input up to the configured maximum height, then scrolls
 internally. It intentionally does not use a `codex://` buffer name so
 path-oriented completion sources keep a normal editing context. Reasoning,
 tools, patches, plans, and agent timeline items are rendered as extmark
-placeholder blocks. Unknown app-server events are retained as raw event blocks
+placeholder blocks. Unknown provider events are retained as raw event blocks
 and can be shown for debugging.
 
 When a thread is opened from another buffer, codex.nvim tracks that source
@@ -55,10 +57,34 @@ Minimal setup:
 Default options:
 >
   require("codex").setup({
+    provider = "codex", -- "codex" or "pi"
     app_server = {
       command = { "codex", "app-server", "--listen", "stdio://" },
       initialize_timeout_ms = 10000,
       sanitize_malloc_env = true,
+    },
+    providers = {
+      codex = {},
+      pi = {
+        command = { "pi", "--mode", "rpc" },
+        config_dir = nil,
+        session_dir = nil,
+        provider = nil,
+        model = nil,
+        thinking = nil,
+        no_session = false,
+        no_extensions = nil,
+        no_skills = nil,
+        no_context_files = nil,
+        offline = nil,
+        tools = nil,
+        exclude_tools = nil,
+        extra_args = {},
+        edit_bridge = {
+          enabled = true,
+          timeout_sec = 600,
+        },
+      },
     },
     thread = {
       model = nil,
@@ -138,6 +164,35 @@ On macOS, `app_server.sanitize_malloc_env` removes inherited
 malloc runtime messages from parent GUI environments; set it to `false` if you
 intentionally need those variables while debugging Codex.
 
+To use Pi instead of Codex:
+>
+  require("codex").setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        command = { "pi", "--mode", "rpc" },
+        -- Optional isolation. Omit these to use Pi's normal ~/.pi/agent state.
+        config_dir = nil,
+        session_dir = nil,
+        edit_bridge = {
+          enabled = true,
+          timeout_sec = 600,
+        },
+      },
+    },
+  })
+<
+
+The Pi provider adapts Pi RPC sessions into codex.nvim threads, maps prompts to
+Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
+commands, and normalizes Pi streaming, thinking, and tool events into the same
+renderer blocks used by Codex. In pair edit mode, `edit_bridge.enabled`
+dynamically injects a temporary Pi extension into only the Pi process started
+by codex.nvim. That extension overrides Pi's built-in `edit` and `write` tools,
+turns them into Neovim-reviewed file-change proposals, and then lets the
+existing in-buffer patch review write accepted hunks. It does not install or
+modify user Pi extensions or settings.
+
 ==============================================================================
 COMMANDS                                               *codex.nvim-commands*
 
@@ -160,16 +215,16 @@ COMMANDS                                               *codex.nvim-commands*
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
-`:Codex status` reports app-server state, active/current thread ids, pending
+`:Codex status` reports provider process state, active/current thread ids, pending
 request counts, and the current thread generation/status.
 
-`:Codex attach` reruns the configured Codex buffer attach hook for the current
-thread buffer. `:Codex attach all` reruns it for every loaded Codex thread
+`:Codex attach` reruns the configured buffer attach hook for the current
+thread buffer. `:Codex attach all` reruns it for every loaded provider thread
 buffer. Configure `buffer.on_attach = function(bufnr, payload) ... end` or
 `require("codex").on("buffer_attached", cb)` to attach editor-local helpers
 such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
-Command-line completion covers subcommands, `attach all`, loaded Codex buffer
+Command-line completion covers subcommands, `attach all`, loaded chat buffer
 numbers, and loaded thread ids for `open`/`resume`.
 
 `:Codex add-buffer` appends the current source buffer path to the active chat
@@ -184,11 +239,10 @@ Run:
   :checkhealth codex
 <
 
-The health provider checks the Neovim version, `codex` executable,
-app-server stdio support, app-server command shape, the Codex apply_patch
-runtime used by pair-mode hook validation, optional picker and completion
-integrations, and dynamic tool registration. `:Codex health` performs the
-runtime app-server initialization check.
+The health provider checks the Neovim version, active provider executable and
+protocol support, the Codex apply_patch runtime when the Codex provider is
+active in pair mode, optional picker and completion integrations, and dynamic
+tool registration. `:Codex health` performs runtime provider initialization.
 
 ==============================================================================
 PROMPT TOKENS                                    *codex.nvim-prompt-tokens*
@@ -215,22 +269,26 @@ The blink source and parser recognize these prompt token families:
   @path/to/file
 <
 
-`$skill:<name>` candidates come from Codex app-server `skills/list`. `/...`
-candidates are CLI-style slash commands such as `/model`, `/permissions`,
-`/mcp`, and `/status`. Slash commands are handled by codex.nvim before
+`$skill:<name>` candidates come from the active provider's skill catalog where
+supported. `/...`
+candidates are active-provider CLI-style slash commands such as `/model` and
+`/status`. Slash commands are handled by codex.nvim before
 `turn/start`, so they are not sent to the model as tool-call-like prompt text.
 Accepting a slash completion removes the typed prefix and opens that command's
 page or picker instead of inserting text. Each slash command declares a return
 form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter
-for Neovim rendering. Settings commands such as `/model`, `/fast`,
+for Neovim rendering. Slash completions and `/help` are filtered by the active
+provider, so Codex app-server-only pages such as `/permissions`, `/sandbox`,
+`/goal`, or `/experimental` do not appear when the Pi provider is active.
+Settings commands such as `/model`, `/fast`,
 `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental`
-open Neovim pickers backed by Codex app-server catalog responses where
-available and update the active thread where app-server supports it. `/model`
-also offers the selected model's advertised thinking-effort choices when
-app-server returns them.
+open Neovim pickers backed by provider catalog responses where available and
+update the active thread where the provider supports it. `/model` also offers
+the selected model's advertised thinking-effort choices when the provider
+returns them.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
-Codex inputs before the turn is sent. Argument providers use
+provider inputs before the turn is sent. Argument providers use
 `@provider:input`; paths with spaces can wrap the path in backticks:
 >
   @file:`path with spaces.lua`
@@ -266,7 +324,8 @@ aliases, but new completions use `@`.
 ==============================================================================
 PATCH REVIEW                                      *codex.nvim-patch-review*
 
-Codex app-server file-change approvals are normalized into a patch proposal.
+Codex provider app-server file-change approvals are normalized into a patch
+proposal.
 The review window supports:
 >
   a     accept
@@ -325,6 +384,14 @@ context, including rejection reasons and any diff between Codex's proposal and
 the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool
 implementation remains for compatibility and internal tests, but it is no
 longer exposed by default in pair mode.
+
+For the Pi provider, pair mode uses a process-local extension override instead
+of Pi's global extension configuration. codex.nvim appends `--extension
+<tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and
+timeout through environment variables. The override computes the proposed
+`edit`/`write` file content, opens the same in-buffer `patch_session` review
+used by `nvim.apply_patch`, and reports the accepted or rejected result back to
+Pi as the tool result.
 
 `edit.mode = "yolo"` tells Codex to use the native `apply_patch` tool directly
 without the Neovim PreToolUse review hook. Calls to `nvim.apply_patch` are
@@ -425,7 +492,7 @@ codex.nvim emits User autocmds for editor integrations:
 >
   CodexBufferAttached
 <
-    Fired after the Codex buffer attach hook point runs for a transcript or
+    Fired after the buffer attach hook point runs for a transcript or
     composer buffer. `event.data` includes `bufnr`, `thread_id`, `thread`, and
     `is_composer`.
 >
@@ -502,7 +569,7 @@ attach_buffer({bufnr})~
 
                                                         *codex.attach_all_buffers()*
 attach_all_buffers()~
-    Rerun Codex buffer attach hooks for every loaded Codex thread buffer.
+    Rerun buffer attach hooks for every loaded provider thread buffer.
 
                                                         *codex.add_current_buffer()*
 add_current_buffer()~

@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local providers = require("codex.providers")
 
 local M = {}
 
@@ -46,6 +47,24 @@ local function app_server_supported(executable_name)
   return help:match("app%-server") ~= nil and help:match("%-%-listen") ~= nil, help
 end
 
+local health_api = {
+  ok = function(message)
+    vim.health.ok(message)
+  end,
+  warn = function(message)
+    vim.health.warn(message)
+  end,
+  error = function(message)
+    vim.health.error(message)
+  end,
+  info = function(message)
+    vim.health.info(message)
+  end,
+  command_label = command_label,
+  system_text = system_text,
+  app_server_supported = app_server_supported,
+}
+
 local function has_module(name)
   local ok = pcall(require, name)
   return ok
@@ -61,33 +80,15 @@ function M.check()
   end
 
   local opts = config.get()
-  local app_command = opts.app_server and opts.app_server.command
-  local app_executable = executable(app_command)
-  if app_executable and vim.fn.executable(app_executable) == 1 then
-    local version, err = system_text({ app_executable, "--version" })
-    vim.health.ok(("Codex executable found: %s"):format(app_executable))
-    if version and version ~= "" then
-      vim.health.info(version)
-    elseif err and err ~= "" then
-      vim.health.warn(("Could not read Codex version: %s"):format(vim.trim(err)))
-    end
-    local supported, support_err = app_server_supported(app_executable)
-    if supported then
-      vim.health.ok("Codex executable supports app-server stdio mode")
-    else
-      vim.health.error(
-        ("Codex executable does not appear to support app-server stdio mode: %s"):format(vim.trim(support_err or ""))
-      )
-    end
+  local provider = providers.current()
+  if type(provider.health) == "function" then
+    provider.health(opts, health_api)
   else
-    vim.health.error(("Codex executable is not available: %s"):format(app_executable or command_label(app_command)))
+    vim.health.info("active provider: " .. providers.current_id())
   end
 
-  if type(app_command) == "table" and vim.tbl_contains(app_command, "app-server") then
-    vim.health.ok(("App-server command configured: %s"):format(command_label(app_command)))
-  else
-    vim.health.warn(("App-server command does not visibly include app-server: %s"):format(command_label(app_command)))
-  end
+  local app_executable = type(provider.executable) == "function" and provider.executable(opts)
+    or executable(opts.app_server and opts.app_server.command)
 
   local native_pair_hook_enabled = config.edit_mode() == "pair"
     and opts.edit
@@ -138,5 +139,6 @@ end
 M._command_label = command_label
 M._executable = executable
 M._app_server_supported = app_server_supported
+M._system_text = system_text
 
 return M

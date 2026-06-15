@@ -1,4 +1,5 @@
 local config = require("codex.config")
+local providers = require("codex.providers")
 local util = require("codex.util")
 
 local M = {}
@@ -61,31 +62,47 @@ local function dispatch(message)
   if type(message) ~= "table" then
     return
   end
-  if message.id ~= nil and (message.result ~= nil or message.error ~= nil) then
-    local key = tostring(message.id)
+  local provider = providers.current()
+  if type(provider.handle_raw_message) == "function" and provider.handle_raw_message(message, M) then
+    return
+  end
+  local response = type(provider.decode_response) == "function" and provider.decode_response(message) or nil
+  if response then
+    local key = tostring(response.id)
     local pending = M.pending[key]
     M.pending[key] = nil
     if pending then
       schedule(function()
-        pending.callback(message.error, message.result)
+        pending.callback(response.error, response.result)
       end)
     end
     return
   end
 
-  if message.method and message.id ~= nil then
-    if M.handlers.server_request then
+  local decoded = type(provider.decode_notification) == "function" and provider.decode_notification(message) or nil
+  local function dispatch_decoded(entry)
+    if type(entry) ~= "table" then
+      return
+    end
+    if entry.kind == "server_request" and M.handlers.server_request then
       schedule(function()
-        M.handlers.server_request(message)
+        M.handlers.server_request(entry.message)
+      end)
+    elseif entry.kind == "notification" and M.handlers.notification then
+      schedule(function()
+        M.handlers.notification(entry.message)
       end)
     end
-    return
   end
 
-  if message.method and M.handlers.notification then
-    schedule(function()
-      M.handlers.notification(message)
-    end)
+  if decoded then
+    if vim.islist(decoded) then
+      for _, entry in ipairs(decoded) do
+        dispatch_decoded(entry)
+      end
+    else
+      dispatch_decoded(decoded)
+    end
   end
 end
 
@@ -95,7 +112,10 @@ local function handle_line(line)
   end
   local ok, message = pcall(decode, line)
   if not ok then
-    util.notify("failed to decode app-server message: " .. tostring(message), vim.log.levels.ERROR)
+    util.notify(
+      "failed to decode " .. providers.title() .. " provider message: " .. tostring(message),
+      vim.log.levels.ERROR
+    )
     return
   end
   dispatch(message)
@@ -206,20 +226,26 @@ function M.start(callback)
   end
 
   local opts = config.get()
-  local command = opts.app_server.command
+  local provider = providers.current()
+  local command = provider.command and provider.command(opts) or opts.app_server.command
   M.stdout_tail = ""
   M.stderr_tail = ""
   M.initialized = false
   local env = sanitize_malloc_env_enabled(opts) and app_server_env() or {}
+  if type(provider.env) == "function" then
+    env = provider.env(opts, env) or env
+  end
   local hook_err
-  command, env, hook_err = require("codex.native_apply_patch_hook").prepare_app_server(command, env)
-  if not command then
-    if callback then
-      callback({ message = hook_err }, nil)
-    else
-      util.notify(hook_err, vim.log.levels.ERROR)
+  if type(provider.prepare_command) == "function" then
+    command, env, hook_err = provider.prepare_command(command, env)
+    if not command then
+      if callback then
+        callback({ message = hook_err }, nil)
+      else
+        util.notify(hook_err, vim.log.levels.ERROR)
+      end
+      return
     end
-    return
   end
 
   local job_opts = {
@@ -243,11 +269,11 @@ function M.start(callback)
         local expected = expected_exit(code, stopping)
         if not expected then
           for _, entry in pairs(pending) do
-            entry.callback({ code = code, message = "codex app-server exited" }, nil)
+            entry.callback({ code = code, message = providers.title() .. " provider exited" }, nil)
           end
         end
         if code ~= 0 and not expected then
-          util.notify("codex app-server exited with code " .. tostring(code), vim.log.levels.ERROR)
+          util.notify(providers.title() .. " provider exited with code " .. tostring(code), vim.log.levels.ERROR)
         end
       end)
     end,
@@ -263,7 +289,7 @@ function M.start(callback)
   M.job_id = vim.fn.jobstart(command, job_opts)
 
   if M.job_id <= 0 then
-    local err = "failed to start codex app-server"
+    local err = "failed to start " .. providers.title() .. " provider"
     M.job_id = nil
     if callback then
       callback({ message = err }, nil)
@@ -273,46 +299,25 @@ function M.start(callback)
     return
   end
 
-  M.request("initialize", {
-    clientInfo = {
-      name = "codex.nvim",
-      title = "Codex.nvim",
-      version = "0.1.0",
-    },
-    capabilities = {
-      experimentalApi = true,
-    },
-  }, function(err, result)
+  provider.initialize(M, function(err, result)
     if err then
       if callback then
         callback(err, nil)
       else
-        util.notify("codex initialize failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+        util.notify(
+          providers.title() .. " provider initialize failed: " .. tostring(err.message or err),
+          vim.log.levels.ERROR
+        )
       end
       return
     end
     if M.stopping or not M.is_running() then
       return
     end
-    register_native_hook_trust(function(trust_err)
-      if trust_err then
-        M.stop()
-        if callback then
-          callback(trust_err, nil)
-        else
-          util.notify(trust_err.message or trust_err, vim.log.levels.ERROR)
-        end
-        return
-      end
-      if M.stopping or not M.is_running() then
-        return
-      end
-      M.initialized = true
-      M.notify("initialized", {})
-      if callback then
-        callback(nil, result or true)
-      end
-    end)
+    M.initialized = true
+    if callback then
+      callback(nil, result or true)
+    end
   end)
 end
 
@@ -328,12 +333,12 @@ end
 
 function M.send(message)
   if not M.is_running() then
-    error("codex app-server is not running")
+    error(providers.title() .. " provider is not running")
   end
   vim.fn.chansend(M.job_id, encode(message) .. "\n")
 end
 
-function M.request(method, params, callback)
+function M._request_message(method, params, callback)
   callback = callback or function() end
   local id = M.next_id
   M.next_id = M.next_id + 1
@@ -341,13 +346,8 @@ function M.request(method, params, callback)
     method = method,
     callback = callback,
   }
-  local message = {
-    id = id,
-    method = method,
-  }
-  if params ~= nil then
-    message.params = params
-  end
+  local provider = providers.current()
+  local message = provider.request_message(method, params, id)
   local ok, err = pcall(M.send, message)
   if not ok then
     M.pending[tostring(id)] = nil
@@ -356,19 +356,26 @@ function M.request(method, params, callback)
   return id
 end
 
+function M.request(method, params, callback)
+  local provider = providers.current()
+  if type(provider.custom_request) == "function" then
+    local handled, id = provider.custom_request(M, method, params, callback or function() end)
+    if handled then
+      return id
+    end
+  end
+  return M._request_message(method, params, callback)
+end
+
 function M.notify(method, params)
   if M.stopping or not M.is_running() then
     return false
   end
-  local message = {
-    method = method,
-  }
-  if params ~= nil then
-    message.params = params
-  end
+  local provider = providers.current()
+  local message = provider.notify_message(method, params)
   local ok, err = pcall(M.send, message)
   if not ok and not M.stopping and not expected_send_failure(err) then
-    util.notify("codex app-server notify failed: " .. tostring(err), vim.log.levels.ERROR)
+    util.notify(providers.title() .. " provider notify failed: " .. tostring(err), vim.log.levels.ERROR)
   end
   return ok
 end
@@ -391,5 +398,6 @@ end
 M._app_server_env = app_server_env
 M._sanitize_malloc_env_enabled = sanitize_malloc_env_enabled
 M._register_native_hook_trust = register_native_hook_trust
+M._dispatch = dispatch
 
 return M

@@ -6,6 +6,7 @@ local context = require("codex.context")
 local core = require("codex.core")
 local hooks = require("codex.hooks")
 local parser = require("codex.parser")
+local providers = require("codex.providers")
 local rpc = require("codex.rpc")
 local state = require("codex.state")
 local util = require("codex.util")
@@ -49,7 +50,7 @@ local function ensure_server(callback)
   setup_once()
   rpc.start(function(err, result)
     if err then
-      util.notify("codex app-server failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+      util.notify(providers.title() .. " provider failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
       return
     end
     callback(result)
@@ -57,6 +58,13 @@ local function ensure_server(callback)
 end
 
 local function edit_tool_instruction()
+  if not providers.is("codex") then
+    return table.concat({
+      "codex.nvim is connected through the " .. providers.title() .. " provider.",
+      "Use the tools exposed by that provider runtime for workspace inspection and edits.",
+      "codex.nvim will render provider events through its normalized thread, turn, message, and tool abstractions.",
+    }, " ")
+  end
   local mode = config.edit_mode()
   if mode == "yolo" then
     return table.concat({
@@ -278,7 +286,7 @@ function M.submit_text(text, thread_id, opts)
         settings = settings,
       }
       thread.generation = "submitted"
-      thread.status_message = "Codex is thinking..."
+      thread.status_message = providers.agent_label() .. " is thinking..."
       buffers.schedule_render(thread_id)
     end
     rpc.request("turn/start", params, function(err, result)
@@ -341,7 +349,7 @@ function M.stop()
   local thread_id = buffers.get_thread_id() or state.active_thread_id
   local thread = state.get_thread(thread_id)
   if not thread or not thread.active_turn_id then
-    return util.notify("no running Codex turn", vim.log.levels.WARN)
+    return util.notify("no running " .. providers.title() .. " turn", vim.log.levels.WARN)
   end
   rpc.request("turn/interrupt", { threadId = thread_id, turnId = thread.active_turn_id }, function(err)
     if err then
@@ -385,7 +393,7 @@ end
 
 function M.health()
   ensure_server(function()
-    util.notify("codex app-server is running")
+    util.notify(providers.title() .. " provider is running")
   end)
 end
 
@@ -395,6 +403,8 @@ function M.status()
   local active_thread = state.get_thread(state.active_thread_id)
   local thread = current_thread or active_thread
   return {
+    provider = providers.current_id(),
+    provider_title = providers.title(),
     server_running = rpc.is_running(),
     server_initialized = rpc.initialized,
     pending_rpc_requests = count(rpc.pending),
@@ -417,6 +427,7 @@ end
 function M.show_status()
   local status = M.status()
   local lines = {
+    "provider: " .. tostring(status.provider),
     "server: " .. (status.server_running and "running" or "stopped"),
     "initialized: " .. tostring(status.server_initialized),
     "pending rpc: " .. tostring(status.pending_rpc_requests),

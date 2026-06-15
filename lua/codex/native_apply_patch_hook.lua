@@ -26,7 +26,9 @@ end
 
 local function enabled()
   local opts = edit_opts()
-  return config.edit_mode() == "pair" and opts.enabled ~= false
+  local ok, providers = pcall(require, "codex.providers")
+  local provider_is_codex = not ok or providers.is("codex")
+  return provider_is_codex and config.edit_mode() == "pair" and opts.enabled ~= false
 end
 
 local function toml_quote(value)

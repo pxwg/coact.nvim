@@ -1,6 +1,7 @@
 local buffers = require("codex.buffers")
 local config = require("codex.config")
 local hooks = require("codex.hooks")
+local providers = require("codex.providers")
 local state = require("codex.state")
 local util = require("codex.util")
 
@@ -283,6 +284,10 @@ local function set_generation(thread, generation, message)
   end
 end
 
+local function agent_label()
+  return providers.agent_label()
+end
+
 local function handle_item(params, completed)
   local item = state.upsert_item(params.threadId, params.turnId, params.item)
   if completed then
@@ -299,11 +304,11 @@ local function handle_item(params, completed)
       or item.type == "imageGeneration"
       or item.type == "collabAgentToolCall"
     then
-      set_generation(thread, "tool_running", "Codex is using tools...")
+      set_generation(thread, "tool_running", agent_label() .. " is using tools...")
     elseif item.type == "reasoning" then
-      set_generation(thread, "streaming", "Codex is reasoning...")
+      set_generation(thread, "streaming", agent_label() .. " is reasoning...")
     elseif item.type == "agentMessage" then
-      set_generation(thread, "streaming", "Codex is responding...")
+      set_generation(thread, "streaming", agent_label() .. " is responding...")
     end
   end
   schedule(params.threadId)
@@ -413,7 +418,7 @@ handlers["turn/started"] = function(params)
     thread.pending_request.turn_id = params.turn.id
     state.set_turn_settings(params.threadId, params.turn.id, thread.pending_request.settings)
   end
-  set_generation(thread, "submitted", "Codex is thinking...")
+  set_generation(thread, "submitted", agent_label() .. " is thinking...")
   schedule(params.threadId)
 end
 
@@ -475,7 +480,7 @@ end
 handlers["item/agentMessage/delta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "agentMessage")
   append_field(item, "text", params.delta)
-  set_generation(state.get_thread(params.threadId), "streaming", "Codex is responding...")
+  set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is responding...")
   schedule(params.threadId)
 end
 
@@ -484,7 +489,7 @@ handlers["item/reasoning/textDelta"] = function(params)
   item.content = item.content or {}
   local index = (tonumber(util.value(params.contentIndex)) or 0) + 1
   item.content[index] = text_value(item.content[index]) .. text_value(params.delta)
-  set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
+  set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
   schedule(params.threadId)
 end
 
@@ -492,7 +497,7 @@ handlers["item/reasoning/summaryTextDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
   item.summary[1] = text_value(item.summary[1]) .. text_value(params.delta)
-  set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
+  set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
   schedule(params.threadId)
 end
 
@@ -500,21 +505,21 @@ handlers["item/reasoning/summaryPartAdded"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
   table.insert(item.summary, text_value(params.text))
-  set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
+  set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
   schedule(params.threadId)
 end
 
 handlers["item/plan/delta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "plan")
   append_field(item, "text", params.delta)
-  set_generation(state.get_thread(params.threadId), "streaming", "Codex is planning...")
+  set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is planning...")
   schedule(params.threadId)
 end
 
 handlers["item/commandExecution/outputDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
   append_output_field(item, "aggregatedOutput", params.delta)
-  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is running a command...")
+  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is running a command...")
   schedule(params.threadId)
 end
 
@@ -524,7 +529,7 @@ handlers["command/exec/outputDelta"] = function(params)
     block.output = text_value(block.output) .. decode_output_delta(params)
     block.state = util.value(params.capReached) and "truncated" or "running"
     block.raw = params
-    set_generation(thread, "tool_running", "Codex is streaming command output...")
+    set_generation(thread, "tool_running", agent_label() .. " is streaming command output...")
     schedule(thread.id)
   end
 end
@@ -535,7 +540,7 @@ handlers["process/outputDelta"] = function(params)
     block.output = text_value(block.output) .. decode_output_delta(params)
     block.state = util.value(params.capReached) and "truncated" or "running"
     block.raw = params
-    set_generation(thread, "tool_running", "Codex is streaming process output...")
+    set_generation(thread, "tool_running", agent_label() .. " is streaming process output...")
     schedule(thread.id)
   end
 end
@@ -560,28 +565,32 @@ end
 handlers["item/commandExecution/terminalInteraction"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
   item.terminal_interaction = params
-  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is waiting for terminal interaction...")
+  set_generation(
+    state.get_thread(params.threadId),
+    "tool_running",
+    agent_label() .. " is waiting for terminal interaction..."
+  )
   schedule(params.threadId)
 end
 
 handlers["item/fileChange/outputDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "fileChange")
   append_field(item, "output", params.delta)
-  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is preparing edits...")
+  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is preparing edits...")
   schedule(params.threadId)
 end
 
 handlers["item/fileChange/patchUpdated"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "fileChange")
   item.changes = params.changes or {}
-  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is preparing edits...")
+  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is preparing edits...")
   schedule(params.threadId)
 end
 
 handlers["item/mcpToolCall/progress"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "mcpToolCall")
   item.progress = params
-  set_generation(state.get_thread(params.threadId), "tool_running", "Codex is using an MCP tool...")
+  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is using an MCP tool...")
   schedule(params.threadId)
 end
 
@@ -596,7 +605,7 @@ end
 handlers["turn/diff/updated"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   thread.turn_diff = params
-  set_generation(thread, "tool_running", "Codex is updating the diff...")
+  set_generation(thread, "tool_running", agent_label() .. " is updating the diff...")
   schedule(params.threadId)
 end
 
@@ -613,7 +622,7 @@ end
 handlers["turn/plan/updated"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   thread.turn_plan = params
-  set_generation(thread, "streaming", "Codex is planning...")
+  set_generation(thread, "streaming", agent_label() .. " is planning...")
   schedule(params.threadId)
 end
 
@@ -643,6 +652,71 @@ end
 
 handlers["warning"] = function(params)
   util.notify(params and (params.message or vim.inspect(params)) or "codex warning", vim.log.levels.WARN)
+end
+
+handlers["pi/agent_start"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.active_turn_id = params.turnId or thread.active_turn_id
+  set_generation(thread, "submitted", "Pi is thinking...")
+  schedule(params.threadId)
+end
+
+handlers["pi/agent_end"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  set_generation(thread, "idle", nil)
+  schedule(params.threadId)
+end
+
+handlers["pi/queue_update"] = function(params)
+  local steering = type(params.steering) == "table" and #params.steering or 0
+  local follow_up = type(params.followUp) == "table" and #params.followUp or 0
+  append_timeline(
+    "pi/queue_update",
+    params,
+    "Pi queue updated",
+    "updated",
+    ("steering: %d, follow-up: %d"):format(steering, follow_up)
+  )
+end
+
+handlers["pi/compaction_start"] = function(params)
+  append_timeline(
+    "pi/compaction_start",
+    params,
+    "Pi compaction started",
+    "running",
+    "reason: " .. tostring(params.reason or "unknown")
+  )
+end
+
+handlers["pi/auto_retry_start"] = function(params)
+  append_timeline(
+    "pi/auto_retry_start",
+    params,
+    "Pi retry scheduled",
+    "running",
+    tostring(params.errorMessage or params.error or "retrying")
+  )
+end
+
+handlers["pi/auto_retry_end"] = function(params)
+  append_timeline(
+    "pi/auto_retry_end",
+    params,
+    "Pi retry completed",
+    params.success and "completed" or "error",
+    tostring(params.finalError or params.errorMessage or "")
+  )
+end
+
+handlers["pi/extension_error"] = function(params)
+  append_timeline(
+    "pi/extension_error",
+    params,
+    "Pi extension error",
+    "error",
+    tostring(params.error or "extension error")
+  )
 end
 
 handlers["configWarning"] = handlers["warning"]

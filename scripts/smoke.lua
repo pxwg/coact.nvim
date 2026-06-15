@@ -360,6 +360,294 @@ assert(health._executable("codex app-server") == "codex", "health should resolve
 local app_server_supported, app_server_help = health._app_server_supported("codex")
 assert(app_server_supported, "health should detect codex app-server support: " .. tostring(app_server_help))
 health.check()
+do
+  local state = require("codex.state")
+  local pi_temp = vim.fn.tempname()
+  vim.fn.mkdir(pi_temp, "p")
+  codex.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        config_dir = vim.fs.joinpath(pi_temp, "config"),
+        session_dir = vim.fs.joinpath(pi_temp, "sessions"),
+        offline = true,
+        no_extensions = true,
+        no_skills = true,
+        no_context_files = true,
+        no_session = true,
+      },
+    },
+    thread = {
+      model = "openai/gpt-4o",
+      reasoning_effort = "high",
+    },
+  })
+  local providers = require("codex.providers")
+  assert(providers.current_id() == "pi", "provider selector should switch to pi")
+  assert(not native_hook.enabled(), "Pi provider should not enable the Codex native apply_patch hook")
+  local pi_provider = require("codex.providers.pi")
+  local pi_command = pi_provider.command(require("codex.config").get())
+  assert(vim.tbl_contains(pi_command, "pi"), "Pi provider command should invoke pi")
+  assert(
+    vim.tbl_contains(pi_command, "--mode") and vim.tbl_contains(pi_command, "rpc"),
+    "Pi provider should use RPC mode"
+  )
+  assert(vim.tbl_contains(pi_command, "--offline"), "Pi provider should pass configured offline flag")
+  local pi_bridge = require("codex.providers.pi_edit_bridge")
+  assert(pi_bridge.enabled(), "Pi provider should enable the edit bridge in pair mode by default")
+  local prepared_pi_command, prepared_pi_env, prepared_pi_err = pi_provider.prepare_command(pi_command, {})
+  assert(prepared_pi_command ~= nil, "Pi edit bridge command preparation should succeed: " .. tostring(prepared_pi_err))
+  assert(vim.tbl_contains(prepared_pi_command, "--extension"), "Pi edit bridge should inject a process-local extension")
+  local extension_index
+  for index, part in ipairs(prepared_pi_command) do
+    if part == "--extension" then
+      extension_index = index
+      break
+    end
+  end
+  assert(
+    extension_index and vim.fn.filereadable(prepared_pi_command[extension_index + 1]) == 1,
+    "Pi edit bridge should write a temporary extension file"
+  )
+  assert(
+    prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_ADDR
+      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_NONCE
+      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_NVIM
+      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS,
+    "Pi edit bridge should pass runtime connection details through env vars"
+  )
+  local pi_extension_source = pi_bridge._extension_source()
+  assert(
+    pi_extension_source:match('name: "edit"') and pi_extension_source:match('name: "write"'),
+    "Pi edit bridge extension should override edit and write tools"
+  )
+  local pi_thread = pi_provider._thread_from_state({
+    sessionId = "smoke-session",
+    sessionName = "Smoke Pi",
+    thinkingLevel = "high",
+    model = { provider = "openai", id = "gpt-4o" },
+  })
+  assert(pi_thread.id == "pi:smoke-session", "Pi session state should normalize to a thread id")
+  assert(pi_thread.model == "openai/gpt-4o", "Pi model state should normalize provider/model")
+  local pi_prompt = pi_provider._prompt_from_input({
+    { type = "text", text = "hello" },
+    { type = "skill", name = "smoke" },
+  })
+  assert(pi_prompt:match("hello") and pi_prompt:match("/skill:smoke"), "Pi prompts should flatten Codex inputs")
+  local pi_response = pi_provider.decode_response({
+    id = "req-1",
+    type = "response",
+    command = "get_state",
+    success = false,
+    error = "boom",
+  })
+  assert(pi_response and pi_response.error.message == "boom", "Pi RPC errors should decode as request errors")
+  pi_provider._runtime.current_thread_id = "pi:smoke-session"
+  pi_provider._runtime.active_turn_id = "pi-turn-smoke"
+  local pi_delta = pi_provider.decode_notification({
+    type = "message_update",
+    assistantMessageEvent = {
+      type = "text_delta",
+      contentIndex = 0,
+      delta = "hello from pi",
+    },
+  })
+  assert(
+    pi_delta
+      and pi_delta.message.method == "item/agentMessage/delta"
+      and pi_delta.message.params.itemId == "pi-turn-smoke:assistant:0",
+    "Pi text deltas should normalize to assistant message deltas"
+  )
+  require("codex.core").handle_notification(pi_delta.message)
+  local pi_state_thread = state.get_thread("pi:smoke-session")
+  assert(
+    pi_state_thread
+      and pi_state_thread.items["pi-turn-smoke:assistant:0"]
+      and pi_state_thread.items["pi-turn-smoke:assistant:0"].text == "hello from pi",
+    "Pi normalized deltas should update the shared thread item model"
+  )
+  local pi_tool_start = pi_provider.decode_notification({
+    type = "tool_execution_start",
+    toolCallId = "tool-smoke",
+    toolName = "bash",
+    args = { command = "pwd" },
+  })
+  require("codex.core").handle_notification(pi_tool_start.message)
+  local pi_tool_update = pi_provider.decode_notification({
+    type = "tool_execution_update",
+    toolCallId = "tool-smoke",
+    toolName = "bash",
+    partialResult = { content = { { type = "text", text = "one\ntwo" } } },
+  })
+  require("codex.core").handle_notification(pi_tool_update.message)
+  assert(
+    pi_state_thread.items["tool-smoke"].command == "pwd"
+      and pi_state_thread.items["tool-smoke"].aggregatedOutput:match("one\ntwo"),
+    "Pi bash tool events should normalize to commandExecution items"
+  )
+  local pi_cwd = require("codex.config").cwd()
+  local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")
+  vim.fn.mkdir(pi_session_dir, "p")
+  local pi_old_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-16-54-901Z_pi-old.jsonl")
+  local pi_new_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-47-53-744Z_pi-new.jsonl")
+  local function write_pi_session(path, id, created, prompt, name, model_id)
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "session",
+        version = 3,
+        id = id,
+        timestamp = created,
+        cwd = pi_cwd,
+      }),
+      vim.json.encode({
+        type = "model_change",
+        model = { provider = "openai", id = model_id },
+      }),
+      vim.json.encode({
+        type = "thinking_level_change",
+        level = "high",
+      }),
+      vim.json.encode({
+        type = "message",
+        timestamp = created,
+        message = {
+          role = "user",
+          content = {
+            {
+              type = "text",
+              text = prompt,
+            },
+          },
+        },
+      }),
+      vim.json.encode({
+        type = "session_info",
+        name = name,
+      }),
+    }, path)
+  end
+  write_pi_session(pi_old_session_file, "pi-old", "2026-06-15T16:16:54.901Z", "old pi prompt", "Old Pi", "gpt-4o")
+  write_pi_session(pi_new_session_file, "pi-new", "2026-06-15T16:47:53.744Z", "new pi prompt", "New Pi", "gpt-5")
+  local resolved_pi_session_dir, pi_filters_by_cwd = pi_provider._session_dir_for_cwd(pi_cwd)
+  assert(resolved_pi_session_dir == pi_session_dir, "Pi provider should use configured session_dir for history")
+  assert(pi_filters_by_cwd == true, "custom Pi session_dir should filter sessions by cwd")
+  local local_pi_sessions = pi_provider._list_local_sessions(pi_cwd)
+  assert(#local_pi_sessions == 2, "Pi provider should list local JSONL sessions for the workspace")
+  assert(local_pi_sessions[1].id == "pi:pi-new", "Pi local sessions should be sorted by newest activity")
+  assert(local_pi_sessions[1].sessionFile == pi_new_session_file, "Pi threads should retain the native session file")
+  assert(local_pi_sessions[1].preview:match("new pi prompt"), "Pi thread preview should use the first user message")
+  assert(local_pi_sessions[1].model == "openai/gpt-5", "Pi thread history should retain model metadata")
+  assert(local_pi_sessions[1].reasoningEffort == "high", "Pi thread history should retain thinking metadata")
+  assert(
+    pi_provider._resolve_session_file(pi_cwd, "pi:pi-old") == pi_old_session_file,
+    "Pi thread ids should resolve back to session files"
+  )
+  local pi_list_result = nil
+  local pi_list_calls = {}
+  local pi_list_handled = pi_provider.custom_request(
+    {
+      _request_message = function(method, params, callback)
+        table.insert(pi_list_calls, { method = method, params = params })
+        assert(method == "get_state", "Pi thread/list should only need get_state after local scan")
+        callback(nil, { sessionId = "pi-new" })
+      end,
+    },
+    "thread/list",
+    { cwd = pi_cwd },
+    function(err, result)
+      assert(not err, "Pi thread/list should not fail in smoke")
+      pi_list_result = result
+    end
+  )
+  assert(pi_list_handled, "Pi provider should handle thread/list")
+  assert(
+    #pi_list_calls == 1 and pi_list_calls[1].method == "get_state",
+    "Pi thread/list should query current state once"
+  )
+  assert(
+    pi_list_result and #pi_list_result.data == 2 and pi_list_result.data[1].id == "pi:pi-new",
+    "Pi thread/list should return local history instead of an empty current session"
+  )
+  assert(
+    pi_list_result.data[1].name == "New Pi",
+    "Pi thread/list should not overwrite local history titles with generic current state"
+  )
+  local pi_resume_result = nil
+  local pi_resume_calls = {}
+  local pi_resume_handled = pi_provider.custom_request(
+    {
+      _request_message = function(method, params, callback)
+        table.insert(pi_resume_calls, { method = method, params = params })
+        if method == "switch_session" then
+          callback(nil, {})
+        elseif method == "get_state" then
+          callback(nil, {
+            sessionId = "pi-old",
+            sessionFile = pi_old_session_file,
+            sessionName = "Old Pi",
+            thinkingLevel = "high",
+            model = { provider = "openai", id = "gpt-4o" },
+          })
+        elseif method == "get_messages" then
+          callback(nil, {
+            messages = {
+              {
+                role = "user",
+                content = {
+                  {
+                    type = "text",
+                    text = "old pi prompt",
+                  },
+                },
+              },
+            },
+          })
+        else
+          error("unexpected Pi smoke request: " .. tostring(method))
+        end
+      end,
+    },
+    "thread/resume",
+    { cwd = pi_cwd, threadId = "pi:pi-old" },
+    function(err, result)
+      assert(not err, "Pi thread/resume should not fail in smoke")
+      pi_resume_result = result
+    end
+  )
+  assert(pi_resume_handled, "Pi provider should handle thread/resume")
+  assert(
+    #pi_resume_calls == 3
+      and pi_resume_calls[1].method == "switch_session"
+      and pi_resume_calls[1].params.sessionPath == pi_old_session_file
+      and pi_resume_calls[2].method == "get_state"
+      and pi_resume_calls[3].method == "get_messages",
+    "Pi resume should switch to the selected native session before reading messages"
+  )
+  assert(
+    pi_resume_result
+      and pi_resume_result.thread.id == "pi:pi-old"
+      and pi_resume_result.thread.turns
+      and #pi_resume_result.thread.turns == 1,
+    "Pi resume should return the selected historical thread"
+  )
+  codex.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        edit_bridge = {
+          enabled = false,
+        },
+      },
+    },
+  })
+  assert(not pi_bridge.enabled(), "Pi edit bridge should respect the provider disable switch")
+  local disabled_command = pi_provider.prepare_command({ "pi", "--mode", "rpc" }, {})
+  assert(
+    not vim.tbl_contains(disabled_command, "--extension"),
+    "disabled Pi edit bridge should not inject an extension"
+  )
+  codex.setup()
+end
 
 local parser = require("codex.parser")
 local parsed = parser.parse("hello\n>diagnostics")
@@ -1434,6 +1722,42 @@ assert(
     table.concat(shift_lines, "\n") == "top\nremove me\nmiddle\nnew tail\nbottom",
     "rejecting a line-shifting block should keep later block approvals aligned"
   )
+end)();
+(function()
+  local pi_bridge = require("codex.providers.pi_edit_bridge")
+  local bridge_file = vim.fs.joinpath(session_dir, "pi-bridge.txt")
+  vim.fn.writefile({ "red", "green", "blue" }, bridge_file)
+  local bridge_result = nil
+  pi_bridge.review_payload_async({
+    toolName = "edit",
+    toolCallId = "pi-edit-bridge-smoke",
+    cwd = session_dir,
+    path = "pi-bridge.txt",
+    oldContent = "red\ngreen\nblue\n",
+    newContent = "red\nemerald\nblue\n",
+    kind = "update",
+  }, function(result)
+    bridge_result = result
+  end)
+  local bridge_session = nil
+  vim.wait(1000, function()
+    bridge_session = patch_session._active_session(0)
+    return bridge_session and bridge_session.blocks[1]
+  end, 20)
+  assert(bridge_session and bridge_session.blocks[1], "Pi edit bridge should open an in-buffer patch session")
+  patch_session._accept_block(bridge_session, bridge_session.blocks[1])
+  vim.wait(1000, function()
+    return bridge_result ~= nil
+  end, 20)
+  assert(bridge_result and bridge_result.success, "accepted Pi edit bridge review should report success")
+  assert(
+    table.concat(vim.fn.readfile(bridge_file), "\n") == "red\nemerald\nblue",
+    "accepted Pi edit bridge review should write the accepted file state"
+  )
+  assert(
+    bridge_result.patch and bridge_result.patch:match("pi%-bridge%.txt") and bridge_result.firstChangedLine == 2,
+    "Pi edit bridge result should include patch details for Pi"
+  )
 end)()
 codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = true } })
 local tool_dir = vim.fn.tempname()
@@ -1931,6 +2255,77 @@ assert(
 assert(slash_new_prompt == "start here", "slash /new should call the local thread action")
 assert(slash._sandbox_policy("read-only").type == "readOnly", "slash sandbox helper should map app-server policy")
 
+do
+  local function smoke_pi_slash_provider()
+    codex.setup({ provider = "pi" })
+    local pi_slash_labels = vim.tbl_map(function(item)
+      return item.label
+    end, slash.items(""))
+    assert(
+      vim.tbl_contains(pi_slash_labels, "/model"),
+      "Pi slash completion should include provider-supported model command"
+    )
+    assert(vim.tbl_contains(pi_slash_labels, "/reasoning"), "Pi slash completion should include thinking command")
+    assert(not vim.tbl_contains(pi_slash_labels, "/permissions"), "Pi slash completion should hide Codex permissions")
+    assert(not vim.tbl_contains(pi_slash_labels, "/fast"), "Pi slash completion should hide Codex service tiers")
+    assert(not vim.tbl_contains(pi_slash_labels, "/goal"), "Pi slash completion should hide Codex goals")
+    local pi_copy_item = vim.tbl_filter(function(item)
+      return item.label == "/copy"
+    end, slash.items(""))[1]
+    assert(
+      pi_copy_item and pi_copy_item.detail:match("Pi output"),
+      "Pi slash detail should use the active provider title"
+    )
+    assert(not vim.tbl_contains(slash.command_names(), "permissions"), "Pi command names should be provider-filtered")
+
+    local pi_unavailable_notice = nil
+    util.notify = function(message)
+      pi_unavailable_notice = message
+    end
+    slash.dispatch("/permissions", nil, {})
+    util.notify = original_notify
+    assert(
+      pi_unavailable_notice and pi_unavailable_notice:match("unavailable for the Pi provider"),
+      "Pi dispatch should reject hidden Codex-only slash commands"
+    )
+
+    local pi_reasoning_prompts = {}
+    local pi_reasoning_update = nil
+    vim.ui.select = function(items, opts, callback)
+      table.insert(pi_reasoning_prompts, opts.prompt)
+      for _, item in ipairs(items) do
+        if item.label == "high" then
+          callback(item)
+          return
+        end
+      end
+      callback(nil)
+    end
+    rpc.request = function(method, params, callback)
+      assert(method == "thread/settings/update", "Pi /reasoning should update thread settings only")
+      pi_reasoning_update = params
+      callback(nil, {})
+    end
+    slash.dispatch("/reasoning", "pi-thread-reasoning", {
+      ensure_server = function(callback)
+        callback()
+      end,
+    })
+    rpc.request = original_rpc_request
+    vim.ui.select = original_ui_select
+    assert(
+      vim.deep_equal(pi_reasoning_prompts, { "Pi thinking level" }),
+      "Pi /reasoning should prompt for thinking only"
+    )
+    assert(pi_reasoning_update.threadId == "pi-thread-reasoning", "Pi /reasoning should target the active thread")
+    assert(pi_reasoning_update.effort == "high", "Pi /reasoning should send the selected thinking level")
+    assert(pi_reasoning_update.summary == nil, "Pi /reasoning should not send Codex reasoning summary")
+    codex.setup()
+  end
+
+  smoke_pi_slash_provider()
+end
+
 local original_submit_text = codex.submit_text
 local executed_slash = nil
 local execute_default_new_text = nil
@@ -1968,6 +2363,54 @@ assert(executed_slash == "/model", "accepting slash completion should execute th
 assert(execute_done, "slash completion execute should call blink callback")
 
 assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
+do
+  local pickers = require("codex.pickers")
+  local original_snacks = package.loaded["snacks"]
+  local original_list_threads = codex.list_threads
+  local original_resume = codex.resume
+  local picked_opts = nil
+  local resumed_thread_id = nil
+  codex.setup({ provider = "pi" })
+  codex.list_threads = function(callback)
+    callback({
+      {
+        id = "pi:picker-session",
+        name = "Picker Pi",
+        cwd = "/tmp/pi-picker",
+        model = "openai/gpt-5",
+        modelProvider = "openai",
+        sessionFile = "/tmp/pi-picker/session.jsonl",
+        preview = "first picker prompt",
+      },
+    })
+  end
+  codex.resume = function(thread_id)
+    resumed_thread_id = thread_id
+  end
+  package.loaded["snacks"] = {
+    picker = {
+      pick = function(opts)
+        picked_opts = opts
+        opts.confirm({ close = function() end }, opts.items[1])
+      end,
+    },
+  }
+  pickers.threads()
+  package.loaded["snacks"] = original_snacks
+  codex.list_threads = original_list_threads
+  codex.resume = original_resume
+  codex.setup()
+  assert(picked_opts and picked_opts.title == "Pi Threads", "thread picker title should use the active provider")
+  assert(picked_opts.preview == "preview", "thread picker should use item preview data for Snacks")
+  assert(
+    picked_opts.items[1]
+      and picked_opts.items[1].preview
+      and picked_opts.items[1].preview.text:match("session: /tmp/pi%-picker/session%.jsonl")
+      and picked_opts.items[1].preview.text:match("first picker prompt"),
+    "thread picker items should expose textual previews instead of requiring a file"
+  )
+  assert(resumed_thread_id == "pi:picker-session", "thread picker should resume the selected provider thread")
+end
 
 local rpc = require("codex.rpc")
 vim.env.MallocStackLogging = "0"
