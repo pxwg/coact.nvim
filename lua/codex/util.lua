@@ -2,10 +2,18 @@ local M = {}
 
 local function strip_ansi_text(text)
   text = tostring(text or "")
+  text = text:gsub("\226\144\155", "\27")
+  text = text:gsub("%^%[([0-9;:]*)m", "\27[%1m")
   text = text:gsub("\27%][^\7]*\7", "")
   text = text:gsub("\27%][^\27]*\27\\", "")
   text = text:gsub("\27%[[0-?]*[ -/]*[@-~]", "")
+  text = text:gsub("\27%[[0-?]*[ -/]*$", "")
+  text = text:gsub("\27%][^\7\27]*$", "")
   text = text:gsub("\27[@-_]", "")
+  text = text:gsub("\27\n", "\n")
+  text = text:gsub("\27$", "")
+  text = text:gsub("^%[[0-9;:]*m", "")
+  text = text:gsub("\n%[[0-9;:]*m", "\n")
   return text
 end
 

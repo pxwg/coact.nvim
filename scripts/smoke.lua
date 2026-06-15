@@ -2678,6 +2678,27 @@ assert(
     == "Command blocked by PreToolUse hook: User rejected Codex native apply_patch in Neovim.",
   "command output should hide the rejected native apply_patch command body"
 )
+assert(
+  util.strip_ansi("\226\144\155[2m2026-06-10T13:18:18Z\226\144\155[0m \226\144\155[31mERROR\226\144\155[0m")
+    == "2026-06-10T13:18:18Z ERROR",
+  "ANSI stripping should remove visible escape markers from app-server logs"
+)
+assert(
+  util.strip_ansi("\27\n[31mERROR\27[0m") == "\nERROR",
+  "ANSI stripping should remove stream-split SGR fragments from app-server logs"
+)
+assert(util.strip_ansi("pattern ^[a-z]") == "pattern ^[a-z]", "ANSI stripping should preserve non-ANSI caret text")
+assert(util.clean_tool_output(table.concat({
+  "\226\144\155[2m2026-06-10T13:18:18Z\226\144\155[0m \226\144\155[31mERROR\226\144\155[0m codex_core::tools::router:",
+  "error=Command blocked by PreToolUse hook: Codex native apply_patch did not validate before Neovim review:",
+  "Failed to find expected lines in sample.txt:",
+  "Command: *** Begin Patch",
+  "*** Update File: sample.txt",
+  "*** End Patch",
+}, " ")) == table.concat({
+  "Command blocked by PreToolUse hook: Codex native apply_patch did not validate before Neovim review:",
+  "Failed to find expected lines in sample.txt:",
+}, " "), "app-server hook errors should drop visible ANSI escapes and native patch bodies")
 
 local reasoning_before = thread.items["reasoning-1"].content[1]
 local summary_before = thread.items["reasoning-1"].summary[1]
