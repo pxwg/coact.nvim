@@ -5,12 +5,17 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 nvim_bin="${NVIM_BIN:-nvim}"
 tmpdir="${TMPDIR:-/tmp}"
 tmpdir="${tmpdir%/}"
-timeout_sec="${CODEX_NVIM_APPLY_PATCH_TIMEOUT:-30}"
+timeout_sec="${COACT_NVIM_APPLY_PATCH_TIMEOUT:-30}"
 
-socket="$tmpdir/codex-nvim-apply-patch-live-test.$$.sock"
-log="$tmpdir/codex-nvim-apply-patch-live-test.$$.log"
-output="$tmpdir/codex-nvim-apply-patch-live-test.$$.out"
-hook_stderr="$tmpdir/codex-nvim-apply-patch-live-test.$$.err"
+socket_dir="$tmpdir"
+if [ -d /tmp ]; then
+  socket_dir="/tmp"
+fi
+socket="$socket_dir/coact-ap.$$.sock"
+log="$tmpdir/coact-nvim-apply-patch-live-test.$$.log"
+output="$tmpdir/coact-nvim-apply-patch-live-test.$$.out"
+hook_stderr="$tmpdir/coact-nvim-apply-patch-live-test.$$.err"
+nvim_stderr="$tmpdir/coact-nvim-apply-patch-live-test.$$.nvim.err"
 hook_pid=""
 nvim_pid=""
 
@@ -30,6 +35,10 @@ die() {
   if [ -s "$hook_stderr" ]; then
     printf '%s\n' '--- hook stderr ---' >&2
     cat "$hook_stderr" >&2
+  fi
+  if [ -s "$nvim_stderr" ]; then
+    printf '%s\n' '--- nvim stderr ---' >&2
+    cat "$nvim_stderr" >&2
   fi
   if [ -s "$log" ]; then
     printf '%s\n' '--- hook debug log ---' >&2
@@ -57,7 +66,7 @@ cleanup() {
       kill "$nvim_pid" 2>/dev/null || true
     fi
   fi
-  rm -f "$socket" "$log" "$output" "$hook_stderr" "$repo/codex-nvim-live-test.txt"
+  rm -f "$socket" "$log" "$output" "$hook_stderr" "$nvim_stderr" "$repo/coact-nvim-live-test.txt"
 }
 trap cleanup EXIT INT TERM
 
@@ -67,7 +76,7 @@ trap cleanup EXIT INT TERM
   --listen "$socket" \
   --cmd "lua vim.opt.runtimepath:prepend([[$repo]])" \
   --cmd 'set columns=120 lines=40' \
-  >/dev/null 2>&1 &
+  >/dev/null 2>"$nvim_stderr" &
 nvim_pid=$!
 
 count=0
@@ -82,21 +91,21 @@ if [ "$count" -ge 50 ]; then
   die "timed out waiting for temporary Neovim RPC server"
 fi
 
-set_debug_expr="luaeval('(function(path) vim.g.codex_native_apply_patch_debug_log = path; package.loaded[\"codex.native_apply_patch_hook\"] = nil; return [[ok]] end)(_A)', '$log')"
+set_debug_expr="luaeval('(function(path) vim.g.coact_native_apply_patch_debug_log = path; package.loaded[\"coact.native_apply_patch_hook\"] = nil; return [[ok]] end)(_A)', '$log')"
 debug_ready="$("$nvim_bin" --server "$socket" --remote-expr "$set_debug_expr" 2>/dev/null || true)"
 if [ "$debug_ready" != "ok" ]; then
   die "failed to initialize Neovim debug state: $debug_ready"
 fi
 
-payload='{"hook_event_name":"PreToolUse","session_id":"live-test","cwd":"'"$repo"'","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: codex-nvim-live-test.txt\n+before-from-codex\n*** End Patch"},"tool_use_id":"live-test-1"}'
+payload='{"hook_event_name":"PreToolUse","session_id":"live-test","cwd":"'"$repo"'","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: coact-nvim-live-test.txt\n+before-from-codex\n*** End Patch"},"tool_use_id":"live-test-1"}'
 
 (
   printf '%s' "$payload" |
-    CODEX_NVIM_APPLY_PATCH_TIMEOUT="$timeout_sec" /bin/sh "$repo/scripts/codex-nvim-apply-patch-hook" "$socket" "" "$nvim_bin" "$log"
+    COACT_NVIM_APPLY_PATCH_TIMEOUT="$timeout_sec" /bin/sh "$repo/scripts/coact-nvim-apply-patch-hook" "$socket" "" "$nvim_bin" "$log"
 ) >"$output" 2>"$hook_stderr" &
 hook_pid=$!
 
-review_expr='luaeval("(function() local found = false; for _, b in ipairs(vim.api.nvim_list_bufs()) do local name = vim.api.nvim_buf_get_name(b); if name:match([[codex%-nvim%-live%-test%.txt$]]) and require([[codex.patch_session]])._active_session(b) then found = true end end; return found end)()")'
+review_expr='luaeval("(function() local found = false; for _, b in ipairs(vim.api.nvim_list_bufs()) do local name = vim.api.nvim_buf_get_name(b); if name:match([[coact%-nvim%-live%-test%.txt$]]) and require([[coact.patch_session]])._active_session(b) then found = true end end; return found end)()")'
 count=0
 while [ "$count" -lt 100 ]; do
   found="$("$nvim_bin" --server "$socket" --remote-expr "$review_expr" 2>/dev/null || true)"
@@ -110,13 +119,13 @@ if [ "$count" -ge 100 ]; then
   die "timed out waiting for Neovim review buffer"
 fi
 
-modify_expr='luaeval("(function() local target = nil; for _, b in ipairs(vim.api.nvim_list_bufs()) do local name = vim.api.nvim_buf_get_name(b); if name:match([[codex%-nvim%-live%-test%.txt$]]) and require([[codex.patch_session]])._active_session(b) then target = b end end; if not target then return [[missing]] end; local lines = vim.api.nvim_buf_get_lines(target, 0, -1, false); for i, line in ipairs(lines) do if line == [[before-from-codex]] then vim.api.nvim_buf_set_lines(target, i - 1, i, false, { [[after-from-nvim]] }) end end; for _, win in ipairs(vim.fn.win_findbuf(target)) do if vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end end; return [[ok]] end)()")'
+modify_expr='luaeval("(function() local target = nil; for _, b in ipairs(vim.api.nvim_list_bufs()) do local name = vim.api.nvim_buf_get_name(b); if name:match([[coact%-nvim%-live%-test%.txt$]]) and require([[coact.patch_session]])._active_session(b) then target = b end end; if not target then return [[missing]] end; local lines = vim.api.nvim_buf_get_lines(target, 0, -1, false); for i, line in ipairs(lines) do if line == [[before-from-codex]] then vim.api.nvim_buf_set_lines(target, i - 1, i, false, { [[after-from-nvim]] }) end end; for _, win in ipairs(vim.fn.win_findbuf(target)) do if vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end end; return [[ok]] end)()")'
 modified="$("$nvim_bin" --server "$socket" --remote-expr "$modify_expr" 2>/dev/null || true)"
 if [ "$modified" != "ok" ]; then
   die "failed to edit review buffer through Neovim RPC: $modified"
 fi
 
-accept_expr='luaeval("(function() local patch_session = require([[codex.patch_session]]); for _, b in ipairs(vim.api.nvim_list_bufs()) do local session = patch_session._active_session(b); if session and session.hunks and session.hunks[1] then patch_session._accept_hunk(session, session.hunks[1]); return [[ok]] end end; return [[missing]] end)()")'
+accept_expr='luaeval("(function() local patch_session = require([[coact.patch_session]]); for _, b in ipairs(vim.api.nvim_list_bufs()) do local session = patch_session._active_session(b); if session and session.hunks and session.hunks[1] then patch_session._accept_hunk(session, session.hunks[1]); return [[ok]] end end; return [[missing]] end)()")'
 accepted="$("$nvim_bin" --server "$socket" --remote-expr "$accept_expr" 2>/dev/null || true)"
 if [ "$accepted" != "ok" ]; then
   die "failed to accept review hunk through Neovim RPC: $accepted"
@@ -138,11 +147,11 @@ grep -q '"permissionDecision":"allow"' "$output" || die "hook did not allow the 
 grep -q '+after-from-nvim' "$output" || die "hook output did not include the Neovim-edited patch"
 grep -q -- '-before-from-codex' "$output" || die "hook output did not describe the user edit from the Codex proposal"
 grep -q 'USER MODIFICATIONS TO CODEX PROPOSAL' "$output" || die "hook output did not include user modification feedback"
-grep -q '.codex-nvim-apply-patch-noop' "$output" || die "hook output did not return a native no-op completion patch"
+grep -q '.coact-nvim-apply-patch-noop' "$output" || die "hook output did not return a native no-op completion patch"
 if grep -q '+before-from-codex' "$output"; then
   die "hook output still included the original unedited patch"
 fi
-if [ "$(cat "$repo/codex-nvim-live-test.txt" 2>/dev/null || true)" != "after-from-nvim" ]; then
+if [ "$(cat "$repo/coact-nvim-live-test.txt" 2>/dev/null || true)" != "after-from-nvim" ]; then
   die "hook review did not write the Neovim-edited patch through patch_session"
 fi
 

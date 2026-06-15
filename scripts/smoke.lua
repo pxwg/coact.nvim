@@ -1,12 +1,12 @@
 vim.opt.runtimepath:append(".")
 
-local codex = require("codex")
-codex.setup()
+local coact = require("coact")
+coact.setup()
 assert(
-  #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
+  #vim.api.nvim_get_autocmds({ group = "CoactNvimLifecycle", event = "VimLeavePre" }) == 1,
   "explicit setup should register lifecycle cleanup"
 )
-local start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
+local start_params = coact._thread_start_params({ cwd = vim.fn.getcwd() })
 assert(
   type(start_params.developerInstructions) == "string"
     and start_params.developerInstructions:match("native apply_patch"),
@@ -35,19 +35,19 @@ assert(
   not (start_params.config and start_params.config.bypass_hook_trust == true),
   "thread/start should not enable global hook trust bypass for Neovim apply_patch review"
 )
-local composed_instructions = codex._compose_developer_instructions("custom instruction")
+local composed_instructions = coact._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
 assert(composed_instructions:match("native apply_patch"), "default edit instruction should mention native apply_patch")
-local dynamic_tools_for_config = require("codex.dynamic_tools")
+local dynamic_tools_for_config = require("coact.dynamic_tools")
 local pair_specs = dynamic_tools_for_config.specs() or {}
 assert(not vim.iter(pair_specs):any(function(spec)
   return spec.namespace == "nvim" and spec.name == "apply_patch"
 end), "pair edit mode should not expose nvim.apply_patch")
-local native_hook = require("codex.native_apply_patch_hook")
+local native_hook = require("coact.native_apply_patch_hook")
 assert(
   native_hook._hook_config_arg():match("hooks%.PreToolUse")
     and native_hook._hook_config_arg():match("apply_patch")
-    and native_hook._hook_config_arg():match("codex%-nvim%-apply%-patch%-hook"),
+    and native_hook._hook_config_arg():match("coact%-nvim%-apply%-patch%-hook"),
   "pair edit mode should be able to inject a PreToolUse apply_patch hook"
 )
 assert(
@@ -78,7 +78,7 @@ assert(
     and native_hook_trust_edits[1].value == "sha256:abc123",
   "pair edit mode should persist trust for only the injected apply_patch hook hash"
 )
-local hook_script = table.concat(vim.fn.readfile("scripts/codex-nvim-apply-patch-hook"), "\n")
+local hook_script = table.concat(vim.fn.readfile("scripts/coact-nvim-apply-patch-hook"), "\n")
 assert(
   hook_script:match("review_file_async") and hook_script:match("'result':"),
   "apply_patch hook script should queue Neovim review asynchronously and wait on a result file"
@@ -97,12 +97,12 @@ do
   vim.fn.writefile({ "one", "two" }, vim.fs.joinpath(native_hook_gen_dir, "smoke-native-hook.txt"))
   local native_hook_completion_patch = native_hook._noop_patch(native_hook_gen_dir, "smoke-native-hook")
   assert(
-    native_hook_completion_patch:match("%*%*%* Delete File: %.codex%-nvim%-apply%-patch%-noop")
+    native_hook_completion_patch:match("%*%*%* Delete File: %.coact%-nvim%-apply%-patch%-noop")
       and not native_hook_completion_patch:match("%*%*%* Add File:"),
     "native apply_patch hook should return a delete-marker completion patch after Neovim writes"
   )
   local native_hook_marker =
-    native_hook_completion_patch:match("%*%*%* Delete File:%s*(%.codex%-nvim%-apply%-patch%-noop[^\n]+)")
+    native_hook_completion_patch:match("%*%*%* Delete File:%s*(%.coact%-nvim%-apply%-patch%-noop[^\n]+)")
   assert(
     native_hook_marker and vim.fn.filereadable(vim.fs.joinpath(native_hook_gen_dir, native_hook_marker)) == 1,
     "native apply_patch hook no-op marker should exist before app-server verification reads it"
@@ -111,8 +111,8 @@ do
     dynamic_tools_for_config._changes_from_native_apply_patch(native_hook_gen_dir, native_hook_completion_patch),
     "native apply_patch hook no-op completion patch should validate through Codex apply_patch"
   )
-  local stale_marker = vim.fs.joinpath(native_hook_gen_dir, ".codex-nvim-apply-patch-noop-stale")
-  local fresh_marker = vim.fs.joinpath(native_hook_gen_dir, ".codex-nvim-apply-patch-noop-fresh")
+  local stale_marker = vim.fs.joinpath(native_hook_gen_dir, ".coact-nvim-apply-patch-noop-stale")
+  local fresh_marker = vim.fs.joinpath(native_hook_gen_dir, ".coact-nvim-apply-patch-noop-fresh")
   vim.fn.writefile({ "stale" }, stale_marker)
   vim.fn.writefile({ "fresh" }, fresh_marker)
   local old_time = os.time() - 600
@@ -121,7 +121,7 @@ do
   assert(
     vim.fn.filereadable(stale_marker) == 0
       and vim.fn.filereadable(fresh_marker) == 1
-      and vim.tbl_contains(cleanup_result.removed, ".codex-nvim-apply-patch-noop-stale"),
+      and vim.tbl_contains(cleanup_result.removed, ".coact-nvim-apply-patch-noop-stale"),
     "native apply_patch hook should clean only stale no-op markers"
   )
   vim.fn.delete(fresh_marker)
@@ -150,7 +150,7 @@ do
   vim.wait(1000, function()
     local bufnr = vim.fn.bufnr(native_hook_review_file)
     if bufnr > 0 then
-      native_hook_review_session = require("codex.patch_session")._active_session(bufnr)
+      native_hook_review_session = require("coact.patch_session")._active_session(bufnr)
     end
     return native_hook_review_session ~= nil
   end, 20)
@@ -167,7 +167,7 @@ do
     },
   }, {})
   vim.api.nvim_buf_set_lines(native_hook_review_buf, 1, 2, false, { "from-nvim" })
-  require("codex.patch_session")._accept_block(native_hook_review_session, native_hook_review_session.blocks[1])
+  require("coact.patch_session")._accept_block(native_hook_review_session, native_hook_review_session.blocks[1])
   vim.wait(1000, function()
     return native_hook_review_output ~= nil
   end, 20)
@@ -183,7 +183,7 @@ do
     "native apply_patch hook should report user edits and edited-buffer diagnostics in its review summary"
   )
   assert(
-    native_hook_review_output:match("%.codex%-nvim%-apply%-patch%-noop")
+    native_hook_review_output:match("%.coact%-nvim%-apply%-patch%-noop")
       and vim.fn.readfile(native_hook_review_file)[2] == "from-nvim",
     "native apply_patch hook should write through the same patch_session path as nvim.apply_patch"
   )
@@ -212,7 +212,7 @@ do
   vim.wait(1000, function()
     local bufnr = vim.fn.bufnr(native_hook_reject_file)
     if bufnr > 0 then
-      native_hook_reject_session = require("codex.patch_session")._active_session(bufnr)
+      native_hook_reject_session = require("coact.patch_session")._active_session(bufnr)
     end
     return native_hook_reject_session ~= nil
   end, 20)
@@ -226,7 +226,7 @@ do
       source = "smoke",
     },
   }, {})
-  require("codex.patch_session")._reject_block(
+  require("coact.patch_session")._reject_block(
     native_hook_reject_session,
     native_hook_reject_session.blocks[1],
     "keep right"
@@ -234,19 +234,19 @@ do
   vim.wait(1000, function()
     return native_hook_reject_output ~= nil
   end, 20)
-  _G.__codex_smoke_native_hook_reject = vim.json.decode(native_hook_reject_output).hookSpecificOutput
-  _G.__codex_smoke_native_hook_reject_context = _G.__codex_smoke_native_hook_reject
-      and _G.__codex_smoke_native_hook_reject.additionalContext
+  _G.__coact_smoke_native_hook_reject = vim.json.decode(native_hook_reject_output).hookSpecificOutput
+  _G.__coact_smoke_native_hook_reject_context = _G.__coact_smoke_native_hook_reject
+      and _G.__coact_smoke_native_hook_reject.additionalContext
     or ""
   assert(
-    _G.__codex_smoke_native_hook_reject
-      and _G.__codex_smoke_native_hook_reject.permissionDecision == "deny"
-      and _G.__codex_smoke_native_hook_reject.permissionDecisionReason == "User rejected Codex native apply_patch in Neovim."
-      and _G.__codex_smoke_native_hook_reject_context:match("User rejected Codex native apply_patch")
-      and _G.__codex_smoke_native_hook_reject_context:match("keep right")
-      and _G.__codex_smoke_native_hook_reject_context:match("## nvim%.diagnostics")
-      and _G.__codex_smoke_native_hook_reject_context:match("native hook reject diagnostic")
-      and not _G.__codex_smoke_native_hook_reject.permissionDecisionReason:match("NVIM APPLY PATCH REVIEW"),
+    _G.__coact_smoke_native_hook_reject
+      and _G.__coact_smoke_native_hook_reject.permissionDecision == "deny"
+      and _G.__coact_smoke_native_hook_reject.permissionDecisionReason == "User rejected Codex native apply_patch in Neovim."
+      and _G.__coact_smoke_native_hook_reject_context:match("User rejected Codex native apply_patch")
+      and _G.__coact_smoke_native_hook_reject_context:match("keep right")
+      and _G.__coact_smoke_native_hook_reject_context:match("## nvim%.diagnostics")
+      and _G.__coact_smoke_native_hook_reject_context:match("native hook reject diagnostic")
+      and not _G.__coact_smoke_native_hook_reject.permissionDecisionReason:match("NVIM APPLY PATCH REVIEW"),
     "native apply_patch hook should deny with concise reason and contextual rejection diagnostics"
   )
   assert(
@@ -303,8 +303,8 @@ assert(
     "stale patch recovery should include current file excerpts"
   )
 end)()
-codex.setup({ edit = { mode = "yolo" } })
-local yolo_start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
+coact.setup({ edit = { mode = "yolo" } })
+local yolo_start_params = coact._thread_start_params({ cwd = vim.fn.getcwd() })
 assert(
   yolo_start_params.developerInstructions:match("native apply_patch tool directly"),
   "yolo edit mode should instruct Codex to use native apply_patch directly"
@@ -316,7 +316,7 @@ assert(
 assert(not vim.iter(dynamic_tools_for_config.specs() or {}):any(function(spec)
   return spec.namespace == "nvim" and spec.name == "apply_patch"
 end), "yolo edit mode should not expose nvim.apply_patch")
-local rpc = require("codex.rpc")
+local rpc = require("coact.rpc")
 local original_rpc_respond_for_mode = rpc.respond
 local rejected_disabled_tool = nil
 rpc.respond = function(_, result)
@@ -339,32 +339,32 @@ assert(
   rejected_disabled_tool.contentItems[1].text:match("not exposed"),
   "disabled nvim.apply_patch calls should explain exposure gating"
 )
-codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = false } })
-assert(require("codex.config").edit_mode() == "yolo", "legacy prefer_nvim_apply_patch=false should select yolo mode")
-codex.setup()
+coact.setup({ dynamic_tools = { prefer_nvim_apply_patch = false } })
+assert(require("coact.config").edit_mode() == "yolo", "legacy prefer_nvim_apply_patch=false should select yolo mode")
+coact.setup()
 assert(
-  #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
+  #vim.api.nvim_get_autocmds({ group = "CoactNvimLifecycle", event = "VimLeavePre" }) == 1,
   "repeated setup should not duplicate lifecycle cleanup"
 )
-local initial_status = codex.status()
+local initial_status = coact.status()
 assert(initial_status.server_running == false, "status should report stopped server before startup")
 assert(type(initial_status.pending_rpc_requests) == "number", "status should expose pending rpc count")
 assert(
-  vim.tbl_contains(codex.complete_command("sta", "Codex sta"), "status"),
+  vim.tbl_contains(coact.complete_command("sta", "Coact sta"), "status"),
   "command completion should filter commands"
 )
-assert(vim.tbl_contains(codex.complete_command("", "Codex attach "), "all"), "attach completion should include all")
-local health = require("codex.health")
+assert(vim.tbl_contains(coact.complete_command("", "Coact attach "), "all"), "attach completion should include all")
+local health = require("coact.health")
 assert(health._executable({ "codex", "app-server" }) == "codex", "health should resolve table commands")
 assert(health._executable("codex app-server") == "codex", "health should resolve string commands")
 local app_server_supported, app_server_help = health._app_server_supported("codex")
 assert(app_server_supported, "health should detect codex app-server support: " .. tostring(app_server_help))
 health.check()
 do
-  local state = require("codex.state")
+  local state = require("coact.state")
   local pi_temp = vim.fn.tempname()
   vim.fn.mkdir(pi_temp, "p")
-  codex.setup({
+  coact.setup({
     provider = "pi",
     providers = {
       pi = {
@@ -382,18 +382,18 @@ do
       reasoning_effort = "high",
     },
   })
-  local providers = require("codex.providers")
+  local providers = require("coact.providers")
   assert(providers.current_id() == "pi", "provider selector should switch to pi")
   assert(not native_hook.enabled(), "Pi provider should not enable the Codex native apply_patch hook")
-  local pi_provider = require("codex.providers.pi")
-  local pi_command = pi_provider.command(require("codex.config").get())
+  local pi_provider = require("coact.providers.pi")
+  local pi_command = pi_provider.command(require("coact.config").get())
   assert(vim.tbl_contains(pi_command, "pi"), "Pi provider command should invoke pi")
   assert(
     vim.tbl_contains(pi_command, "--mode") and vim.tbl_contains(pi_command, "rpc"),
     "Pi provider should use RPC mode"
   )
   assert(vim.tbl_contains(pi_command, "--offline"), "Pi provider should pass configured offline flag")
-  local pi_bridge = require("codex.providers.pi_edit_bridge")
+  local pi_bridge = require("coact.providers.pi_edit_bridge")
   assert(pi_bridge.enabled(), "Pi provider should enable the edit bridge in pair mode by default")
   local prepared_pi_command, prepared_pi_env, prepared_pi_err = pi_provider.prepare_command(pi_command, {})
   assert(prepared_pi_command ~= nil, "Pi edit bridge command preparation should succeed: " .. tostring(prepared_pi_err))
@@ -410,10 +410,10 @@ do
     "Pi edit bridge should write a temporary extension file"
   )
   assert(
-    prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_ADDR
-      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_NONCE
-      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_NVIM
-      and prepared_pi_env.CODEX_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS,
+    prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR
+      and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_NONCE
+      and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_NVIM
+      and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS,
     "Pi edit bridge should pass runtime connection details through env vars"
   )
   local pi_extension_source = pi_bridge._extension_source()
@@ -422,13 +422,13 @@ do
     "Pi edit bridge extension should override edit and write tools"
   )
   assert(
-    pi_extension_source:match('registerCommand%("codex%-nvim%-tree"') and pi_extension_source:match("navigateTree"),
+    pi_extension_source:match('registerCommand%("coact%-nvim%-tree"') and pi_extension_source:match("navigateTree"),
     "Pi edit bridge extension should register tree navigation"
   );
   (function()
-    local pi_tree = require("codex.providers.pi_tree")
+    local pi_tree = require("coact.providers.pi_tree")
     local rendered_tree = pi_tree._render_for_test({
-      __codexNvimPiTree = true,
+      __coactNvimPiTree = true,
       leafId = "branch-user",
       tree = {
         {
@@ -494,10 +494,10 @@ do
       end
     end
     assert(
-      seen_hl.CodexPiTreeUser
-        and seen_hl.CodexPiTreeAssistant
-        and seen_hl.CodexPiTreeTool
-        and seen_hl.CodexPiTreeConnector,
+      seen_hl.CoactPiTreeUser
+        and seen_hl.CoactPiTreeAssistant
+        and seen_hl.CoactPiTreeTool
+        and seen_hl.CoactPiTreeConnector,
       "Pi tree renderer should expose role and connector highlights"
     )
     assert(
@@ -505,7 +505,7 @@ do
       "Pi tree help should advertise native Neovim navigation without arrow hints"
     )
     local picker_payload = {
-      __codexNvimPiTree = true,
+      __coactNvimPiTree = true,
       leafId = "root-user",
       tree = {
         {
@@ -530,7 +530,7 @@ do
     }
     pi_tree.select({ options = { picker_payload } }, function() end)
     local picker_bufnr = vim.api.nvim_get_current_buf()
-    assert(vim.bo[picker_bufnr].filetype == "codex-pi-tree", "Pi tree picker should open its own buffer")
+    assert(vim.bo[picker_bufnr].filetype == "coact-pi-tree", "Pi tree picker should open its own buffer")
     assert(not vim.bo[picker_bufnr].modifiable and vim.bo[picker_bufnr].readonly, "Pi tree picker should be read-only")
     assert(vim.fn.mode() ~= "i", "Pi tree picker should enter normal mode")
     assert(vim.fn.maparg("i", "n", false, true).rhs == "<Nop>", "Pi tree picker should block insert mode")
@@ -576,7 +576,7 @@ do
     { type = "text", text = "hello" },
     { type = "skill", name = "smoke" },
   })
-  assert(pi_prompt:match("hello") and pi_prompt:match("/skill:smoke"), "Pi prompts should flatten Codex inputs")
+  assert(pi_prompt:match("hello") and pi_prompt:match("/skill:smoke"), "Pi prompts should flatten Coact inputs")
   local pi_response = pi_provider.decode_response({
     id = "req-1",
     type = "response",
@@ -601,7 +601,7 @@ do
       and pi_delta.message.params.itemId == "pi-turn-smoke:assistant:0",
     "Pi text deltas should normalize to assistant message deltas"
   )
-  require("codex.core").handle_notification(pi_delta.message)
+  require("coact.core").handle_notification(pi_delta.message)
   local pi_state_thread = state.get_thread("pi:smoke-session")
   assert(
     pi_state_thread
@@ -615,14 +615,14 @@ do
     toolName = "bash",
     args = { command = "pwd" },
   })
-  require("codex.core").handle_notification(pi_tool_start.message)
+  require("coact.core").handle_notification(pi_tool_start.message)
   local pi_tool_update = pi_provider.decode_notification({
     type = "tool_execution_update",
     toolCallId = "tool-smoke",
     toolName = "bash",
     partialResult = { content = { { type = "text", text = "one\ntwo" } } },
   })
-  require("codex.core").handle_notification(pi_tool_update.message)
+  require("coact.core").handle_notification(pi_tool_update.message)
   assert(
     pi_state_thread.items["tool-smoke"].command == "pwd"
       and pi_state_thread.items["tool-smoke"].aggregatedOutput:match("one\ntwo"),
@@ -675,7 +675,7 @@ do
       "Pi set_editor_text should restore the current composer prompt"
     )
   end)()
-  local pi_cwd = require("codex.config").cwd()
+  local pi_cwd = require("coact.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")
   vim.fn.mkdir(pi_session_dir, "p")
   local pi_old_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-16-54-901Z_pi-old.jsonl")
@@ -828,7 +828,7 @@ do
         _request_message = function(method, params, callback)
           table.insert(pi_tree_calls, { method = method, params = params })
           if method == "prompt" then
-            assert(params.message == "/codex-nvim-tree", "Pi thread/tree should invoke the bridge command")
+            assert(params.message == "/coact-nvim-tree", "Pi thread/tree should invoke the bridge command")
             callback(nil, {})
           elseif method == "get_state" then
             callback(nil, {
@@ -878,7 +878,7 @@ do
       "Pi thread/tree should return a replacement branch snapshot"
     )
   end)()
-  codex.setup({
+  coact.setup({
     provider = "pi",
     providers = {
       pi = {
@@ -894,14 +894,14 @@ do
     not vim.tbl_contains(disabled_command, "--extension"),
     "disabled Pi edit bridge should not inject an extension"
   )
-  codex.setup()
+  coact.setup()
 end
 
-local parser = require("codex.parser")
+local parser = require("coact.parser")
 local parsed = parser.parse("hello\n>diagnostics")
 assert(#parsed >= 1, "parser should produce user input")
 
-local state = require("codex.state");
+local state = require("coact.state");
 (function()
   local replace_turns_thread = state.update_thread_from_payload({
     id = "smoke-replace-turns",
@@ -936,16 +936,16 @@ local status_thread = state.update_thread_from_payload({
   status = { type = "active", activeFlags = {} },
 })
 assert(status_thread.status == "active", "thread payload status objects should normalize to labels")
-local metadata = require("codex.ui.metadata")
+local metadata = require("coact.ui.metadata")
 local status_labels = metadata.composer_labels({ config = {}, status = { type = "active", activeFlags = {} } })
 assert(#status_labels == 1 and status_labels[1] == "active", "composer metadata should not stringify tables")
-codex.setup({ thread = { model = "gpt-5", service_tier = "fast", reasoning_effort = "high" } })
+coact.setup({ thread = { model = "gpt-5", service_tier = "fast", reasoning_effort = "high" } })
 local configured_composer_labels = metadata.composer_labels({ config = {}, status = "active" })
 assert(
   vim.deep_equal(configured_composer_labels, { "gpt-5", "fast", "effort high", "active" }),
   "composer metadata should include configured model, fast tier, and reasoning effort"
 )
-codex.setup({ thread = { model = "gpt-5", reasoning_effort = "high" } })
+coact.setup({ thread = { model = "gpt-5", reasoning_effort = "high" } })
 local stale_header_thread = state.ensure_thread("smoke-thread-settings-header", {
   config = { model = "gpt-5-codex", service_tier = "fast", reasoning_effort = "xhigh" },
   status = "active",
@@ -956,7 +956,7 @@ assert(
   vim.deep_equal(metadata.composer_labels(stale_header_thread), { "gpt-5-codex", "fast", "effort medium", "active" }),
   "composer metadata should prefer updated thread state over stale defaults"
 )
-local effective_turn_params = codex._turn_start_params("smoke-thread-settings-header", {})
+local effective_turn_params = coact._turn_start_params("smoke-thread-settings-header", {})
 assert(effective_turn_params.effort == "medium", "turn/start should use updated thread reasoning effort")
 assert(effective_turn_params.serviceTier == "fast", "turn/start should use updated thread service tier")
 stale_header_thread.settings = { serviceTier = vim.NIL }
@@ -979,7 +979,7 @@ assert(
   vim.deep_equal(active_user_labels, { "active", "gpt-5-codex", "fast", "effort medium" }),
   "user metadata should include active turn model, fast tier, and reasoning effort"
 )
-codex.setup()
+coact.setup()
 local object_tier_thread = state.ensure_thread("smoke-object-service-tier", {
   config = { service_tier = { id = "fast", name = "Fast" } },
   status = "active",
@@ -988,7 +988,7 @@ assert(
   vim.deep_equal(metadata.composer_labels(object_tier_thread), { "fast", "active" }),
   "composer metadata should detect fast service tiers returned as objects"
 )
-require("codex.core").handle_notification({
+require("coact.core").handle_notification({
   method = "thread/status/changed",
   params = {
     threadId = "smoke-status-object",
@@ -1000,7 +1000,7 @@ local settings_event_thread = state.ensure_thread("smoke-settings-event", {
   config = { model = "gpt-5-codex", reasoning_effort = "xhigh" },
   status = "active",
 })
-require("codex.core").handle_notification({
+require("coact.core").handle_notification({
   method = "thread/settings/updated",
   params = {
     threadId = "smoke-settings-event",
@@ -1013,7 +1013,7 @@ assert(
   vim.deep_equal(metadata.composer_labels(settings_event_thread), { "gpt-5-codex", "fast", "effort medium", "active" }),
   "settings events should refresh composer fast tier and reasoning effort"
 )
-local catalog = require("codex.catalog")
+local catalog = require("coact.catalog")
 state.set_cache(catalog.cache_key("skills"), {
   { label = "$skill:smoke", detail = "Smoke skill", data = { name = "smoke", path = "/tmp/smoke" } },
 })
@@ -1054,7 +1054,7 @@ assert(
   file_asset_parsed[1] and file_asset_parsed[1].text:match("text asset with spaces"),
   "@file should accept backtick-quoted paths with spaces"
 )
-local official_file_parsed = parser.parse("@" .. require("codex.context").display_path(text_asset))
+local official_file_parsed = parser.parse("@" .. require("coact.context").display_path(text_asset))
 assert(
   official_file_parsed[1] and official_file_parsed[1].text:match("text asset with spaces"),
   "@path should expand Codex official file context syntax"
@@ -1065,7 +1065,7 @@ assert(image_asset_parsed[1].path == vim.fs.normalize(image_asset), "@image shou
 local remote_image_parsed = parser.parse("@image:https://example.com/smoke.png")
 assert(remote_image_parsed[1] and remote_image_parsed[1].type == "image", "@image should attach image URLs")
 
-parsed = { behavior = require("codex.behavior"), original_cwd = vim.fn.getcwd(), dir = vim.fn.tempname() }
+parsed = { behavior = require("coact.behavior"), original_cwd = vim.fn.getcwd(), dir = vim.fn.tempname() }
 vim.fn.mkdir(parsed.dir, "p")
 vim.cmd("cd " .. vim.fn.fnameescape(parsed.dir))
 parsed.file = vim.fs.joinpath(parsed.dir, "behavior-smoke.txt")
@@ -1106,14 +1106,14 @@ vim.cmd("bwipeout! " .. parsed.new_buf)
 vim.cmd("bwipeout! " .. parsed.buf)
 vim.cmd("cd " .. vim.fn.fnameescape(parsed.original_cwd))
 
-local buffers = require("codex.buffers")
+local buffers = require("coact.buffers")
 local buffer_opened_events = {}
 local attached_buffers = {}
 local buffer_attached_events = {}
-codex.on("buffer_attached", function(payload)
+coact.on("buffer_attached", function(payload)
   table.insert(buffer_attached_events, payload)
 end)
-codex.setup({
+coact.setup({
   buffer = {
     on_attach = function(bufnr, payload)
       attached_buffers[bufnr] = payload.thread_id
@@ -1121,7 +1121,7 @@ codex.setup({
   },
 })
 vim.api.nvim_create_autocmd("User", {
-  pattern = "CodexBufferOpened",
+  pattern = "CoactBufferOpened",
   callback = function(event)
     table.insert(buffer_opened_events, event.data)
   end,
@@ -1149,14 +1149,14 @@ vim.tbl_map(function(index)
 end, vim.fn.range(1, 24))
 local context_thread_buf = buffers.open("smoke-context")
 local context_thread = state.get_thread("smoke-context")
-function _G.__codex_smoke_composer_text_area_height(winid)
+function _G.__coact_smoke_composer_text_area_height(winid)
   local info = vim.fn.getwininfo(winid)[1]
   return info and info.height or vim.api.nvim_win_get_height(winid)
 end
 
-function _G.__codex_smoke_count_thread_history_buffers(thread_id)
+function _G.__coact_smoke_count_thread_history_buffers(thread_id)
   local total = 0
-  local name = "codex://thread/" .. tostring(thread_id)
+  local name = "coact://thread/" .. tostring(thread_id)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
       total = total + 1
@@ -1165,53 +1165,53 @@ function _G.__codex_smoke_count_thread_history_buffers(thread_id)
   return total
 end
 
-assert(context_thread.prompt_bufnr, "opening a Codex thread should create a composer buffer")
+assert(context_thread.prompt_bufnr, "opening a Coact thread should create a composer buffer")
 assert(
   vim.api.nvim_get_current_buf() == context_thread_buf,
-  "opening a Codex thread should focus its history buffer in preview state"
+  "opening a Coact thread should focus its history buffer in preview state"
 )
-assert(context_thread.ui_state == "preview", "opening a Codex thread should start in preview state")
+assert(context_thread.ui_state == "preview", "opening a Coact thread should start in preview state")
 assert(context_thread.prompt_winid == nil, "preview state should not show the composer window")
 assert(
   vim.api.nvim_buf_get_name(context_thread.prompt_bufnr) == "",
   "composer buffer should remain unnamed so path completions see a normal editing buffer"
 )
-assert(vim.bo[context_thread_buf].filetype == "codex-history", "history buffer should use codex-history filetype")
-assert(vim.bo[context_thread.prompt_bufnr].filetype == "codex-input", "composer should use codex-input filetype")
-assert(not vim.bo[context_thread_buf].modifiable, "Codex history buffer should be read-only")
+assert(vim.bo[context_thread_buf].filetype == "coact-history", "history buffer should use coact-history filetype")
+assert(vim.bo[context_thread.prompt_bufnr].filetype == "coact-input", "composer should use coact-input filetype")
+assert(not vim.bo[context_thread_buf].modifiable, "Coact history buffer should be read-only")
 context_thread.bufnr = nil
-_G.__codex_smoke_rebound_context_buf = buffers.ensure("smoke-context")
+_G.__coact_smoke_rebound_context_buf = buffers.ensure("smoke-context")
 assert(
-  _G.__codex_smoke_rebound_context_buf == context_thread_buf,
+  _G.__coact_smoke_rebound_context_buf == context_thread_buf,
   "thread ensure should rebind an existing named history buffer"
 )
 assert(
-  _G.__codex_smoke_count_thread_history_buffers("smoke-context") == 1,
+  _G.__coact_smoke_count_thread_history_buffers("smoke-context") == 1,
   "thread ensure should not duplicate existing history buffers"
 )
-_G.__codex_smoke_rpc_for_resume = require("codex.rpc")
-_G.__codex_smoke_original_rpc_start_for_resume = _G.__codex_smoke_rpc_for_resume.start
-_G.__codex_smoke_resume_started_rpc = false
-_G.__codex_smoke_rpc_for_resume.start = function()
-  _G.__codex_smoke_resume_started_rpc = true
+_G.__coact_smoke_rpc_for_resume = require("coact.rpc")
+_G.__coact_smoke_original_rpc_start_for_resume = _G.__coact_smoke_rpc_for_resume.start
+_G.__coact_smoke_resume_started_rpc = false
+_G.__coact_smoke_rpc_for_resume.start = function()
+  _G.__coact_smoke_resume_started_rpc = true
   error("resume should reuse the existing Neovim thread buffer")
 end
-codex.resume("smoke-context")
-_G.__codex_smoke_rpc_for_resume.start = _G.__codex_smoke_original_rpc_start_for_resume
+coact.resume("smoke-context")
+_G.__coact_smoke_rpc_for_resume.start = _G.__coact_smoke_original_rpc_start_for_resume
 assert(
-  not _G.__codex_smoke_resume_started_rpc,
+  not _G.__coact_smoke_resume_started_rpc,
   "resume should not call app-server when the thread buffer is already open"
 )
 assert(
   state.get_thread("smoke-context").bufnr == context_thread_buf,
   "resume should keep using the existing thread buffer"
 )
-_G.__codex_smoke_view = {
+_G.__coact_smoke_view = {
   lines = vim.api.nvim_buf_line_count(context_thread_buf),
   info = vim.fn.getwininfo(context_thread.winid)[1],
 }
 assert(
-  _G.__codex_smoke_view.info and _G.__codex_smoke_view.info.botline == _G.__codex_smoke_view.lines,
+  _G.__coact_smoke_view.info and _G.__coact_smoke_view.info.botline == _G.__coact_smoke_view.lines,
   "opening preview should show the latest transcript lines"
 )
 state.upsert_item("smoke-context", "smoke-open-turn", {
@@ -1220,12 +1220,12 @@ state.upsert_item("smoke-context", "smoke-open-turn", {
   text = "latest idle refresh line",
 })
 buffers.render("smoke-context")
-_G.__codex_smoke_view = {
+_G.__coact_smoke_view = {
   lines = vim.api.nvim_buf_line_count(context_thread_buf),
   info = vim.fn.getwininfo(context_thread.winid)[1],
 }
 assert(
-  _G.__codex_smoke_view.info and _G.__codex_smoke_view.info.botline == _G.__codex_smoke_view.lines,
+  _G.__coact_smoke_view.info and _G.__coact_smoke_view.info.botline == _G.__coact_smoke_view.lines,
   "idle preview refresh should keep following the latest transcript lines"
 )
 vim.api.nvim_set_current_win(context_thread.winid)
@@ -1239,10 +1239,10 @@ vim.cmd("stopinsert")
 assert(context_thread.ui_state == "compose", "entering compose should update the UI state")
 assert(vim.api.nvim_get_current_buf() == context_thread.prompt_bufnr, "compose state should focus the composer")
 assert(
-  vim.wo[context_thread.prompt_winid].winbar:match("Codex input"),
+  vim.wo[context_thread.prompt_winid].winbar:match("Coact input"),
   "composer window should render input metadata in its winbar"
 )
-local initial_composer_height = _G.__codex_smoke_composer_text_area_height(context_thread.prompt_winid)
+local initial_composer_height = _G.__coact_smoke_composer_text_area_height(context_thread.prompt_winid)
 vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, {
   "semantic first line",
   "composer content line 2",
@@ -1252,18 +1252,18 @@ vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, {
 })
 vim.api.nvim_win_set_cursor(context_thread.prompt_winid, { 5, 0 })
 buffers.refresh_composer(context_thread)
-_G.__codex_smoke_composer_view = vim.fn.getwininfo(context_thread.prompt_winid)[1]
+_G.__coact_smoke_composer_view = vim.fn.getwininfo(context_thread.prompt_winid)[1]
 assert(
-  _G.__codex_smoke_composer_view and _G.__codex_smoke_composer_view.height >= 5,
+  _G.__coact_smoke_composer_view and _G.__coact_smoke_composer_view.height >= 5,
   "composer text area should include all prompt rows below the configured cap"
 )
 assert(
-  _G.__codex_smoke_composer_view.topline == 1,
+  _G.__coact_smoke_composer_view.topline == 1,
   "composer growth should keep the first prompt line visible below the cap"
 )
 vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, { string.rep("wrapped input ", 40) })
 buffers.refresh_composer(context_thread)
-local grown_composer_height = _G.__codex_smoke_composer_text_area_height(context_thread.prompt_winid)
+local grown_composer_height = _G.__coact_smoke_composer_text_area_height(context_thread.prompt_winid)
 assert(grown_composer_height > initial_composer_height, "composer should grow for wrapped input")
 assert(
   grown_composer_height <= math.max(2, math.floor(vim.o.lines * 0.33)),
@@ -1279,11 +1279,11 @@ assert(
   buffers.collect_prompt(context_thread.prompt_bufnr):match("wrapped input"),
   "compose should restore saved draft text"
 )
-_G.__codex_smoke_refresh_composer = buffers.refresh_composer
-_G.__codex_smoke_refresh_count = 0
+_G.__coact_smoke_refresh_composer = buffers.refresh_composer
+_G.__coact_smoke_refresh_count = 0
 buffers.refresh_composer = function(...)
-  _G.__codex_smoke_refresh_count = _G.__codex_smoke_refresh_count + 1
-  return _G.__codex_smoke_refresh_composer(...)
+  _G.__coact_smoke_refresh_count = _G.__coact_smoke_refresh_count + 1
+  return _G.__coact_smoke_refresh_composer(...)
 end
 vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, { "" })
 for index = 1, 30 do
@@ -1293,37 +1293,37 @@ end
 vim.wait(1000, function()
   return context_thread.draft_lines and #(context_thread.draft_lines[1] or "") >= 30
 end, 20)
-buffers.refresh_composer = _G.__codex_smoke_refresh_composer
-assert(_G.__codex_smoke_refresh_count <= 2, "composer input refresh should coalesce TextChangedI bursts")
+buffers.refresh_composer = _G.__coact_smoke_refresh_composer
+assert(_G.__coact_smoke_refresh_count <= 2, "composer input refresh should coalesce TextChangedI bursts")
 buffers.clear_prompt(context_thread_buf)
 buffers.enter_preview(context_thread, { source = "smoke", focus = true })
-assert(attached_buffers[context_thread_buf] == "smoke-context", "buffer.on_attach should run for Codex buffers")
+assert(attached_buffers[context_thread_buf] == "smoke-context", "buffer.on_attach should run for Coact buffers")
 assert(
   buffer_attached_events[1] and buffer_attached_events[1].bufnr == context_thread_buf,
-  "opening a Codex thread should emit buffer_attached hooks"
+  "opening a Coact thread should emit buffer_attached hooks"
 )
 attached_buffers[context_thread_buf] = nil
-assert(codex.attach_buffer(context_thread_buf), "attach_buffer should attach a Codex buffer")
+assert(coact.attach_buffer(context_thread_buf), "attach_buffer should attach a Coact buffer")
 assert(attached_buffers[context_thread_buf] == "smoke-context", "attach_buffer should rerun buffer.on_attach")
-assert(codex.attach_all_buffers() >= 1, "attach_all_buffers should find existing Codex buffers")
+assert(coact.attach_all_buffers() >= 1, "attach_all_buffers should find existing Coact buffers")
 assert(
   vim.tbl_contains(
-    codex.complete_command(tostring(context_thread_buf), "Codex attach " .. context_thread_buf),
+    coact.complete_command(tostring(context_thread_buf), "Coact attach " .. context_thread_buf),
     tostring(context_thread_buf)
   ),
-  "attach completion should include Codex buffer numbers"
+  "attach completion should include Coact buffer numbers"
 )
 assert(
-  vim.tbl_contains(codex.complete_command("smoke", "Codex resume smoke"), "smoke-context"),
+  vim.tbl_contains(coact.complete_command("smoke", "Coact resume smoke"), "smoke-context"),
   "resume completion should include loaded thread ids"
 )
 assert(
   buffer_opened_events[1] and buffer_opened_events[1].bufnr == context_thread_buf,
-  "opening a Codex thread should emit CodexBufferOpened"
+  "opening a Coact thread should emit CoactBufferOpened"
 )
 assert(
   buffer_opened_events[1] and buffer_opened_events[1].thread_id == "smoke-context",
-  "CodexBufferOpened should include the thread id"
+  "CoactBufferOpened should include the thread id"
 )
 local codex_buffer_context = parser.parse("@buffer")
 local codex_context_text = codex_buffer_context[1] and codex_buffer_context[1].text or ""
@@ -1370,7 +1370,7 @@ package.loaded["snacks"] = {
   picker = {
     files = function(opts)
       snacks_file_picker_called = true
-      assert(opts.title == "Codex File Context", "file context hook should use snacks file picker title")
+      assert(opts.title == "Coact File Context", "file context hook should use snacks file picker title")
       assert(opts.hidden == true, "file context hook should include hidden workspace files")
       opts.confirm({
         close = function() end,
@@ -1386,7 +1386,7 @@ package.loaded["snacks.picker.util"] = {
     return vim.fs.joinpath(item.cwd, item.file)
   end,
 }
-assert(require("codex.context").trigger_hook(), "@file: should trigger context hook")
+assert(require("coact.context").trigger_hook(), "@file: should trigger context hook")
 vim.wait(1000, function()
   return vim.api.nvim_buf_get_lines(hook_buf, 0, 1, false)[1] == "@README.md"
 end, 20)
@@ -1399,15 +1399,15 @@ assert(
   "@file: hook should replace provider syntax with official @path syntax"
 )
 vim.api.nvim_set_current_buf(source_buf)
-codex.add_current_buffer()
+coact.add_current_buffer()
 local added_context_prompt = buffers.collect_prompt(context_thread_buf)
 assert(
   added_context_prompt:match("@.*codex%-context%-smoke%.lua"),
-  "Codex add-buffer should append the current source buffer path to the chat prompt"
+  "Coact add-buffer should append the current source buffer path to the chat prompt"
 )
 buffers.clear_prompt(context_thread_buf)
 
-local patch_review = require("codex.patch_review")
+local patch_review = require("coact.patch_review")
 local hunk = patch_review._parse_hunk_header("@@ -3,2 +3,3 @@")
 assert(hunk and hunk.old_start == 3 and hunk.new_start == 3, "patch review should parse unified diff hunks")
 local review_proposal = {
@@ -1451,7 +1451,7 @@ assert(not nil_review_text:match("grant root:"), "patch review should treat null
 assert(nil_review_text:match("No patch details"), "patch review should tolerate null changes")
 local review_buf = patch_review.open(review_proposal)
 assert(
-  vim.b[review_buf].codex_patch_review_anchors[1].path == "codex-context-smoke.lua",
+  vim.b[review_buf].coact_patch_review_anchors[1].path == "codex-context-smoke.lua",
   "review buffer should store anchors"
 )
 for _, winid in ipairs(vim.fn.win_findbuf(review_buf)) do
@@ -1504,9 +1504,9 @@ if vim.api.nvim_buf_is_valid(nil_request_buf) then
   vim.api.nvim_buf_delete(nil_request_buf, { force = true })
 end
 local original_patch_review_open = patch_review.open
-local original_rpc_respond_for_failed_review = require("codex.rpc").respond
+local original_rpc_respond_for_failed_review = require("coact.rpc").respond
 local failed_review_response = nil
-require("codex.rpc").respond = function(id, result)
+require("coact.rpc").respond = function(id, result)
   failed_review_response = { id = id, result = result }
 end
 patch_review.open = function()
@@ -1522,7 +1522,7 @@ local failed_review_buf = patch_review.request_approval({
   },
 })
 patch_review.open = original_patch_review_open
-require("codex.rpc").respond = original_rpc_respond_for_failed_review
+require("coact.rpc").respond = original_rpc_respond_for_failed_review
 assert(failed_review_buf == nil, "failed patch review should not return a buffer")
 assert(
   failed_review_response
@@ -1531,7 +1531,7 @@ assert(
   "failed patch review should cancel the app-server approval"
 )
 assert(not state.pop_pending_request("smoke-failed-approval"), "failed patch review should not leave a pending request")
-local dynamic_tools = require("codex.dynamic_tools")
+local dynamic_tools = require("coact.dynamic_tools")
 local patch_dir = vim.fn.tempname()
 vim.fn.mkdir(patch_dir, "p")
 vim.fn.writefile({ "one", "two" }, vim.fs.joinpath(patch_dir, "sample.txt"))
@@ -1598,7 +1598,7 @@ assert(
   "native Codex apply_patch review should not write absolute paths during verification"
 )
 local native_written = false
-require("codex.patch_session").open({
+require("coact.patch_session").open({
   cwd = patch_dir,
   changes = native_changes,
   interactive = false,
@@ -1624,7 +1624,7 @@ local review_only_patch = table.concat({
 }, "\n")
 local review_only_changes = assert(dynamic_tools._changes_from_native_apply_patch(patch_dir, review_only_patch))
 local review_only_seen_final = false
-require("codex.patch_session").open({
+require("coact.patch_session").open({
   cwd = patch_dir,
   changes = review_only_changes,
   interactive = false,
@@ -1655,7 +1655,7 @@ local session_patch = table.concat({
   " gamma",
 }, "\n")
 local session_done = false
-local patch_session = require("codex.patch_session")
+local patch_session = require("coact.patch_session")
 local session = patch_session.open({
   cwd = session_dir,
   changes = dynamic_tools._changes_from_unified_patch(session_patch),
@@ -1670,7 +1670,7 @@ assert(
   "nvim.apply_patch review should open directly in the edited file buffer"
 )
 assert(patch_session._active_session(0) == session, "patch session should track active edited buffers")
-local diff_ns = vim.api.nvim_get_namespaces()["codex.patch_session.diff"]
+local diff_ns = vim.api.nvim_get_namespaces()["coact.patch_session.diff"]
 local session_hunk = session.hunks[1]
 local session_block = session.blocks[1]
 assert(
@@ -1726,7 +1726,7 @@ do
   for _, mark in ipairs(session_marks) do
     if
       mark[4]
-      and mark[4].hl_group == "CodexPatchReviewAfterChar"
+      and mark[4].hl_group == "CoactPatchReviewAfterChar"
       and mark[4].end_col
       and mark[4].end_col > mark[3]
     then
@@ -1738,13 +1738,13 @@ do
     vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_extmark_ids[1], { details = true })
   local session_old_virtual = vim.inspect(session_old_mark[3].virt_lines)
   assert(
-    session_old_virtual:match("CodexPatchReviewBefore")
+    session_old_virtual:match("CoactPatchReviewBefore")
       and not session_old_virtual:match("alpha")
       and not session_old_virtual:match("gamma")
-      and session_old_virtual:match("CodexPatchReviewBeforeChar"),
+      and session_old_virtual:match("CoactPatchReviewBeforeChar"),
     "patch session should show only deleted lines as old virtual diff content with character highlights"
   )
-  local hint_ns = vim.api.nvim_get_namespaces()["codex.patch_session.hint"]
+  local hint_ns = vim.api.nvim_get_namespaces()["coact.patch_session.hint"]
   local hint_mark = vim.api.nvim_buf_get_extmarks(session_hunk.bufnr, hint_ns, 0, -1, { details = true })[1]
   local hint_text = hint_mark and vim.inspect(hint_mark[4].virt_lines) or ""
   assert(
@@ -1766,16 +1766,16 @@ vim.wait(1000, function()
 end, 20)
 assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch block should restore original file content")
 do
-  local previous_active_thread_id = require("codex.state").active_thread_id
+  local previous_active_thread_id = require("coact.state").active_thread_id
   vim.cmd("tabnew")
   local codex_review_win = vim.api.nvim_get_current_win()
   local codex_review_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(codex_review_buf, "codex://thread/smoke-patch-window")
+  vim.api.nvim_buf_set_name(codex_review_buf, "coact://thread/smoke-patch-window")
   vim.bo[codex_review_buf].buftype = "nofile"
   vim.bo[codex_review_buf].filetype = "codex"
-  vim.b[codex_review_buf].codex_thread_id = "smoke-patch-window"
+  vim.b[codex_review_buf].coact_thread_id = "smoke-patch-window"
   vim.api.nvim_win_set_buf(codex_review_win, codex_review_buf)
-  local smoke_window_state = require("codex.state")
+  local smoke_window_state = require("coact.state")
   smoke_window_state.set_buffer("smoke-patch-window", codex_review_buf, codex_review_win)
   local preserve_chat_file = vim.fs.joinpath(session_dir, "preserve-chat.txt")
   vim.fn.writefile({ "chat", "old" }, preserve_chat_file)
@@ -1795,11 +1795,11 @@ do
   })
   assert(
     vim.api.nvim_win_get_buf(codex_review_win) == codex_review_buf,
-    "patch session should not replace the Codex chat window with the review file buffer"
+    "patch session should not replace the Coact chat window with the review file buffer"
   )
   assert(
     vim.api.nvim_get_current_win() ~= codex_review_win and patch_session._active_session(0) == preserve_chat_session,
-    "patch session should open a separate review window when launched from a Codex chat buffer"
+    "patch session should open a separate review window when launched from a Coact chat buffer"
   )
   patch_session._accept_block(preserve_chat_session, preserve_chat_session.blocks[1])
   assert(vim.fn.readfile(preserve_chat_file)[2] == "new", "separate review window should still write accepted edits")
@@ -1901,7 +1901,7 @@ do
   local budget_marks = vim.api.nvim_buf_get_extmarks(budget_session.hunks[1].bufnr, diff_ns, 0, -1, { details = true })
   local has_budget_char_mark = false
   for _, mark in ipairs(budget_marks) do
-    if mark[4] and mark[4].hl_group == "CodexPatchReviewAfterChar" then
+    if mark[4] and mark[4].hl_group == "CoactPatchReviewAfterChar" then
       has_budget_char_mark = true
       break
     end
@@ -2001,7 +2001,7 @@ assert(
   )
 end)();
 (function()
-  local pi_bridge = require("codex.providers.pi_edit_bridge")
+  local pi_bridge = require("coact.providers.pi_edit_bridge")
   local bridge_file = vim.fs.joinpath(session_dir, "pi-bridge.txt")
   vim.fn.writefile({ "red", "green", "blue" }, bridge_file)
   local bridge_result = nil
@@ -2036,7 +2036,7 @@ end)();
     "Pi edit bridge result should include patch details for Pi"
   )
 end)()
-codex.setup({ dynamic_tools = { prefer_nvim_apply_patch = true } })
+coact.setup({ dynamic_tools = { prefer_nvim_apply_patch = true } })
 local tool_dir = vim.fn.tempname()
 vim.fn.mkdir(tool_dir, "p")
 local tool_file = vim.fs.joinpath(tool_dir, "tool.txt")
@@ -2051,7 +2051,7 @@ local tool_patch = table.concat({
   " blue",
   "*** End Patch",
 }, "\n")
-local rpc = require("codex.rpc")
+local rpc = require("coact.rpc")
 local original_rpc_respond = rpc.respond;
 (function()
   local stale_tool_file = vim.fs.joinpath(tool_dir, "stale-tool.txt")
@@ -2255,10 +2255,10 @@ assert(
   not dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
   "turn cleanup should clear turn-scoped Neovim auto-apply"
 )
-codex.setup()
+coact.setup()
 
 local done = false
-local source = require("codex.completion.blink").new()
+local source = require("coact.completion.blink").new()
 source:get_completions({
   line = "@dia",
   cursor = { 1, 4 },
@@ -2373,7 +2373,7 @@ source:get_completions({
 end)
 assert(nvim_tool_done, "slash completion should filter dynamic tool-looking prefixes")
 
-local slash = require("codex.slash")
+local slash = require("coact.slash")
 assert(slash.parse("/model").name == "model", "slash parser should parse command names")
 assert(slash.parse("/goal ship it").raw_args == "ship it", "slash parser should keep raw args")
 for _, command in ipairs(slash._commands) do
@@ -2395,7 +2395,7 @@ slash._present_result({
 })
 vim.ui.select = original_ui_select
 assert(select_formatted == "profile: smoke", "slash select presenter should stringify vim.NIL-safe labels")
-local rpc = require("codex.rpc")
+local rpc = require("coact.rpc")
 local original_rpc_request = rpc.request
 local model_list_requests = 0
 rpc.request = function(method, params, callback)
@@ -2466,7 +2466,7 @@ state.ensure_thread("thread-fast-status", {
   config = { model = "gpt-5-codex", service_tier = "fast" },
   status = "active",
 })
-local util = require("codex.util")
+local util = require("coact.util")
 local original_notify = util.notify
 local fast_status_message = nil
 util.notify = function(message)
@@ -2531,7 +2531,7 @@ assert(
 )
 assert(slash_new_prompt == "start here", "slash /new should call the local thread action")
 assert(slash._sandbox_policy("read-only").type == "readOnly", "slash sandbox helper should map app-server policy")
-codex.setup();
+coact.setup();
 (function()
   local codex_slash_labels = vim.tbl_map(function(item)
     return item.label
@@ -2541,7 +2541,7 @@ end)()
 
 do
   local function smoke_pi_slash_provider()
-    codex.setup({ provider = "pi" })
+    coact.setup({ provider = "pi" })
     local pi_slash_labels = vim.tbl_map(function(item)
       return item.label
     end, slash.items(""))
@@ -2639,17 +2639,17 @@ do
     assert(pi_tree_request.threadId == "pi-thread-tree", "Pi /tree should target the active thread")
     assert(pi_tree_notice == "Pi tree updated", "Pi /tree should notify after refreshing the thread")
     assert(state.get_thread("pi-thread-tree").items["tree-item"], "Pi /tree should update thread state from result")
-    codex.setup()
+    coact.setup()
   end
 
   smoke_pi_slash_provider()
 end
 
-local original_submit_text = codex.submit_text
+local original_submit_text = coact.submit_text
 local executed_slash = nil
 local execute_default_new_text = nil
 local execute_done = false
-codex.submit_text = function(text)
+coact.submit_text = function(text)
   executed_slash = text
 end
 source:execute({
@@ -2665,7 +2665,7 @@ source:execute({
     },
   },
   data = {
-    source = "codex.nvim.slash",
+    source = "coact.nvim.slash",
     command = "model",
   },
 }, function()
@@ -2676,21 +2676,21 @@ end)
 vim.wait(1000, function()
   return executed_slash ~= nil and execute_done
 end, 20)
-codex.submit_text = original_submit_text
+coact.submit_text = original_submit_text
 assert(execute_default_new_text == "", "accepting slash completion should remove the typed slash prefix")
 assert(executed_slash == "/model", "accepting slash completion should execute the slash command")
 assert(execute_done, "slash completion execute should call blink callback")
 
-assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
+assert(require("coact.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 do
-  local pickers = require("codex.pickers")
+  local pickers = require("coact.pickers")
   local original_snacks = package.loaded["snacks"]
-  local original_list_threads = codex.list_threads
-  local original_resume = codex.resume
+  local original_list_threads = coact.list_threads
+  local original_resume = coact.resume
   local picked_opts = nil
   local resumed_thread_id = nil
-  codex.setup({ provider = "pi" })
-  codex.list_threads = function(callback)
+  coact.setup({ provider = "pi" })
+  coact.list_threads = function(callback)
     callback({
       {
         id = "pi:picker-session",
@@ -2703,7 +2703,7 @@ do
       },
     })
   end
-  codex.resume = function(thread_id)
+  coact.resume = function(thread_id)
     resumed_thread_id = thread_id
   end
   package.loaded["snacks"] = {
@@ -2716,9 +2716,9 @@ do
   }
   pickers.threads()
   package.loaded["snacks"] = original_snacks
-  codex.list_threads = original_list_threads
-  codex.resume = original_resume
-  codex.setup()
+  coact.list_threads = original_list_threads
+  coact.resume = original_resume
+  coact.setup()
   assert(picked_opts and picked_opts.title == "Pi Threads", "thread picker title should use the active provider")
   assert(picked_opts.preview == "preview", "thread picker should use item preview data for Snacks")
   assert(
@@ -2731,7 +2731,7 @@ do
   assert(resumed_thread_id == "pi:picker-session", "thread picker should resume the selected provider thread")
 end
 
-local rpc = require("codex.rpc")
+local rpc = require("coact.rpc")
 vim.env.MallocStackLogging = "0"
 vim.env.MallocStackLoggingNoCompact = "0"
 local app_server_env = rpc._app_server_env()
@@ -2804,25 +2804,25 @@ vim.wait(3000, function()
 end, 20)
 assert(rpc_done, "app-server initialize timed out")
 vim.env.CODEX_HOME = previous_codex_home
-local running_status = codex.status()
+local running_status = coact.status()
 assert(running_status.server_running == true, "status should report running server after startup")
 assert(running_status.server_initialized == true, "status should report initialized server after startup")
 
 local thread_done = false
-codex.new_thread()
+coact.new_thread()
 vim.wait(3000, function()
-  thread_done = require("codex.state").active_thread_id ~= nil
+  thread_done = require("coact.state").active_thread_id ~= nil
   return thread_done
 end, 20)
 assert(thread_done, "thread/start timed out")
-assert(codex.status().active_thread_id ~= nil, "status should expose the active thread")
+assert(coact.status().active_thread_id ~= nil, "status should expose the active thread")
 
 local thread = state.ensure_thread("smoke-extmarks", {
   title = "Smoke extmarks",
   cwd = vim.fn.getcwd(),
   generation = "tool_running",
 })
-local events = require("codex.events")
+local events = require("coact.events")
 local repaired_fence_block = events.block_for_item({
   id = "user-fence",
   type = "userMessage",
@@ -2834,7 +2834,7 @@ assert(
   repaired_fence_block.text:match("```%s*\nnext prompt"),
   "userMessage rendering should repair flattened fenced context boundaries"
 )
-_G.__codex_smoke_user_block = events.block_for_item({
+_G.__coact_smoke_user_block = events.block_for_item({
   id = "user-reference-separate",
   type = "userMessage",
   content = {
@@ -2847,10 +2847,10 @@ _G.__codex_smoke_user_block = events.block_for_item({
   },
 }, "turn-reference-separate")
 assert(
-  _G.__codex_smoke_user_block.text == "actual prompt",
+  _G.__coact_smoke_user_block.text == "actual prompt",
   "userMessage rendering should hide separate reference context inputs"
 )
-_G.__codex_smoke_user_block = events.block_for_item({
+_G.__coact_smoke_user_block = events.block_for_item({
   id = "user-reference-flattened",
   type = "userMessage",
   content = {
@@ -2864,7 +2864,7 @@ _G.__codex_smoke_user_block = events.block_for_item({
   },
 }, "turn-reference-flattened")
 assert(
-  _G.__codex_smoke_user_block.text == "actual flattened prompt",
+  _G.__coact_smoke_user_block.text == "actual flattened prompt",
   "userMessage rendering should hide flattened reference context prefixes"
 )
 state.upsert_item("smoke-extmarks", "turn-1", {
@@ -2975,7 +2975,7 @@ assert(
   #events.pending_blocks(server_echo_thread) == 0,
   "pending asset prompt should hide once the same turn has a userMessage echo"
 )
-local render = require("codex.ui.render")
+local render = require("coact.ui.render")
 do
   local markdown_guard_thread = state.ensure_thread("smoke-markdown-guard", {
     title = "Smoke markdown guard",
@@ -3022,7 +3022,7 @@ do
   )
   assert(
     vim.treesitter.highlighter.active and vim.treesitter.highlighter.active[markdown_guard_buf],
-    "codex markdown rendering should keep native buffer-wide Tree-sitter highlighting"
+    "coact markdown rendering should keep native buffer-wide Tree-sitter highlighting"
   )
 end
 local cleared_event_thread = state.ensure_thread("smoke-cleared-event", {
@@ -3040,15 +3040,15 @@ cleared_event_thread.timeline_blocks = {
     local_only = true,
   },
 }
-codex.setup({ render = { virtual_blocks = { default_expanded = true } } })
+coact.setup({ render = { virtual_blocks = { default_expanded = true } } })
 render.render(cleared_event_thread)
 local cleared_event_lines = vim.api.nvim_buf_get_lines(cleared_event_buf, 0, -1, false)
-assert(not vim.tbl_contains(cleared_event_lines, "## Codex"), "cleared agent events should not open a Codex group")
+assert(not vim.tbl_contains(cleared_event_lines, "## Coact"), "cleared agent events should not open a Coact group")
 assert(
   cleared_event_thread.placeholder_marks[1] and cleared_event_thread.placeholder_marks[1].expanded == false,
   "cleared agent events should default to collapsed"
 )
-codex.setup();
+coact.setup();
 (function()
   local final_compact_thread = state.ensure_thread("smoke-final-activity", {
     title = "Smoke final activity",
@@ -3144,7 +3144,7 @@ codex.setup();
       and final_compact_thread.placeholder_marks[1].title == "Thinking finished",
     "completed activity render should expose one collapsed thinking-finished row"
   )
-  local final_detail_lines = require("codex.ui.detail").lines_for(summary_block)
+  local final_detail_lines = require("coact.ui.detail").lines_for(summary_block)
   assert(
     table.concat(final_detail_lines, "\n"):match("# Thinking finished"),
     "activity summary detail should have a clear title"
@@ -3247,7 +3247,7 @@ local core_pending_thread = state.ensure_thread("smoke-core-pending", {
   cwd = vim.fn.getcwd(),
 })
 core_pending_thread.pending_request = { prompt = "core pending", created_at = vim.uv.now() }
-local core = require("codex.core")
+local core = require("coact.core")
 core.handle_notification({
   method = "turn/started",
   params = {
@@ -3374,27 +3374,27 @@ state.upsert_item("smoke-extmarks", "turn-1", {
 buffers.ensure("smoke-extmarks")
 assert(
   vim.treesitter.highlighter.active and vim.treesitter.highlighter.active[thread.bufnr],
-  "codex buffers should use native buffer-wide Markdown Tree-sitter"
+  "coact buffers should use native buffer-wide Markdown Tree-sitter"
 )
 vim.api.nvim_set_current_buf(thread.bufnr)
 buffers.apply_window_options(vim.api.nvim_get_current_win(), thread.bufnr)
 local extmarks =
-  vim.api.nvim_buf_get_extmarks(thread.bufnr, require("codex.ui.render").namespace(), 0, -1, { details = true })
+  vim.api.nvim_buf_get_extmarks(thread.bufnr, require("coact.ui.render").namespace(), 0, -1, { details = true })
 assert(#extmarks > 0, "render should create extmarks")
 assert(#(thread.placeholder_marks or {}) >= 2, "reasoning and tool blocks should be placeholders")
 assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
 assert(thread.fold_levels and thread.fold_levels[3] == ">1", "render should create fold levels for user blocks")
-assert(_G.CodexFoldExpr(3) == ">1", "foldexpr should read thread fold levels")
-local detail_lines = require("codex.ui.detail").lines_for(thread.placeholder_marks[1].block)
+assert(_G.CoactFoldExpr(3) == ">1", "foldexpr should read thread fold levels")
+local detail_lines = require("coact.ui.detail").lines_for(thread.placeholder_marks[1].block)
 assert(table.concat(detail_lines, "\n"):match("# Reasoning"), "detail should render block title")
 
-local render = require("codex.ui.render")
+local render = require("coact.ui.render")
 local win = vim.api.nvim_get_current_win()
 render.prepare_submit_follow(thread, win)
 assert(thread.view_state and thread.view_state[win], "prepare_submit_follow should store per-window state")
 render.on_user_view_changed(thread, win, "cursor")
 
-local core = require("codex.core")
+local core = require("coact.core")
 
 local function assert_handles_notification(message, label)
   local ok, err = pcall(core.handle_notification, message)
@@ -3402,7 +3402,7 @@ local function assert_handles_notification(message, label)
 end
 
 (function()
-  local smoke_config = require("codex.config")
+  local smoke_config = require("coact.config")
   local fast_thread = state.ensure_thread("smoke-stream-fast-path", {
     title = "Smoke stream fast path",
     cwd = vim.fn.getcwd(),
@@ -3482,7 +3482,7 @@ assert_handles_notification({
 }, "command output should ignore null delta")
 assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command delta should not alter output");
 (function()
-  local smoke_config = require("codex.config")
+  local smoke_config = require("coact.config")
   local original_render = render.render
   local render_count = 0
   render.render = function(render_thread)
@@ -3552,10 +3552,10 @@ assert_handles_notification({
     }, " "),
   },
 }, "command output should sanitize PreToolUse blocked output")
-_G.__codex_smoke_sanitized_ansi_output = thread.items["tool-ansi"].aggregatedOutput
-assert(not _G.__codex_smoke_sanitized_ansi_output:match("\27"), "command output should strip ANSI escape sequences")
+_G.__coact_smoke_sanitized_ansi_output = thread.items["tool-ansi"].aggregatedOutput
+assert(not _G.__coact_smoke_sanitized_ansi_output:match("\27"), "command output should strip ANSI escape sequences")
 assert(
-  _G.__codex_smoke_sanitized_ansi_output
+  _G.__coact_smoke_sanitized_ansi_output
     == "Command blocked by PreToolUse hook: User rejected Codex native apply_patch in Neovim.",
   "command output should hide the rejected native apply_patch command body"
 )
@@ -3661,7 +3661,7 @@ local timeline_count = #(thread.timeline_blocks or {});
       run = {
         id = "hook-run-1",
         eventName = "preToolUse",
-        command = "codex-nvim-apply-patch-hook",
+        command = "coact-nvim-apply-patch-hook",
       },
     },
   })
@@ -3674,7 +3674,7 @@ local timeline_count = #(thread.timeline_blocks or {});
         id = "hook-run-1",
         eventName = "preToolUse",
         status = "completed",
-        command = "codex-nvim-apply-patch-hook",
+        command = "coact-nvim-apply-patch-hook",
       },
     },
   })
@@ -3686,7 +3686,7 @@ local timeline_count = #(thread.timeline_blocks or {});
       run = {
         id = "hook-run-2",
         eventName = "preToolUse",
-        command = "codex-nvim-apply-patch-hook",
+        command = "coact-nvim-apply-patch-hook",
       },
     },
   })
@@ -3699,7 +3699,7 @@ local timeline_count = #(thread.timeline_blocks or {});
         id = "hook-run-2",
         eventName = "preToolUse",
         status = "completed",
-        command = "codex-nvim-apply-patch-hook",
+        command = "coact-nvim-apply-patch-hook",
       },
     },
   })
@@ -3733,7 +3733,7 @@ local timeline_count = #(thread.timeline_blocks or {});
       },
     },
   }
-  local legacy_hook_blocks = require("codex.ui.render").select_render_tree(legacy_hook_thread)
+  local legacy_hook_blocks = require("coact.ui.render").select_render_tree(legacy_hook_thread)
   local legacy_hook_count = 0
   local legacy_hook_block = nil
   for _, block in ipairs(legacy_hook_blocks) do
@@ -3792,4 +3792,4 @@ core.handle_notification({
 })
 assert(#(thread.raw_blocks or {}) > 0, "unknown notifications should be retained as raw blocks")
 
-require("codex.rpc").stop()
+require("coact.rpc").stop()

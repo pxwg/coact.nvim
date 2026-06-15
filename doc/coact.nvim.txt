@@ -1,0 +1,591 @@
+*coact.nvim.txt*        Neovim client for coding-agent providers
+
+==============================================================================
+CONTENTS                                                        *coact.nvim*
+
+1. Overview                                      |coact.nvim-overview|
+2. Setup                                         |coact.nvim-setup|
+3. Commands                                      |coact.nvim-commands|
+4. Health                                        |coact.nvim-health|
+5. Prompt tokens                                 |coact.nvim-prompt-tokens|
+6. Patch review                                  |coact.nvim-patch-review|
+7. TUI rendering                                 |coact.nvim-tui|
+8. blink.cmp                                     |coact.nvim-blink|
+9. Events                                        |coact.nvim-events|
+10. Lua API                                      |coact.nvim-api|
+
+==============================================================================
+OVERVIEW                                               *coact.nvim-overview*
+
+coact.nvim is a Neovim workspace for human-agent pair writing. It keeps
+conversation, context, patch review, and branch navigation inside the editor so
+coding agents become collaborators that propose and revise work with you.
+
+coact.nvim runs a coding-agent provider and presents provider threads as Neovim
+buffers. Built-in adapters include Codex app-server through `codex app-server
+--listen stdio://` and Pi RPC through `pi --mode rpc`.
+A thread buffer is named:
+>
+  coact://thread/<thread-id>
+<
+
+The transcript is rendered in a read-only `coact-history` thread buffer.
+Opening a thread starts in preview state, where the transcript uses the full UI
+height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`,
+`c`, `cc`, or `S` to enter compose state and open the unnamed `coact-input`
+composer below it. Type there and press CTRL-S or normal-mode ENTER to submit;
+normal-mode `q` returns to preview without discarding the draft. The composer
+grows with wrapped input up to the configured maximum height, then scrolls
+internally. It intentionally does not use a `coact://` buffer name so
+path-oriented completion sources keep a normal editing context. Reasoning,
+tools, patches, plans, and agent timeline items are rendered as extmark
+placeholder blocks. Unknown provider events are retained as raw event blocks
+and can be shown for debugging.
+
+When a thread is opened from another buffer, coact.nvim tracks that source
+buffer as the thread target for prompt context and Neovim dynamic tools.
+
+File edit approvals are shown as patch proposals in a Neovim review window.
+In pair mode, provider-specific edit bridges review changes in the affected
+Neovim file buffers before the provider runtime continues.
+
+==============================================================================
+SETUP                                                     *coact.nvim-setup*
+
+Minimal setup:
+>
+  require("coact").setup()
+<
+
+Default options:
+>
+  require("coact").setup({
+    provider = "codex", -- "codex" or "pi"
+    app_server = {
+      command = { "codex", "app-server", "--listen", "stdio://" },
+      initialize_timeout_ms = 10000,
+      sanitize_malloc_env = true,
+    },
+    providers = {
+      codex = {},
+      pi = {
+        command = { "pi", "--mode", "rpc" },
+        config_dir = nil,
+        session_dir = nil,
+        provider = nil,
+        model = nil,
+        thinking = nil,
+        no_session = false,
+        no_extensions = nil,
+        no_skills = nil,
+        no_context_files = nil,
+        offline = nil,
+        tools = nil,
+        exclude_tools = nil,
+        extra_args = {},
+        edit_bridge = {
+          enabled = true,
+          timeout_sec = 600,
+        },
+      },
+    },
+    thread = {
+      model = nil,
+      model_provider = nil,
+      service_tier = nil,
+      approval_policy = "on-request",
+      approvals_reviewer = "user",
+      sandbox = "workspace-write",
+      permissions = nil,
+      developer_instructions = nil,
+      base_instructions = nil,
+      personality = nil,
+      ephemeral = false,
+    },
+    buffer = {
+      on_attach = nil,
+    },
+    ui = {
+      layout = "float",
+      width = 0.82,
+      height = 0.82,
+      sidebar_width = 0.42,
+      render_delay_ms = 35,
+      auto_scroll = true,
+      composer = {
+        min_height = 2,
+        max_height = 0.33,
+      },
+    },
+    render = {
+      prompt_marker = "## Prompt",
+      separator = "───",
+      show_raw_events = false,
+      virtual_blocks = {
+        default_expanded = false,
+        max_lines = 80,
+        max_width = 180,
+      },
+    },
+    completion = {
+      enabled = true,
+      ttl_ms = 30000,
+    },
+    edit = {
+      mode = "pair", -- "pair" or "yolo"
+      review = {
+        char_diff_max_lines = 120,
+        char_diff_max_line_bytes = 1000,
+        char_diff_max_total_bytes = 20000,
+        keymaps = {
+          accept = ".",
+          reject = ",",
+          accept_all = "ga",
+          reject_all = "gr",
+          auto_apply = "gA",
+          cancel = "q",
+          next = "n",
+          prev = "p",
+          help = "?",
+        },
+      },
+      native_apply_patch_hook = {
+        enabled = true,
+        timeout_sec = 600,
+        status_message = "Reviewing patch in Neovim",
+      },
+    },
+    dynamic_tools = {
+      enabled = true,
+      prefer_nvim_apply_patch = false,
+    },
+  })
+<
+
+On macOS, `app_server.sanitize_malloc_env` removes inherited
+`MallocStackLogging*` variables before spawning app-server. This avoids noisy
+malloc runtime messages from parent GUI environments; set it to `false` if you
+intentionally need those variables while debugging Codex.
+
+To use Pi as the active provider:
+>
+  require("coact").setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        command = { "pi", "--mode", "rpc" },
+        -- Optional isolation. Omit these to use Pi's normal ~/.pi/agent state.
+        config_dir = nil,
+        session_dir = nil,
+        edit_bridge = {
+          enabled = true,
+          timeout_sec = 600,
+        },
+      },
+    },
+  })
+<
+
+The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to
+Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
+commands, and normalizes Pi streaming, thinking, and tool events into the same
+renderer blocks used by the rest of coact.nvim. In pair edit mode,
+`edit_bridge.enabled` dynamically injects a temporary Pi extension into only
+the Pi process started by coact.nvim. That extension overrides Pi's built-in
+`edit` and `write` tools,
+turns them into Neovim-reviewed file-change proposals, and then lets the
+existing in-buffer patch review write accepted hunks. It does not install or
+modify user Pi extensions or settings.
+
+==============================================================================
+COMMANDS                                               *coact.nvim-commands*
+
+                                                        *:Coact*
+>
+  :Coact new [initial prompt]
+  :Coact open [thread-id]
+  :Coact resume <thread-id>
+  :Coact pick
+  :Coact list
+  :Coact submit
+  :Coact stop
+  :Coact detail
+  :Coact health
+  :Coact status
+  :Coact restart
+  :Coact attach [all]
+  :Coact add-buffer
+  :Coact add-selection
+<
+
+`pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
+`:Coact status` reports provider process state, active/current thread ids, pending
+request counts, and the current thread generation/status.
+
+`:Coact attach` reruns the configured buffer attach hook for the current
+thread buffer. `:Coact attach all` reruns it for every loaded provider thread
+buffer. Configure `buffer.on_attach = function(bufnr, payload) ... end` or
+`require("coact").on("buffer_attached", cb)` to attach editor-local helpers
+such as input-method LSP clients, formula concealers, or buffer-local keymaps.
+
+Command-line completion covers subcommands, `attach all`, loaded chat buffer
+numbers, and loaded thread ids for `open`/`resume`.
+
+`:Coact add-buffer` appends the current source buffer path to the active chat
+prompt using direct `@path` syntax. `:Coact add-selection` appends
+`@selection` when the source buffer has visual selection marks.
+
+==============================================================================
+HEALTH                                                   *coact.nvim-health*
+
+Run:
+>
+  :checkhealth coact
+<
+
+The health provider checks the Neovim version, active provider executable and
+protocol support, the Codex apply_patch runtime when the Codex provider is
+active in pair mode, optional picker and completion integrations, and dynamic
+tool registration. `:Coact health` performs runtime provider initialization.
+
+==============================================================================
+PROMPT TOKENS                                    *coact.nvim-prompt-tokens*
+
+The blink source and parser recognize these prompt token families:
+>
+  $skill:<name>
+
+  /model
+  /permissions
+  /mcp
+  /status
+
+  @file:
+  @image:
+  @buffer
+  @selection
+  @cursor
+  @diagnostics
+  @quickfix
+  @buffers
+  @cwd
+  @behavior
+  @path/to/file
+<
+
+`$skill:<name>` candidates come from the active provider's skill catalog where
+supported. `/...`
+candidates are active-provider CLI-style slash commands such as `/model` and
+`/status`. Slash commands are handled by coact.nvim before
+`turn/start`, so they are not sent to the model as tool-call-like prompt text.
+Accepting a slash completion removes the typed prefix and opens that command's
+page or picker instead of inserting text. Each slash command declares a return
+form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter
+for Neovim rendering. Slash completions and `/help` are filtered by the active
+provider, so Codex app-server-only pages such as `/permissions`, `/sandbox`,
+`/goal`, or `/experimental` do not appear when the Pi provider is active.
+Settings commands such as `/model`, `/fast`,
+`/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental`
+open Neovim pickers backed by provider catalog responses where available and
+update the active thread where the provider supports it. `/model` also offers
+the selected model's advertised thinking-effort choices when the provider
+returns them.
+
+`@...` candidates are Neovim context shortcuts. They expand into additional
+provider inputs before the turn is sent. Argument providers use
+`@provider:input`; paths with spaces can wrap the path in backticks:
+>
+  @file:`path with spaces.lua`
+  @image:`assets/screenshot.png`
+  @lua/coact/init.lua
+<
+The blink source completes paths after `@file:` and `@image:` using that
+backtick form. Its documentation window previews the context that the selected
+`@...` completion will inject, including file contents, image attachment
+metadata, selections, diagnostics, and behavior diffs when available. In insert
+mode, pressing TAB immediately after `@file:` opens `snacks.picker.files` when
+available, with |vim.ui.select()| only as a fallback; the selected file is
+inserted as direct `@path/to/file` syntax. `@image:` keeps the provider form
+because image inputs need image-specific attachment metadata. Custom hooks can
+be registered with `require("coact.context").register_hook(name, callback)`.
+
+When a thread is opened from another window, coact.nvim remembers that source
+buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
+`@diagnostics`, and Neovim dynamic tools do not read a Coact UI buffer itself.
+`@selection` reads the source buffer's visual selection marks and includes file
+and range metadata plus diagnostics in the selected range. Selection context is
+attached only when the prompt explicitly contains `@selection` or
+`:Coact add-selection` inserts it, so context injection remains prompt
+controlled.
+Expanded text contexts are sent before the user request and are labeled as
+reference context, not instructions; the user request remains the final text
+input for semantic priority.
+`@buffer` includes buffer RPC metadata such as bufnr, path, filetype, line
+count, cursor, modified state, and buffer text.
+Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
+aliases, but new completions use `@`.
+
+==============================================================================
+PATCH REVIEW                                      *coact.nvim-patch-review*
+
+Codex provider app-server file-change approvals are normalized into a patch
+proposal.
+The review window supports:
+>
+  a     accept
+  A     accept for session
+  d     decline
+  c     cancel
+  [c    jump to previous file change or diff hunk
+  ]c    jump to next file change or diff hunk
+  <CR>  open related file at the hunk location when available
+  o     open related file at the hunk location when available
+  q     close window without answering
+<
+
+The review buffer indexes file changes and unified-diff hunk headers with
+extmarks so larger patches can be navigated as editor state.
+
+Modern app-server requests use `item/fileChange/requestApproval`. Legacy
+`applyPatchApproval` requests are supported as a protocol fallback. Outside
+pair mode, the active provider still owns the final file-change application
+after approval.
+
+`edit.mode = "pair"` is the default. With the Codex provider, coact.nvim tells
+the app-server to use the native `apply_patch` tool and injects a `PreToolUse`
+hook into the process it starts. The plugin registers trust for that exact hook
+hash through Codex config, while per-session Neovim RPC details are passed
+through environment variables, so pair mode does not need
+`--dangerously-bypass-hook-trust`. The hook previews the patch in the affected
+Neovim file buffers before the native tool completes. Accepting the review writes
+accepted changed blocks through the same path as `nvim.apply_patch`, then returns
+`permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex
+native `apply_patch` can complete without repeating the real edit; rejecting
+returns `permissionDecision: "deny"` with the user's reason. Follow-up
+app-server apply_patch permission and file-change approvals are automatically
+accepted only when their item id was already reviewed by the Neovim hook, so
+pair mode does not require
+`--dangerously-bypass-approvals-and-sandbox`.
+
+The pair-mode native review uses the file-buffer changed-block controls:
+>
+  .     accept current changed block
+  ,     reject current changed block and prompt for a reason
+  ga    accept all remaining changed blocks
+  gr    reject all remaining changed blocks and prompt for a reason
+  q     cancel review
+  n     jump to next pending changed block
+  p     jump to previous pending changed block
+  ?     show review keys
+<
+The review display shows short-key hints above the current changed block, wraps
+long before-lines into readable virtual lines, and highlights changed
+characters inside the current replacement block when it fits the
+`edit.review.char_diff_*` budget.
+You can edit the previewed file buffer before accepting; coact.nvim writes the
+final accepted buffer state and returns the review summary to the provider as
+hook context, including rejection reasons and any diff between the provider
+proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch`
+dynamic tool implementation remains for compatibility and internal tests, but
+it is no longer exposed by default in pair mode.
+
+For the Pi provider, pair mode uses a process-local extension override instead
+of Pi's global extension configuration. coact.nvim appends `--extension
+<tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and
+timeout through environment variables. The override computes the proposed
+`edit`/`write` file content, opens the same in-buffer `patch_session` review
+used by `nvim.apply_patch`, and reports the accepted or rejected result back to
+Pi as the tool result.
+
+`edit.mode = "yolo"` tells the active provider to use its native file-edit path
+directly without the Neovim review bridge. Calls to `nvim.apply_patch` are
+rejected while the tool is not exposed. The legacy option
+`dynamic_tools.prefer_nvim_apply_patch = false` still selects yolo mode unless
+`edit.mode` is set explicitly.
+
+For the legacy/internal `nvim.apply_patch` buffer review:
+>
+  .     accept current changed block
+  ,     reject current changed block and prompt for a reason
+  ga    accept all remaining changed blocks
+  gr    reject all remaining changed blocks and prompt for a reason
+  gA    use Neovim auto-apply for the session
+  q     cancel the review
+  n     next pending changed block
+  p     previous pending changed block
+  ?     show review keys
+<
+Rejected changed-block reasons, partial-apply status, final file state, a final diff, and
+the target buffer's `nvim.diagnostics` output are returned to the provider as
+the dynamic tool result so the agent can continue from the user's feedback when
+that legacy tool is explicitly enabled.
+
+==============================================================================
+TUI RENDERING                                          *coact.nvim-tui*
+
+The renderer follows a modern Neovim TUI shape:
+>
+  Provider item -> Coact block -> rendered buffer lines -> extmark UI
+<
+
+The block types include:
+>
+  UserBlock
+  AssistantBlock
+  ReasoningBlock
+  PlanBlock
+  ToolCallBlock
+  PatchBlock
+  AgentTimelineBlock
+  RawEventBlock
+<
+
+Headers are rendered through overlay extmarks. Reasoning/tool/patch/agent
+blocks are placeholders with virtual body lines. Busy turns show a spinner
+whose label follows the current generation state: thinking, reasoning,
+streaming, tooling, patch review, syncing, or stopping.
+
+The renderer tracks per-window view state. A transcript window near the bottom
+follows the conversation while the active provider streams. Cursor movement or scrolling away
+suspends that follow state for that window.
+
+Rendered user/assistant/error sections populate Vim fold ranges through
+`v:lua.CoactFoldExpr(v:lnum)`. Coact windows keep `foldlevel` high by default,
+so the folds are available without collapsing the transcript on open.
+
+App-server lifecycle notifications such as hooks, auto-approval reviews,
+server-request resolution, context compaction, and model reroutes become
+timeline blocks. Set `render.show_raw_events = true` to also show retained raw
+notification blocks.
+
+Thread/composer buffer keys:
+>
+  CTRL-S    submit prompt
+  ENTER     submit prompt from composer normal mode
+  i/a/...   open composer from history preview
+  za        expand/collapse placeholder block
+  K         open full block detail
+  q         close composer in compose state, close UI from history
+<
+
+                                                        *:Coact-detail*
+`:Coact detail` opens a scratch detail buffer for the block under cursor.
+
+==============================================================================
+BLINK.CMP                                             *coact.nvim-blink*
+
+Example blink.cmp configuration:
+>
+  require("blink.cmp").setup({
+    sources = {
+      default = { "lsp", "path", "snippets", "buffer", "coact" },
+      providers = {
+        coact = {
+          name = "Coact",
+          module = "coact.completion.blink",
+        },
+      },
+    },
+  })
+<
+
+==============================================================================
+EVENTS                                                  *coact.nvim-events*
+
+coact.nvim emits User autocmds for editor integrations:
+>
+  CoactBufferAttached
+<
+    Fired after the buffer attach hook point runs for a transcript or
+    composer buffer. `event.data` includes `bufnr`, `thread_id`, `thread`, and
+    `is_composer`.
+>
+  CoactBufferOpened
+<
+    Fired after a thread buffer is opened in a window. `event.data` includes
+    `bufnr`, `winid`, `prompt_bufnr`, `prompt_winid`, `thread_id`, and
+    `thread`.
+>
+  CoactThreadOpened
+<
+    Fired when app-server reports a thread start.
+>
+  CoactGenerationCompleted
+<
+    Fired when app-server reports a completed generation.
+
+Legacy snake_case User patterns are still emitted for compatibility.
+
+==============================================================================
+LUA API                                                  *coact.nvim-api*
+
+                                                        *coact.setup()*
+setup({opts})~
+    Configure coact.nvim.
+
+                                                        *coact.new_thread()*
+new_thread({opts})~
+    Start a Coact thread and open its buffer.
+
+                                                        *coact.open()*
+open({thread_id})~
+    Open a loaded thread or read a thread by id.
+
+                                                        *coact.resume()*
+resume({thread_id})~
+    Resume a thread by id.
+
+                                                        *coact.submit()*
+submit()~
+    Submit the current Coact buffer prompt.
+
+                                                        *coact.submit_text()*
+submit_text({text}, {thread_id})~
+    Submit text to a thread.
+
+                                                        *coact.stop()*
+stop()~
+    Interrupt the active turn.
+
+                                                        *coact.detail*
+:Coact detail~
+    Open a detail buffer for the block under cursor.
+
+                                                        *coact.list_threads()*
+list_threads({callback})~
+    List threads for the current workspace.
+
+                                                        *coact.pick_thread()*
+pick_thread()~
+    Pick and resume a thread.
+
+                                                        *coact.health()*
+health()~
+    Start app-server if necessary and report whether it initialized.
+
+                                                        *coact.status()*
+status()~
+    Return lightweight runtime state for statuslines and integrations.
+
+                                                        *coact.attach_buffer()*
+attach_buffer({bufnr})~
+    Rerun `buffer.on_attach` and `buffer_attached` hooks for a Coact buffer.
+
+                                                        *coact.attach_all_buffers()*
+attach_all_buffers()~
+    Rerun buffer attach hooks for every loaded provider thread buffer.
+
+                                                        *coact.add_current_buffer()*
+add_current_buffer()~
+    Append the current source buffer path to the active chat prompt.
+
+                                                        *coact.add_selection()*
+add_selection()~
+    Append `@selection` to the active chat prompt when the source buffer has a
+    visual selection.
+
+                                                        *coact.on()*
+on({event}, {callback})~
+    Register a Lua hook. Returns a function that removes the listener.
+
+vim:tw=78:ts=8:ft=help:norl:

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const codexBin = process.env.CODEX_BIN || "codex";
-const keep = process.env.KEEP_CODEX_NVIM_PROBE === "1";
+const keep = process.env.KEEP_COACT_NVIM_PROBE === "1";
 const hookDecision = process.env.PROBE_HOOK_DECISION || "allow";
 const hookSource = process.env.PROBE_HOOK_SOURCE || "config";
 const rejectReason =
@@ -258,7 +258,7 @@ function jsonRpcClient(child) {
 }
 
 async function main() {
-  const root = await mkdtemp(join(tmpdir(), "codex-nvim-pretooluse-"));
+  const root = await mkdtemp(join(tmpdir(), "coact-nvim-pretooluse-"));
   const codexHome = join(root, "codex-home");
   const workspace = join(root, "workspace");
   await mkdir(codexHome, { recursive: true });
@@ -398,8 +398,8 @@ async function main() {
   try {
     await rpc.request("initialize", {
       clientInfo: {
-        name: "codex.nvim-pretooluse-apply-patch-probe",
-        title: "codex.nvim PreToolUse apply_patch probe",
+        name: "coact.nvim-pretooluse-apply-patch-probe",
+        title: "coact.nvim PreToolUse apply_patch probe",
         version: "0.1.0",
       },
       capabilities: { experimentalApi: true },
