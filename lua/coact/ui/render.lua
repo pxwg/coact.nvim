@@ -648,6 +648,8 @@ local spinner_frames = {
   "⠏",
 }
 
+local spinner_interval_ms = 80
+
 local busy_generations = {
   submitted = true,
   waiting_backend = true,
@@ -673,7 +675,7 @@ local function spinner_label(thread)
 end
 
 local function spinner_virt_text(thread)
-  local index = (math.floor(util.now_ms() / 140) % #spinner_frames) + 1
+  local index = (math.floor(util.now_ms() / spinner_interval_ms) % #spinner_frames) + 1
   return { { spinner_frames[index] .. "  Coact " .. spinner_label(thread), "CoactSpinner" } }
 end
 
@@ -717,7 +719,7 @@ local function schedule_spinner_tick(thread)
   pending_spinner_timers[key] = vim.defer_fn(function()
     pending_spinner_timers[key] = nil
     M.update_spinner(thread)
-  end, 140)
+  end, spinner_interval_ms)
 end
 
 function M.update_spinner(thread)
