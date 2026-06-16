@@ -636,15 +636,16 @@ local function apply_auto_closed_fence_marks(thread, bufnr)
 end
 
 local spinner_frames = {
-  "▰▱▱▱▱",
-  "▰▰▱▱▱",
-  "▰▰▰▱▱",
-  "▰▰▰▰▱",
-  "▰▰▰▰▰",
-  "▱▰▰▰▰",
-  "▱▱▰▰▰",
-  "▱▱▱▰▰",
-  "▱▱▱▱▰",
+  "⠋",
+  "⠙",
+  "⠹",
+  "⠸",
+  "⠼",
+  "⠴",
+  "⠦",
+  "⠧",
+  "⠇",
+  "⠏",
 }
 
 local busy_generations = {
