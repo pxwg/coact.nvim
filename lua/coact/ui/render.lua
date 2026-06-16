@@ -570,16 +570,33 @@ local function virtual_body_lines(mark)
   return lines
 end
 
+local function apply_placeholder_mark(_, bufnr, mark)
+  if not mark or not mark.line then
+    return
+  end
+  local opts = {
+    conceal = "",
+    virt_text = placeholder_virt_text(mark),
+    virt_text_pos = "overlay",
+    virt_lines = virtual_body_lines(mark),
+    priority = 1900,
+    strict = false,
+  }
+  if mark.extmark_id then
+    opts.id = mark.extmark_id
+  end
+  local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, mark.line - 1, 0, opts)
+  if ok then
+    mark.extmark_id = id
+  else
+    opts.id = nil
+    mark.extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, opts)
+  end
+end
+
 local function apply_placeholder_marks(thread, bufnr)
   for _, mark in ipairs(thread.placeholder_marks or {}) do
-    vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
-      conceal = "",
-      virt_text = placeholder_virt_text(mark),
-      virt_text_pos = "overlay",
-      virt_lines = virtual_body_lines(mark),
-      priority = 1900,
-      strict = false,
-    })
+    apply_placeholder_mark(thread, bufnr, mark)
   end
 end
 
@@ -1760,14 +1777,32 @@ function M.try_stream_delta(thread, item_id, delta)
   return append_stream_block_delta(thread, range, tostring(delta))
 end
 
+local function refresh_placeholder_block(thread, mark, item_id)
+  local item = thread.items and thread.items[tostring(item_id)]
+  if item then
+    local turn_id = thread.item_turns and thread.item_turns[tostring(item_id)]
+    local block = events.block_for_item(item, turn_id)
+    if block then
+      mark.block = block
+    end
+  end
+  mark.title = placeholder_title(mark.block)
+  mark.meta = placeholder_meta(mark.block)
+  mark.decoration = stream_decoration_for_block(mark.block)
+  mark.body_lines = mark.expanded and placeholder_body_lines(mark.block) or {}
+  thread.render_index[mark.line] = mark.block
+end
+
 function M.try_stream_placeholder_delta(thread, item_id)
   if not thread or not item_id or not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) then
     return false
   end
   local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id[tostring(item_id)]
-  if not mark or mark.expanded then
+  if not mark then
     return false
   end
+  refresh_placeholder_block(thread, mark, item_id)
+  apply_placeholder_mark(thread, thread.bufnr, mark)
   if thread_busy(thread) and thread.spinner_mark then
     apply_spinner_mark(thread, thread.bufnr, thread.spinner_mark)
     schedule_spinner_tick(thread)

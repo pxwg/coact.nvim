@@ -288,6 +288,18 @@ local function agent_label()
   return providers.agent_label()
 end
 
+local placeholder_stream_item_types = {
+  commandExecution = true,
+  mcpToolCall = true,
+  dynamicToolCall = true,
+  fileChange = true,
+  webSearch = true,
+  imageGeneration = true,
+  collabAgentToolCall = true,
+  reasoning = true,
+  plan = true,
+}
+
 local function handle_item(params, completed)
   local item = state.upsert_item(params.threadId, params.turnId, params.item)
   if completed then
@@ -310,6 +322,9 @@ local function handle_item(params, completed)
     elseif item.type == "agentMessage" then
       set_generation(thread, "streaming", agent_label() .. " is responding...")
     end
+  end
+  if placeholder_stream_item_types[item.type] and buffers.try_stream_placeholder_delta(params.threadId, item.id) then
+    return
   end
   schedule(params.threadId)
 end
@@ -487,38 +502,69 @@ handlers["item/agentMessage/delta"] = function(params)
 end
 
 handlers["item/reasoning/textDelta"] = function(params)
+  if util.value(params.delta) == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.content = item.content or {}
   local index = (tonumber(util.value(params.contentIndex)) or 0) + 1
   item.content[index] = text_value(item.content[index]) .. text_value(params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/reasoning/summaryTextDelta"] = function(params)
+  if util.value(params.delta) == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
-  item.summary[1] = text_value(item.summary[1]) .. text_value(params.delta)
+  local index = (tonumber(util.value(params.summaryIndex)) or 0) + 1
+  item.summary[index] = text_value(item.summary[index]) .. text_value(params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/reasoning/summaryPartAdded"] = function(params)
+  local summary_index = tonumber(util.value(params.summaryIndex))
+  local text = util.value(params.text)
+  if summary_index == nil and text == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
-  table.insert(item.summary, text_value(params.text))
+  if summary_index ~= nil then
+    local index = summary_index + 1
+    item.summary[index] = text_value(item.summary[index])
+  else
+    table.insert(item.summary, text_value(text))
+  end
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is reasoning...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/plan/delta"] = function(params)
+  if util.value(params.delta) == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "plan")
   append_field(item, "text", params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is planning...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/commandExecution/outputDelta"] = function(params)
+  if util.value(params.delta) == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "commandExecution")
   append_output_field(item, "aggregatedOutput", params.delta)
   set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is running a command...")
@@ -578,24 +624,46 @@ handlers["item/commandExecution/terminalInteraction"] = function(params)
 end
 
 handlers["item/fileChange/outputDelta"] = function(params)
+  if util.value(params.delta) == nil then
+    return
+  end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "fileChange")
   append_field(item, "output", params.delta)
   set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is preparing edits...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/fileChange/patchUpdated"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "fileChange")
   item.changes = params.changes or {}
   set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is preparing edits...")
-  schedule(params.threadId)
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["item/mcpToolCall/progress"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "mcpToolCall")
-  item.progress = params
-  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is using an MCP tool...")
-  schedule(params.threadId)
+  item.progress = util.value(params.progress) or util.value(params.message) or params
+  if util.value(params.toolName) then
+    item.tool = util.value(params.toolName)
+  end
+  if type(params.args) == "table" then
+    item.arguments = params.args
+    item.input = params.args
+  end
+  local message = util.value(params.message)
+  if message ~= nil then
+    item.progressText = util.clean_tool_output(message)
+    item.progress = item.progressText
+  end
+  append_output_field(item, "output", params.delta)
+  set_generation(state.get_thread(params.threadId), "tool_running", agent_label() .. " is using a tool...")
+  if not buffers.try_stream_placeholder_delta(params.threadId, params.itemId) then
+    schedule(params.threadId)
+  end
 end
 
 handlers["mcpServer/startupStatus/updated"] = function()

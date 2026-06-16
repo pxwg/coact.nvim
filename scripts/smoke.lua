@@ -609,6 +609,67 @@ do
       and pi_state_thread.items["pi-turn-smoke:assistant:0"].text == "hello from pi",
     "Pi normalized deltas should update the shared thread item model"
   )
+  local pi_toolcall_start = pi_provider.decode_notification({
+    type = "message_update",
+    assistantMessageEvent = {
+      type = "toolcall_start",
+      contentIndex = 1,
+      partial = {
+        role = "assistant",
+        content = {
+          { type = "text", text = "hello from pi" },
+          {
+            type = "toolCall",
+            id = "pi-tool-call",
+            name = "read",
+            arguments = { path = "README.md" },
+            partialArgs = '{"path":"README.md"}',
+          },
+        },
+      },
+    },
+  })
+  assert(
+    pi_toolcall_start
+      and pi_toolcall_start.message.method == "item/started"
+      and pi_toolcall_start.message.params.item.id == "pi-tool-call"
+      and pi_toolcall_start.message.params.item.tool == "read",
+    "Pi toolcall_start should normalize the content block instead of creating a pi.dynamic stub"
+  )
+  require("coact.core").handle_notification(pi_toolcall_start.message)
+  assert(
+    pi_state_thread.items["pi-tool-call"]
+      and pi_state_thread.items["pi-tool-call"].tool == "read"
+      and pi_state_thread.items["pi-tool-call"].arguments.path == "README.md"
+      and not pi_state_thread.items["pi-turn-smoke:assistant:1"],
+    "Pi tool call streaming should use the real tool id and avoid assistant-id stubs"
+  )
+  local pi_toolcall_delta = pi_provider.decode_notification({
+    type = "message_update",
+    assistantMessageEvent = {
+      type = "toolcall_delta",
+      contentIndex = 1,
+      partial = {
+        role = "assistant",
+        content = {
+          { type = "text", text = "hello from pi" },
+          {
+            type = "toolCall",
+            id = "pi-tool-call",
+            name = "read",
+            arguments = { path = "README.md", offset = 2 },
+            partialArgs = '{"path":"README.md","offset":2}',
+          },
+        },
+      },
+    },
+  })
+  require("coact.core").handle_notification(pi_toolcall_delta.message)
+  local pi_tool_block = require("coact.events").block_for_item(pi_state_thread.items["pi-tool-call"], "pi-turn-smoke")
+  assert(
+    pi_state_thread.items["pi-tool-call"].arguments.offset == 2 and pi_tool_block.tool == "pi.read",
+    "Pi toolcall_delta should stream concrete tool arguments under the Pi namespace"
+  )
   local pi_tool_start = pi_provider.decode_notification({
     type = "tool_execution_start",
     toolCallId = "tool-smoke",
@@ -627,6 +688,25 @@ do
     pi_state_thread.items["tool-smoke"].command == "pwd"
       and pi_state_thread.items["tool-smoke"].aggregatedOutput:match("one\ntwo"),
     "Pi bash tool events should normalize to commandExecution items"
+  )
+  local pi_dynamic_tool_start = pi_provider.decode_notification({
+    type = "tool_execution_start",
+    toolCallId = "tool-read",
+    toolName = "read",
+    args = { path = "README.md" },
+  })
+  require("coact.core").handle_notification(pi_dynamic_tool_start.message)
+  local pi_dynamic_tool_update = pi_provider.decode_notification({
+    type = "tool_execution_update",
+    toolCallId = "tool-read",
+    toolName = "read",
+    partialResult = { content = { { type = "text", text = "partial read output" } } },
+  })
+  require("coact.core").handle_notification(pi_dynamic_tool_update.message)
+  assert(
+    pi_state_thread.items["tool-read"].tool == "read"
+      and pi_state_thread.items["tool-read"].output:match("partial read output"),
+    "Pi dynamic tool progress should stream into tool output before completion"
   );
   (function()
     local pi_ui_sent = {}
@@ -2834,6 +2914,23 @@ assert(
   repaired_fence_block.text:match("```%s*\nnext prompt"),
   "userMessage rendering should repair flattened fenced context boundaries"
 )
+_G.__coact_smoke_dynamic_content_block = events.block_for_item({
+  id = "dynamic-content",
+  type = "dynamicToolCall",
+  namespace = "nvim",
+  tool = "lookup",
+  arguments = { key = "smoke" },
+  status = "completed",
+  contentItems = {
+    { type = "inputText", text = "dynamic tool output" },
+  },
+  success = true,
+}, "turn-dynamic")
+assert(
+  _G.__coact_smoke_dynamic_content_block.output == "dynamic tool output"
+    and _G.__coact_smoke_dynamic_content_block.text == "dynamic tool output",
+  "dynamic tool call blocks should render completed Codex contentItems"
+)
 _G.__coact_smoke_user_block = events.block_for_item({
   id = "user-reference-separate",
   type = "userMessage",
@@ -3510,6 +3607,15 @@ assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command 
     end, 5)
     assert(render_count == 0, "hidden command output delta should not schedule a full render")
 
+    local function mark_body_contains(mark, needle)
+      for _, line in ipairs(mark.body_lines or {}) do
+        if tostring(line):find(needle, 1, true) then
+          return true
+        end
+      end
+      return false
+    end
+
     local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id["tool-1"]
     assert(mark, "tool placeholder should remain indexed by item id")
     mark.expanded = true
@@ -3521,11 +3627,34 @@ assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command 
         itemId = "tool-1",
         delta = "\nvisible output",
       },
-    }, "expanded command output delta should fall back to full render")
+    }, "expanded command output delta should update placeholder virtual lines")
     vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
-      return render_count > 0
+      return false
     end, 5)
-    assert(render_count > 0, "expanded command output delta should schedule a full render")
+    assert(render_count == 0, "expanded command output delta should not schedule a full render")
+    assert(mark_body_contains(mark, "visible output"), "expanded command output should refresh placeholder body lines")
+
+    local reasoning_mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id["reasoning-1"]
+    assert(reasoning_mark, "reasoning placeholder should remain indexed by item id")
+    reasoning_mark.expanded = true
+    assert_handles_notification({
+      method = "item/reasoning/textDelta",
+      params = {
+        threadId = "smoke-extmarks",
+        turnId = "turn-1",
+        itemId = "reasoning-1",
+        contentIndex = 0,
+        delta = " streamed thought",
+      },
+    }, "expanded reasoning delta should update placeholder virtual lines")
+    vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
+      return false
+    end, 5)
+    assert(render_count == 0, "expanded reasoning delta should not schedule a full render")
+    assert(
+      mark_body_contains(reasoning_mark, "streamed thought"),
+      "expanded reasoning should refresh placeholder body lines"
+    )
   end)
   render.render = original_render
   assert(ok, err)
@@ -3614,6 +3743,52 @@ assert_handles_notification({
   },
 }, "reasoning summary parts should accept null text")
 assert(type(thread.items["reasoning-1"].summary[#thread.items["reasoning-1"].summary]) == "string")
+assert_handles_notification({
+  method = "item/reasoning/summaryPartAdded",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "reasoning-1",
+    summaryIndex = 1,
+  },
+}, "Codex reasoning summary part boundary should accept summaryIndex without text")
+assert(thread.items["reasoning-1"].summary[2] == "", "summaryPartAdded should initialize indexed summary slots")
+assert_handles_notification({
+  method = "item/reasoning/summaryTextDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "reasoning-1",
+    summaryIndex = 1,
+    delta = "second summary",
+  },
+}, "Codex reasoning summary delta should use summaryIndex")
+assert(thread.items["reasoning-1"].summary[2] == "second summary", "summary delta should update indexed summary slots")
+
+state.upsert_item("smoke-extmarks", "turn-1", {
+  id = "mcp-progress",
+  type = "mcpToolCall",
+  server = "smoke",
+  tool = "lookup",
+  status = "inProgress",
+  arguments = { query = "stream" },
+})
+assert_handles_notification({
+  method = "item/mcpToolCall/progress",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "mcp-progress",
+    message = "fetching page 1",
+  },
+}, "Codex MCP progress message should stream as readable tool output")
+_G.__coact_smoke_mcp_progress_block = events.block_for_item(thread.items["mcp-progress"], "turn-1")
+assert(
+  thread.items["mcp-progress"].progressText == "fetching page 1"
+    and _G.__coact_smoke_mcp_progress_block.text == "fetching page 1"
+    and _G.__coact_smoke_mcp_progress_block.output == "fetching page 1",
+  "MCP progress message should render as tool progress text instead of raw notification JSON"
+)
 
 assert_handles_notification({
   method = "process/outputDelta",

@@ -193,7 +193,33 @@ local function file_change_output(item)
   }
 end
 
+local function dynamic_content_text(content_items)
+  if type(content_items) ~= "table" then
+    return ""
+  end
+  local lines = {}
+  for _, entry in ipairs(content_items) do
+    if type(entry) == "table" then
+      if entry.type == "inputText" and entry.text and entry.text ~= "" then
+        table.insert(lines, tostring(entry.text))
+      elseif entry.type == "inputImage" and entry.imageUrl and entry.imageUrl ~= "" then
+        table.insert(lines, "[image] " .. tostring(entry.imageUrl))
+      end
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+local function dynamic_tool_output(item)
+  local text = dynamic_content_text(item.contentItems)
+  if text ~= "" then
+    return text
+  end
+  return item.output or item.result or item.contentItems
+end
+
 local function tool_name(item)
+  local name = item.tool or item.name or item.toolName
   if item.type == "commandExecution" then
     return "Bash"
   end
@@ -201,10 +227,10 @@ local function tool_name(item)
     return "apply_patch"
   end
   if item.type == "mcpToolCall" then
-    return (item.server and (item.server .. "/") or "") .. tostring(item.tool or "mcp")
+    return (item.server and (item.server .. "/") or "") .. tostring(name or "mcp")
   end
   if item.type == "dynamicToolCall" then
-    return (item.namespace and (item.namespace .. ".") or "") .. tostring(item.tool or "dynamic")
+    return (item.namespace and (item.namespace .. ".") or "") .. tostring(name or "dynamic")
   end
   if item.type == "webSearch" then
     return "web_search"
@@ -219,8 +245,8 @@ local function tool_name(item)
 end
 
 local function tool_block(item, turn_id)
-  local input = item.arguments or item.input or item
-  local output = item.result or item.output or item.error
+  local input = item.input or item.arguments or item
+  local output = item.result or item.output or item.error or item.progress
   if item.type == "commandExecution" then
     input = command_input(item)
     output = command_output(item)
@@ -236,17 +262,27 @@ local function tool_block(item, turn_id)
   elseif item.type == "imageGeneration" then
     input = { revisedPrompt = item.revisedPrompt }
     output = { result = item.result, savedPath = item.savedPath }
+  elseif item.type == "dynamicToolCall" then
+    output = dynamic_tool_output(item)
   end
+  local state_value = status_of(item)
+  local progress_text = (state_value == "inProgress" or state_value == "running") and item.progressText or nil
   return {
     type = item.type == "fileChange" and "PatchBlock" or "ToolCallBlock",
     message_id = turn_id,
     item_id = item.id,
     tool_call_id = item.id,
     tool = tool_name(item),
-    state = status_of(item),
+    state = state_value,
     input = input,
     output = output,
-    text = first_string(item.text, item.aggregatedOutput, item.output),
+    text = first_string(
+      item.text,
+      item.aggregatedOutput,
+      item.output,
+      progress_text,
+      dynamic_content_text(item.contentItems)
+    ),
     raw = item,
   }
 end

@@ -55,6 +55,7 @@ local runtime = {
   turn_seq = 0,
   tool_output = {},
   tool_args = {},
+  tool_calls = {},
 }
 
 local thinking_levels = {
@@ -796,6 +797,7 @@ function M.custom_request(rpc, method, params, callback)
     runtime.last_turn_id = turn_id
     runtime.tool_output = {}
     runtime.tool_args = {}
+    runtime.tool_calls = {}
     local message, images = prompt_from_input(params.input)
     if message == "" and #images == 0 then
       callback({ message = "Pi prompt is empty" }, nil)
@@ -938,39 +940,117 @@ local function tool_item_type(tool_name)
   return tool_name == "bash" and "commandExecution" or "dynamicToolCall"
 end
 
+local function tool_result_text(result)
+  if type(result) == "string" then
+    return result
+  end
+  if type(result) ~= "table" then
+    return ""
+  end
+  if result.content ~= nil then
+    return text_content(result.content)
+  end
+  return text_content(result)
+end
+
 local function tool_item(tool_call_id, tool_name, args, state_value, result)
-  local key = tostring(tool_call_id)
+  local key = util.value(tool_call_id)
+  if key == nil or key == "" then
+    return nil
+  end
+  key = tostring(key)
+  local remembered = runtime.tool_calls[key] or {}
+  local name = util.value(tool_name) or remembered.name
   args = args or runtime.tool_args[key]
+  local output_text = result and tool_result_text(result) or runtime.tool_output[key]
   local item = {
     id = key,
-    type = tool_item_type(tool_name),
+    type = tool_item_type(name),
     status = state_value,
-    tool = tool_name,
+    tool = name,
     arguments = args,
     input = args,
     result = result,
   }
   if item.type == "commandExecution" then
     item.command = args and args.command
-    item.aggregatedOutput = result and text_content(result.content) or runtime.tool_output[tostring(tool_call_id)]
+    item.aggregatedOutput = output_text
   else
     item.namespace = "pi"
+    if output_text and output_text ~= "" then
+      item.output = output_text
+    end
   end
   return item
 end
 
-local function tool_result_text(result)
-  if type(result) ~= "table" then
-    return ""
+local function assistant_content_block(partial, index)
+  if type(partial) ~= "table" then
+    return nil
   end
-  return text_content(result.content)
+  local content = type(partial.content) == "table" and partial.content or {}
+  local block = content[(tonumber(index) or 0) + 1]
+  return type(block) == "table" and block or nil
+end
+
+local function tool_call_from_event(event, index)
+  if type(event) ~= "table" then
+    return nil
+  end
+  if type(event.toolCall) == "table" then
+    return event.toolCall
+  end
+  local block = assistant_content_block(event.partial, index)
+  if block and block.type == "toolCall" then
+    return block
+  end
+  if type(event.partial) == "table" and event.partial.type == "toolCall" then
+    return event.partial
+  end
+  return nil
+end
+
+local function tool_item_from_call(tool, state_value)
+  if type(tool) ~= "table" then
+    return nil
+  end
+  local key = util.value(tool.id)
+  if key == nil or key == "" then
+    return nil
+  end
+  key = tostring(key)
+  local remembered = runtime.tool_calls[key] or {}
+  local name = util.value(tool.name) or remembered.name
+  if name == nil or name == "" then
+    return nil
+  end
+  local args = util.value(tool.arguments) or runtime.tool_args[key] or {}
+  runtime.tool_args[key] = args
+  local partial_json = util.value(tool.partialJson) or util.value(tool.partialArgs)
+  runtime.tool_calls[key] = vim.tbl_extend("force", runtime.tool_calls[key] or {}, {
+    name = name,
+    partialJson = partial_json,
+  })
+  local item = tool_item(key, name, args, state_value)
+  if not item then
+    return nil
+  end
+  if partial_json and partial_json ~= "" then
+    item.partialJson = partial_json
+    if type(item.input) ~= "table" or vim.tbl_isempty(item.input) then
+      item.input = { partialJson = partial_json }
+    end
+  end
+  return item
 end
 
 local function tool_update_delta(tool_call_id, result)
   local key = tostring(tool_call_id)
   local text = tool_result_text(result)
   local previous = runtime.tool_output[key] or ""
-  runtime.tool_output[key] = text
+  if text ~= "" then
+    runtime.tool_output[key] = text
+  end
   if text:sub(1, #previous) == previous then
     return text:sub(#previous + 1)
   end
@@ -999,7 +1079,10 @@ local function message_items(message, status)
         content = { tostring(block.thinking or "") },
       })
     elseif block.type == "toolCall" then
-      table.insert(items, tool_item(block.id or assistant_item_id(zero_index), block.name, block.arguments, status))
+      local item = tool_item_from_call(block, status)
+      if item then
+        table.insert(items, item)
+      end
     end
   end
   if #items == 0 and message.errorMessage then
@@ -1156,12 +1239,26 @@ function M.decode_notification(message)
         delta = event.delta,
       })
     end
-    if event.type == "toolcall_start" and type(event.partial) == "table" then
-      local tool = event.partial
+    if event.type == "toolcall_start" or event.type == "toolcall_delta" then
+      local item = tool_item_from_call(tool_call_from_event(event, index), "running")
+      if not item then
+        return nil
+      end
       return notification("item/started", {
         threadId = thread_id,
         turnId = turn_id,
-        item = tool_item(tool.id or assistant_item_id(index), tool.name, tool.arguments, "running"),
+        item = item,
+      })
+    end
+    if event.type == "toolcall_end" then
+      local item = tool_item_from_call(tool_call_from_event(event, index), "completed")
+      if not item then
+        return nil
+      end
+      return notification("item/completed", {
+        threadId = thread_id,
+        turnId = turn_id,
+        item = item,
       })
     end
     return nil
@@ -1184,10 +1281,14 @@ function M.decode_notification(message)
 
   if message.type == "tool_execution_start" then
     runtime.tool_args[tostring(message.toolCallId)] = message.args
+    local item = tool_item(message.toolCallId, message.toolName, message.args, "running")
+    if not item then
+      return nil
+    end
     return notification("item/started", {
       threadId = thread_id,
       turnId = turn_id,
-      item = tool_item(message.toolCallId, message.toolName, message.args, "running"),
+      item = item,
     })
   end
 
@@ -1206,21 +1307,28 @@ function M.decode_notification(message)
       threadId = thread_id,
       turnId = turn_id,
       itemId = tostring(message.toolCallId),
+      toolName = message.toolName,
+      args = runtime.tool_args[tostring(message.toolCallId)],
+      delta = tool_update_delta(message.toolCallId, message.partialResult),
       progress = message.partialResult,
     })
   end
 
   if message.type == "tool_execution_end" then
+    local item = tool_item(
+      message.toolCallId,
+      message.toolName,
+      message.args,
+      message.isError and "error" or "completed",
+      message.result
+    )
+    if not item then
+      return nil
+    end
     return notification("item/completed", {
       threadId = thread_id,
       turnId = turn_id,
-      item = tool_item(
-        message.toolCallId,
-        message.toolName,
-        message.args,
-        message.isError and "error" or "completed",
-        message.result
-      ),
+      item = item,
     })
   end
 
