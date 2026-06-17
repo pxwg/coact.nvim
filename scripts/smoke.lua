@@ -577,6 +577,31 @@ do
     { type = "skill", name = "smoke" },
   })
   assert(pi_prompt:match("hello") and pi_prompt:match("/skill:smoke"), "Pi prompts should flatten Coact inputs")
+  _G.__coact_smoke_pi_image_path = vim.fs.joinpath(pi_temp, "pi smoke image.png")
+  vim.fn.writefile({ "fake png" }, _G.__coact_smoke_pi_image_path)
+  _G.__coact_smoke_pi_image_prompt, _G.__coact_smoke_pi_images = pi_provider._prompt_from_input({
+    { type = "localImage", path = _G.__coact_smoke_pi_image_path },
+  })
+  assert(
+    _G.__coact_smoke_pi_image_prompt:match("%[local image%]"),
+    "Pi image-only prompts should include an image reference"
+  )
+  assert(
+    #_G.__coact_smoke_pi_images == 1
+      and _G.__coact_smoke_pi_images[1].type == "image"
+      and _G.__coact_smoke_pi_images[1].mimeType == "image/png"
+      and _G.__coact_smoke_pi_images[1].data,
+    "Pi prompts should encode local image attachments for RPC"
+  )
+  _G.__coact_smoke_pi_mismatched_image_path = vim.fs.joinpath(pi_temp, "pi smoke mismatched.png")
+  vim.fn.writefile({ "GIF89a" }, _G.__coact_smoke_pi_mismatched_image_path)
+  _G.__coact_smoke_pi_mismatched_prompt, _G.__coact_smoke_pi_mismatched_images = pi_provider._prompt_from_input({
+    { type = "localImage", path = _G.__coact_smoke_pi_mismatched_image_path },
+  })
+  assert(
+    _G.__coact_smoke_pi_mismatched_images[1] and _G.__coact_smoke_pi_mismatched_images[1].mimeType == "image/gif",
+    "Pi image attachments should prefer sniffed MIME type over extension fallback"
+  )
   local pi_response = pi_provider.decode_response({
     id = "req-1",
     type = "response",

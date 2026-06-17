@@ -546,7 +546,31 @@ local function merge_current_thread(threads, state_result, attrs)
   return threads
 end
 
-local function image_mime(path)
+local function byte_at(value, index)
+  return string.byte(value or "", index) or -1
+end
+
+local function detect_image_mime(bytes)
+  if byte_at(bytes, 1) == 0xff and byte_at(bytes, 2) == 0xd8 and byte_at(bytes, 3) == 0xff then
+    return "image/jpeg"
+  end
+  if bytes:sub(1, 8) == "\137PNG\r\n\26\n" then
+    return "image/png"
+  end
+  if bytes:sub(1, 3) == "GIF" then
+    return "image/gif"
+  end
+  if bytes:sub(1, 4) == "RIFF" and bytes:sub(9, 12) == "WEBP" then
+    return "image/webp"
+  end
+  return nil
+end
+
+local function image_mime(path, bytes)
+  local detected = detect_image_mime(bytes or "")
+  if detected then
+    return detected
+  end
   local ext = tostring(path or ""):match("%.([^./\\]+)$")
   return ext and image_mime_by_ext[ext:lower()] or "application/octet-stream"
 end
@@ -570,12 +594,13 @@ local function read_local_image(path)
   return {
     type = "image",
     data = vim.base64.encode(bytes),
-    mimeType = image_mime(path),
+    mimeType = image_mime(path, bytes),
   }
 end
 
 local function prompt_from_input(input)
   local parts = {}
+  local image_notes = {}
   local images = {}
   for _, item in ipairs(input or {}) do
     if item.type == "text" then
@@ -584,6 +609,7 @@ local function prompt_from_input(input)
       local image = read_local_image(item.path)
       if image then
         table.insert(images, image)
+        table.insert(image_notes, "[local image] " .. tostring(item.path or ""))
       else
         table.insert(parts, "[local image unavailable] " .. tostring(item.path or ""))
       end
@@ -597,20 +623,38 @@ local function prompt_from_input(input)
       table.insert(parts, vim.inspect(item))
     end
   end
+  if #parts == 0 then
+    vim.list_extend(parts, image_notes)
+  end
   return util.trim(table.concat(parts, "\n\n")), images
 end
 
-local function user_item(turn_id, text)
-  return {
-    id = turn_id .. ":user",
-    type = "userMessage",
-    status = "submitted",
+local function user_item(turn_id, text, input)
+  local content = {}
+  for _, item in ipairs(type(input) == "table" and input or {}) do
+    if
+      item.type == "text"
+      or item.type == "localImage"
+      or item.type == "image"
+      or item.type == "skill"
+      or item.type == "mention"
+    then
+      table.insert(content, vim.deepcopy(item))
+    end
+  end
+  if #content == 0 then
     content = {
       {
         type = "text",
         text = text,
       },
-    },
+    }
+  end
+  return {
+    id = turn_id .. ":user",
+    type = "userMessage",
+    status = "submitted",
+    content = content,
   }
 end
 
@@ -815,7 +859,7 @@ function M.custom_request(rpc, method, params, callback)
       callback(nil, {
         turn = {
           id = turn_id,
-          items = { user_item(turn_id, message) },
+          items = { user_item(turn_id, message, params.input) },
         },
       })
     end)
