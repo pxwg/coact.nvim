@@ -422,6 +422,10 @@ do
     "Pi edit bridge extension should override edit and write tools"
   )
   assert(
+    pi_extension_source:match("small cooperative deltas") and pi_extension_source:match("return control to the user"),
+    "Pi edit bridge edit prompt should discourage autonomous bulk generation"
+  )
+  assert(
     pi_extension_source:match('registerCommand%("coact%-nvim%-tree"') and pi_extension_source:match("navigateTree"),
     "Pi edit bridge extension should register tree navigation"
   );
