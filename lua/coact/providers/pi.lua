@@ -1763,12 +1763,17 @@ function M.on_generation_completed(payload)
   rpc.request("thread/treeSnapshot", { threadId = thread_id }, function() end)
 end
 
-local function assistant_item_id(index)
-  return current_turn_id() .. ":assistant:" .. tostring(index or 0)
+local function message_item_id(kind, index, scope)
+  local scoped_index = scope and (tostring(scope) .. ":" .. tostring(index or 0)) or tostring(index or 0)
+  return current_turn_id() .. ":" .. kind .. ":" .. scoped_index
 end
 
-local function reasoning_item_id(index)
-  return current_turn_id() .. ":reasoning:" .. tostring(index or 0)
+local function assistant_item_id(index, scope)
+  return message_item_id("assistant", index, scope)
+end
+
+local function reasoning_item_id(index, scope)
+  return message_item_id("reasoning", index, scope)
 end
 
 local function tool_item_type(tool_name)
@@ -1892,7 +1897,7 @@ local function tool_update_delta(tool_call_id, result)
   return text
 end
 
-local function message_items(message, status, tree_entry)
+local function message_items(message, status, tree_entry, id_scope)
   local items = {}
   if type(message) ~= "table" or message.role ~= "assistant" then
     return items
@@ -1901,7 +1906,7 @@ local function message_items(message, status, tree_entry)
     local zero_index = index - 1
     if block.type == "text" then
       table.insert(items, {
-        id = assistant_item_id(zero_index),
+        id = assistant_item_id(zero_index, id_scope),
         type = "agentMessage",
         status = status,
         text = tostring(block.text or ""),
@@ -1910,7 +1915,7 @@ local function message_items(message, status, tree_entry)
       })
     elseif block.type == "thinking" then
       table.insert(items, {
-        id = reasoning_item_id(zero_index),
+        id = reasoning_item_id(zero_index, id_scope),
         type = "reasoning",
         status = status,
         content = { tostring(block.thinking or "") },
@@ -1924,7 +1929,7 @@ local function message_items(message, status, tree_entry)
   end
   if #items == 0 and message.errorMessage then
     table.insert(items, {
-      id = assistant_item_id(0),
+      id = assistant_item_id(0, id_scope),
       type = "agentMessage",
       status = "error",
       text = tostring(message.errorMessage),
@@ -1984,9 +1989,11 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
   local turns = {}
   local turn_index = 0
   local summary_index = 0
+  local history_assistant_index = 0
   local tree_cursor = snapshot_cursor(branch_snapshot)
   for _, message in ipairs(type(messages) == "table" and messages or {}) do
     if message.role == "user" then
+      history_assistant_index = 0
       local message_text = text_content(message.content)
       local tree_entry = next_snapshot_entry(tree_cursor, "user", message_text)
       turn_index = turn_index + 1
@@ -2009,12 +2016,16 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
         },
       })
     elseif message.role == "assistant" then
+      history_assistant_index = history_assistant_index + 1
       local tree_entry = next_snapshot_entry(tree_cursor, "assistant", text_content(message.content))
       local turn
       turn, turn_index = ensure_history_turn(turns, turn_index)
       local old_turn = runtime.active_turn_id
       runtime.active_turn_id = turn.id
-      vim.list_extend(turn.items, message_items(message, "completed", tree_entry))
+      vim.list_extend(
+        turn.items,
+        message_items(message, "completed", tree_entry, ("history-%d"):format(history_assistant_index))
+      )
       runtime.active_turn_id = old_turn
     elseif message.role == "toolResult" then
       local turn = turns[#turns]

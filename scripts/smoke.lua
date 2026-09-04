@@ -1754,6 +1754,64 @@ do
     )
   end)();
   (function()
+    local tool_id = "history-order-tool"
+    local history_order_turns = pi_provider._turns_from_messages({
+      {
+        role = "user",
+        content = { { type = "text", text = "preserve history order" } },
+      },
+      {
+        role = "assistant",
+        content = {
+          { type = "text", text = "commentary before tool" },
+          { type = "toolCall", id = tool_id, name = "read", arguments = { path = "before.txt" } },
+        },
+      },
+      {
+        role = "toolResult",
+        toolCallId = tool_id,
+        toolName = "read",
+        content = { { type = "text", text = "tool output" } },
+        isError = false,
+      },
+      {
+        role = "assistant",
+        content = { { type = "text", text = "final answer after tool" } },
+      },
+    }, "pi:history-order")
+    local history_order_items = history_order_turns[1].items
+    assert(
+      history_order_items[2].id ~= history_order_items[#history_order_items].id,
+      "Pi history should give consecutive assistant messages distinct item ids"
+    )
+    local history_order_thread = state.update_thread_from_payload({
+      id = "pi:history-order",
+      replaceTurns = true,
+      turns = history_order_turns,
+    })
+    local history_order_blocks = require("coact.ui.render").select_render_tree(history_order_thread)
+    local commentary_index = nil
+    local tool_index = nil
+    local final_index = nil
+    for index, block in ipairs(history_order_blocks) do
+      if block.type == "AssistantBlock" and block.text == "commentary before tool" then
+        commentary_index = index
+      elseif block.type == "ActivitySummaryBlock" then
+        for _, child in ipairs(block.children or {}) do
+          if child.item_id == tool_id then
+            tool_index = index
+          end
+        end
+      elseif block.type == "AssistantBlock" and block.text == "final answer after tool" then
+        final_index = index
+      end
+    end
+    assert(
+      commentary_index and tool_index and final_index and commentary_index < tool_index and tool_index < final_index,
+      "Pi history rendering should preserve commentary, tool, and final-answer order from JSONL"
+    )
+  end)();
+  (function()
     local summary_messages = {
       {
         role = "compactionSummary",
@@ -5854,6 +5912,30 @@ assert(
     #core_queued_pending_thread.timeline_blocks == timeline_count
       and core_queued_pending_thread.pi_queue.follow_up[1] == "queued without transcript noise",
     "Pi queue updates should refresh queue cache without adding timeline blocks"
+  )
+  local raw_count = #core_queued_pending_thread.raw_blocks
+  core.handle_notification({
+    method = "pi/auto_retry_start",
+    params = {
+      threadId = "smoke-core-queued-pending",
+      attempt = 1,
+      maxAttempts = 3,
+      delayMs = 2000,
+      errorMessage = "temporary overload",
+    },
+  })
+  core.handle_notification({
+    method = "pi/auto_retry_end",
+    params = {
+      threadId = "smoke-core-queued-pending",
+      success = true,
+      attempt = 1,
+    },
+  })
+  assert(
+    #core_queued_pending_thread.timeline_blocks == timeline_count
+      and #core_queued_pending_thread.raw_blocks == raw_count,
+    "Pi auto-retry status should stay transient instead of leaving transcript blocks"
   )
   state.add_thread_pending_request(core_queued_pending_thread, {
     prompt = "stale queued pending",

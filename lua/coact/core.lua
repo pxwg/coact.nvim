@@ -932,25 +932,11 @@ handlers["pi/compaction_end"] = function(params)
   schedule(params.threadId)
 end
 
-handlers["pi/auto_retry_start"] = function(params)
-  append_timeline(
-    "pi/auto_retry_start",
-    params,
-    "Pi retry scheduled",
-    "running",
-    tostring(params.errorMessage or params.error or "retrying")
-  )
-end
-
-handlers["pi/auto_retry_end"] = function(params)
-  append_timeline(
-    "pi/auto_retry_end",
-    params,
-    "Pi retry completed",
-    params.success and "completed" or "error",
-    tostring(params.finalError or params.errorMessage or "")
-  )
-end
+-- Pi renders retries as transient status. The surrounding agent lifecycle
+-- already drives generation state, so keep these notifications handled without
+-- leaving timeline blocks behind.
+handlers["pi/auto_retry_start"] = function() end
+handlers["pi/auto_retry_end"] = function() end
 
 handlers["pi/extension_error"] = function(params)
   append_timeline(
