@@ -475,14 +475,57 @@ function entryEditorText(entry) {
   return undefined;
 }
 
-function collectEntries(nodes, out = new Map()) {
-  for (const node of nodes || []) {
-    if (node?.entry?.id) {
-      out.set(node.entry.id, node.entry);
+// Only picker metadata crosses RPC: no recursive children, images, thinking,
+// full tool results, retained compaction tails, or arbitrary extension data.
+function treeTextContent(content) {
+  if (typeof content === "string") return content.slice(0, 2000);
+  return (Array.isArray(content) ? content : [])
+    .filter((block) => block?.type === "text")
+    .map((block) => String(block.text || "").slice(0, 2000)).join("").slice(0, 2000);
+}
+
+function treePickerNodes(roots) {
+  const nodes = [];
+  const entriesById = new Map();
+  const stack = [...roots].reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    const source = node.entry;
+    entriesById.set(String(source.id), source);
+    const entry = {};
+    for (const key of ["id", "parentId", "type", "timestamp", "customType", "display",
+      "tokensBefore", "modelId", "thinkingLevel", "name", "label"]) {
+      if (source[key] != null) entry[key] = source[key];
     }
-    collectEntries(node?.children || [], out);
+    if (source.summary !== undefined) entry.summary = String(source.summary).slice(0, 2000);
+    if (source.content !== undefined) entry.content = treeTextContent(source.content);
+    if (source.message) {
+      const message = source.message;
+      entry.message = {};
+      for (const key of ["role", "stopReason", "toolCallId", "toolName", "isError"]) {
+        if (message[key] != null) entry.message[key] = message[key];
+      }
+      for (const key of ["command", "errorMessage"]) {
+        if (message[key] !== undefined) entry.message[key] = String(message[key]).slice(0, 2000);
+      }
+      entry.message.content = [{ type: "text", text: treeTextContent(message.content) }];
+      for (const block of Array.isArray(message.content) ? message.content : []) {
+        if (block.type !== "toolCall") continue;
+        const args = block.arguments || block.args || {};
+        const argumentsPreview = {};
+        for (const key of ["path", "file_path", "offset", "limit", "command", "pattern"]) {
+          if (typeof args[key] === "string") argumentsPreview[key] = args[key].slice(0, 2000);
+          else if (typeof args[key] === "number") argumentsPreview[key] = args[key];
+        }
+        entry.message.content.push({ type: "toolCall", id: block.id ?? block.toolCallId,
+          name: block.name, arguments: argumentsPreview });
+      }
+    }
+    nodes.push({ entry, label: node.label });
+    const children = node.children || [];
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
   }
-  return out;
+  return { nodes, entriesById };
 }
 
 function parseTreeArgs(args) {
@@ -583,11 +626,11 @@ async function handleTreeCommand(args, ctx) {
 
   const leafId = ctx.sessionManager.getLeafId();
   const branchIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
-  const entriesById = collectEntries(tree);
+  const { nodes, entriesById } = treePickerNodes(tree);
   const selection = normalizeTreeSelection(await ctx.ui.select("Pi session tree", [
     {
       __coactNvimPiTree: true,
-      tree,
+      nodes,
       leafId,
       activePathIds: Array.from(branchIds),
       initialSelectedId,

@@ -496,6 +496,34 @@ do
   );
   (function()
     local pi_tree = require("coact.providers.pi_tree")
+    local wire = vim.fn.system({ "node", "scripts/pi-tree-wire-test.mjs" })
+    assert(vim.v.shell_error == 0, "Pi flat tree bridge fixture should execute: " .. wire)
+    local flat_payload = vim.json.decode(wire)
+    local long_tree = pi_tree._render_for_test(flat_payload)
+    assert(
+      table.concat(long_tree.lines, "\n"):find("entry 1500", 1, true),
+      "Pi flat tree should render a 1500-node chain"
+    )
+    assert(flat_payload.nodes[1].children == nil, "Pi picker must not mutate wire nodes")
+    local null_tree = pi_tree._render_for_test({
+      __coactNvimPiTree = true,
+      leafId = vim.NIL,
+      nodes = {
+        {
+          entry = {
+            id = "null-root",
+            parentId = vim.NIL,
+            type = "message",
+            message = { role = "user", content = "null root" },
+          },
+          label = vim.NIL,
+        },
+      },
+    })
+    assert(
+      table.concat(null_tree.lines, "\n"):find("null root", 1, true),
+      "Pi flat tree should normalize null roots and labels"
+    )
     local rendered_tree = pi_tree._render_for_test({
       __coactNvimPiTree = true,
       leafId = "branch-user",

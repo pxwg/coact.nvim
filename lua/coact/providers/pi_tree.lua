@@ -86,19 +86,21 @@ end
 local function build_maps(roots)
   local node_map = {}
   local parent_map = {}
-  local function visit(node, parent)
-    local e = entry(node)
-    local id = entry_id(e)
+  local stack = {}
+  for _, root in ipairs(roots) do
+    table.insert(stack, { node = root })
+  end
+  while #stack > 0 do
+    local item = table.remove(stack)
+    local node = item.node
+    local id = entry_id(entry(node))
     if id then
       node_map[id] = node
-      parent_map[id] = parent
+      parent_map[id] = item.parent
     end
     for _, child in ipairs(children(node)) do
-      visit(child, id)
+      table.insert(stack, { node = child, parent = id })
     end
-  end
-  for _, root in ipairs(roots) do
-    visit(root, nil)
   end
   return node_map, parent_map
 end
@@ -153,19 +155,23 @@ end
 local function flatten_tree(state)
   local roots = state.roots
   local contains_active = {}
-  local function mark(node)
+  local pending = copy_list(roots)
+  local traversal = {}
+  while #pending > 0 do
+    local node = table.remove(pending)
+    table.insert(traversal, node)
+    for _, child in ipairs(children(node)) do
+      table.insert(pending, child)
+    end
+  end
+  for i = #traversal, 1, -1 do
+    local node = traversal[i]
     local id = entry_id(entry(node))
     local has = id ~= nil and state.active_path_ids[id] == true
     for _, child in ipairs(children(node)) do
-      if mark(child) then
-        has = true
-      end
+      has = has or contains_active[child] == true
     end
     contains_active[node] = has
-    return has
-  end
-  for _, root in ipairs(roots) do
-    mark(root)
   end
 
   state.tool_call_map = {}
@@ -741,6 +747,23 @@ end
 local function make_state(payload)
   payload = as_table(payload)
   local roots = as_table(payload.tree)
+  if type(payload.nodes) == "table" then
+    -- Wire order is depth-first sibling order; parents precede their children.
+    -- Build fresh wrappers, leaving the decoded payload untouched.
+    roots = {}
+    local by_id = {}
+    for _, item in ipairs(payload.nodes) do
+      local e = entry(item)
+      local id = entry_id(e)
+      if id and not by_id[id] then
+        local node = { entry = e, label = value(item.label), children = {} }
+        local parent = value(e.parentId)
+        parent = parent and by_id[tostring(parent)] or nil
+        table.insert(parent and parent.children or roots, node)
+        by_id[id] = node
+      end
+    end
+  end
   local node_map, parent_map = build_maps(roots)
   local leaf_id = value(payload.leafId) or value(payload.leaf_id)
   leaf_id = leaf_id and tostring(leaf_id) or nil
