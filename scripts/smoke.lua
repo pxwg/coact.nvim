@@ -2,6 +2,7 @@ vim.opt.runtimepath:append(".")
 
 local coact = require("coact")
 coact.setup()
+assert(require("coact.config").get().ui.auto_scroll == false, "streaming should preserve the cursor by default")
 assert(
   #vim.api.nvim_get_autocmds({ group = "CoactNvimLifecycle", event = "VimLeavePre" }) == 1,
   "explicit setup should register lifecycle cleanup"
@@ -3088,6 +3089,7 @@ assert(
   _G.__coact_smoke_view.info and _G.__coact_smoke_view.info.botline == _G.__coact_smoke_view.lines,
   "opening preview should show the latest transcript lines"
 )
+_G.__coact_smoke_idle_refresh_cursor = vim.api.nvim_win_get_cursor(context_thread.winid)
 state.upsert_item("smoke-context", "smoke-open-turn", {
   id = "smoke-open-latest",
   type = "agentMessage",
@@ -3099,8 +3101,8 @@ _G.__coact_smoke_view = {
   info = vim.fn.getwininfo(context_thread.winid)[1],
 }
 assert(
-  _G.__coact_smoke_view.info and _G.__coact_smoke_view.info.botline == _G.__coact_smoke_view.lines,
-  "idle preview refresh should keep following the latest transcript lines"
+  vim.deep_equal(vim.api.nvim_win_get_cursor(context_thread.winid), _G.__coact_smoke_idle_refresh_cursor),
+  "idle preview refresh should preserve the transcript cursor"
 )
 _G.__coact_smoke_scrolloff = vim.o.scrolloff
 vim.o.scrolloff = 5
@@ -6322,6 +6324,11 @@ end
   })
   buffers.ensure("smoke-stream-fast-path")
   vim.api.nvim_set_current_buf(fast_thread.bufnr)
+  local fast_win = vim.api.nvim_get_current_win()
+  local fast_atom = fast_thread.stream_atoms_by_item_id and fast_thread.stream_atoms_by_item_id["fast-assistant"]
+  assert(fast_atom and fast_atom.text_start, "stream fixture should expose the first assistant text atom")
+  vim.api.nvim_win_set_cursor(fast_win, { fast_atom.text_start, 0 })
+  local fast_cursor = vim.api.nvim_win_get_cursor(fast_win)
   local shifted_placeholder = fast_thread.placeholder_marks and fast_thread.placeholder_marks[1]
   local shifted_placeholder_line = shifted_placeholder and shifted_placeholder.line
   assert(shifted_placeholder_line, "multi-position stream fixture should include an anchored placeholder")
@@ -6380,6 +6387,10 @@ end
       return false
     end, 5)
     assert(render_count == 0, "assistant text delta fast path should not schedule a full render")
+    assert(
+      vim.deep_equal(vim.api.nvim_win_get_cursor(fast_win), fast_cursor),
+      "assistant text streaming should preserve the transcript cursor"
+    )
 
     local line_count = vim.api.nvim_buf_line_count(fast_thread.bufnr)
     assert_handles_notification({
@@ -6399,6 +6410,10 @@ end
       "assistant newline delta should update visible text on the coalesced flush"
     )
     assert(vim.api.nvim_buf_line_count(fast_thread.bufnr) == line_count + 1, "newline delta should append one line")
+    assert(
+      vim.deep_equal(vim.api.nvim_win_get_cursor(fast_win), fast_cursor),
+      "multiline assistant streaming should preserve the transcript cursor"
+    )
     lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
     text = table.concat(lines, "\n")
     assert(

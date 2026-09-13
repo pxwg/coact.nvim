@@ -126,7 +126,7 @@ Default options:
       height = 0.82,
       sidebar_width = 0.42,
       render_delay_ms = 35,
-      auto_scroll = true,
+      auto_scroll = false,
       composer = {
         min_height = 2,
         max_height = 0.33,
@@ -571,9 +571,10 @@ deltas for multiple visible blocks are coalesced into one per-buffer flush and
 update those anchored ranges directly; structural block changes still use a
 full render. The composer remains a separate `coact-input` buffer.
 
-The renderer tracks per-window view state. A transcript window near the bottom
-follows the conversation while the active provider streams. Cursor movement or scrolling away
-suspends that follow state for that window.
+The renderer preserves each transcript window's cursor and view while the active
+provider streams. Set `ui.auto_scroll = true` to opt into per-window following
+near the bottom; cursor movement or scrolling away then suspends follow for that
+window.
 
 Rendered user/assistant/error sections populate manual Vim fold ranges. Coact
 windows keep `foldlevel` high by default, so the folds are available without
