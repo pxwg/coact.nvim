@@ -56,8 +56,11 @@ Pi's backend turn, assistant message and tool execution are distinct:
   and `piContentIndex`; late blocks occupy their message's content slot.
 - Tool argument completion is not execution completion. Results and cumulative
   progress update the original tool block, including rewritten/empty progress.
-- Thinking and tools retain independently foldable blocks rather than being
-  moved beneath a later answer's `Thinking finished` group.
+- After a reply finishes, adjacent completed thinking/tool/patch blocks form
+  foldable `Thinking finished` clusters in place. Singletons remain individual.
+  Text, users, summaries and unfinished activity are hard cluster boundaries.
+  Cluster identity is anchored to its first child, not a later answer; prior
+  response groups stay clustered while a new response streams.
 - History projection uses an isolated runtime, not the live tool registry.
 - After `agent_settled`, history is reconciled with persisted entries. Resume,
   tree navigation and successful compaction refresh use the same projection.
@@ -78,7 +81,8 @@ still follow the returned leaf, even when a switch appends no entries.
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-Smoke includes `scripts/pi-transcript-test.lua` and `scripts/pi-history-test.lua`:
+Smoke includes `scripts/pi-transcript-test.lua`, `scripts/pi-history-test.lua`
+and `scripts/pi-activity-test.lua`:
 modern/legacy deltas, ordered slots, repeated assistant messages, tool errors,
 nulls, live/history races, branch switches with identical prompts, multiple
 compactions, retained-tail non-duplication, empty leaves and broken graphs.

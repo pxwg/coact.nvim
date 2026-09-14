@@ -439,14 +439,8 @@ end
 local function activity_count_labels(block)
   local counts = activity_counts(block and block.children)
   local labels = {}
-  for _, label in ipairs({
-    plural_count(counts.reasoning, "reasoning"),
-    plural_count(counts.tool, "tool"),
-    plural_count(counts.patch, "patch"),
-    plural_count(counts.plan, "plan"),
-    plural_count(counts.agent, "agent"),
-    plural_count(counts.raw, "raw"),
-  }) do
+  for _, kind in ipairs({ "reasoning", "tool", "patch", "plan", "agent", "raw" }) do
+    local label = plural_count(counts[kind], kind)
     if label then
       table.insert(labels, label)
     end
@@ -1702,15 +1696,42 @@ local function compact_activity_segments(thread, blocks)
   return out
 end
 
--- Pi owns placement through messages/content slots. Reasoning and tools keep
--- their own foldable blocks; wrapping them under a later output would change
--- both identity and placement as streaming output arrives.
-local function pi_render_blocks(blocks)
-  local _, group_by_block = response_groups(blocks)
-  local out = {}
-  for _, block in ipairs(blocks) do
-    table.insert(out, response_grouped_block(block, group_by_block[block]))
+-- Aggregate finished, adjacent activity in place. The underlying transcript
+-- stays ordered; users, text and context events are hard cluster boundaries.
+local function pi_render_blocks(thread, blocks)
+  local groups, group_by_block = response_groups(blocks)
+  local active_group = thread_busy(thread) and groups[#groups] or nil
+  local terminal = { completed = true, error = true, failed = true, cancelled = true, aborted = true, finished = true }
+  local out, pending, pending_group = {}, {}, nil
+  local function flush()
+    if #pending > 1 then
+      -- Anchor identity to the first activity, not a later assistant output.
+      table.insert(out, activity_summary_block(pending_group, pending[1], pending))
+    else
+      for _, block in ipairs(pending) do
+        table.insert(out, response_grouped_block(block, pending_group))
+      end
+    end
+    pending, pending_group = {}, nil
   end
+  for _, block in ipairs(blocks) do
+    local group = group_by_block[block]
+    local eligible = group
+      and group ~= active_group
+      and block.local_only ~= true
+      and (block.type == "ToolCallBlock" or block.type == "ReasoningBlock" or block.type == "PatchBlock")
+      and terminal[block.state]
+    if not eligible or pending_group ~= group then
+      flush()
+    end
+    if eligible then
+      pending_group = group
+      table.insert(pending, block)
+    else
+      table.insert(out, response_grouped_block(block, group))
+    end
+  end
+  flush()
   return out
 end
 
@@ -1724,7 +1745,7 @@ function M.select_render_tree(thread)
     util.list_extend(blocks, thread.raw_blocks or {})
   end
   if tostring(thread.id):match("^pi:") then
-    return pi_render_blocks(blocks)
+    return pi_render_blocks(thread, blocks)
   end
   return compact_activity_segments(thread, blocks)
 end

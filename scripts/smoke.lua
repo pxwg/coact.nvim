@@ -389,6 +389,7 @@ do
   local pi_provider = require("coact.providers.pi")
   dofile("scripts/pi-transcript-test.lua").run()
   dofile("scripts/pi-history-test.lua").run()
+  dofile("scripts/pi-activity-test.lua").run()
   local pi_command = pi_provider.command(require("coact.config").get())
   assert(vim.tbl_contains(pi_command, "pi"), "Pi provider command should invoke pi")
   assert(
