@@ -387,6 +387,8 @@ do
   assert(providers.current_id() == "pi", "provider selector should switch to pi")
   assert(not native_hook.enabled(), "Pi provider should not enable the Codex native apply_patch hook")
   local pi_provider = require("coact.providers.pi")
+  dofile("scripts/pi-transcript-test.lua").run()
+  dofile("scripts/pi-history-test.lua").run()
   local pi_command = pi_provider.command(require("coact.config").get())
   assert(vim.tbl_contains(pi_command, "pi"), "Pi provider command should invoke pi")
   assert(
@@ -1624,17 +1626,15 @@ do
             },
           }
           callback(nil, {})
-        elseif method == "get_messages" then
+        elseif method == "get_entries" then
           callback(nil, {
-            messages = {
+            leafId = "entry-old-user",
+            entries = {
               {
-                role = "user",
-                content = {
-                  {
-                    type = "text",
-                    text = "old pi prompt",
-                  },
-                },
+                id = "entry-old-user",
+                type = "message",
+                parentId = vim.NIL,
+                message = { role = "user", content = "old pi prompt" },
               },
             },
           })
@@ -1652,13 +1652,12 @@ do
   )
   assert(pi_resume_handled, "Pi provider should handle thread/resume")
   assert(
-    #pi_resume_calls == 5
+    #pi_resume_calls == 4
       and pi_resume_calls[1].method == "switch_session"
       and pi_resume_calls[1].params.sessionPath == pi_old_session_file
       and pi_resume_calls[2].method == "get_state"
       and pi_resume_calls[3].method == "get_session_stats"
-      and pi_resume_calls[4].method == "prompt"
-      and pi_resume_calls[5].method == "get_messages",
+      and pi_resume_calls[4].method == "get_entries",
     "Pi resume should switch to the selected native session before reading messages"
   )
   assert(
@@ -1702,17 +1701,15 @@ do
               contextUsage = { percent = 30, contextWindow = 200000, tokens = 60000 },
               tokens = { input = 100, output = 50, total = 150 },
             })
-          elseif method == "get_messages" then
+          elseif method == "get_entries" then
             callback(nil, {
-              messages = {
+              leafId = "entry-tree-user",
+              entries = {
                 {
-                  role = "user",
-                  content = {
-                    {
-                      type = "text",
-                      text = "tree-selected prompt",
-                    },
-                  },
+                  id = "entry-tree-user",
+                  type = "message",
+                  parentId = vim.NIL,
+                  message = { role = "user", content = "tree-selected prompt" },
                 },
               },
             })
@@ -1730,14 +1727,12 @@ do
     )
     assert(pi_tree_handled, "Pi provider should handle thread/tree")
     assert(
-      #pi_tree_calls == 5
+      #pi_tree_calls == 4
         and pi_tree_calls[1].method == "prompt"
         and pi_tree_calls[1].params.message:find("entry-tree-user", 1, true)
         and pi_tree_calls[2].method == "get_state"
         and pi_tree_calls[3].method == "get_session_stats"
-        and pi_tree_calls[4].method == "prompt"
-        and pi_tree_calls[4].params.message == "/coact-nvim-branch-snapshot"
-        and pi_tree_calls[5].method == "get_messages",
+        and pi_tree_calls[4].method == "get_entries",
       "Pi thread/tree should navigate before refreshing current messages"
     )
     assert(
@@ -1825,12 +1820,8 @@ do
     for index, block in ipairs(history_order_blocks) do
       if block.type == "AssistantBlock" and block.text == "commentary before tool" then
         commentary_index = index
-      elseif block.type == "ActivitySummaryBlock" then
-        for _, child in ipairs(block.children or {}) do
-          if child.item_id == tool_id then
-            tool_index = index
-          end
-        end
+      elseif block.type == "ToolCallBlock" and block.item_id == tool_id then
+        tool_index = index
       elseif block.type == "AssistantBlock" and block.text == "final answer after tool" then
         final_index = index
       end
@@ -2088,11 +2079,23 @@ do
             },
           }
           callback(nil, {})
-        elseif method == "get_messages" then
+        elseif method == "get_entries" then
           callback(nil, {
-            messages = {
+            leafId = "refresh-compaction-entry",
+            entries = {
               {
-                role = "compactionSummary",
+                type = "message",
+                id = "preserved",
+                parentId = vim.NIL,
+                message = {
+                  role = "assistant",
+                  content = { { type = "text", text = "preserved pre-compaction history" } },
+                },
+              },
+              {
+                type = "compaction",
+                id = "refresh-compaction-entry",
+                parentId = "preserved",
                 summary = "refreshed compacted context",
                 tokensBefore = 64000,
               },
@@ -2109,9 +2112,10 @@ do
     assert(
       refreshed_thread
         and refreshed_thread.items["stale-pre-compaction-item"] == nil
-        and refreshed_thread.items[refreshed_thread.item_order[1]].type == "compactionSummary"
-        and vim.deep_equal(refresh_calls, { "get_state", "get_session_stats", "prompt", "get_messages" }),
-      "Pi compaction refresh should replace stale turns with the compaction-aware active context"
+        and refreshed_thread.items[refreshed_thread.item_order[1]].text == "preserved pre-compaction history"
+        and refreshed_thread.items[refreshed_thread.item_order[2]].type == "compactionSummary"
+        and vim.deep_equal(refresh_calls, { "get_state", "get_session_stats", "get_entries" }),
+      "Pi compaction refresh should keep ancestors and append the compaction at its historical position"
     )
     assert(
       refresh_thread.sync == "clean" and refresh_thread.sync_message == nil,
@@ -2130,8 +2134,8 @@ do
             callback(nil, { tokens = { total = 1 } })
           elseif method == "prompt" then
             callback(nil, {})
-          elseif method == "get_messages" then
-            callback(nil, { messages = {} })
+          elseif method == "get_entries" then
+            callback(nil, { entries = {}, leafId = vim.NIL })
           else
             error("unexpected overlapping Pi refresh request: " .. tostring(method))
           end
@@ -2367,6 +2371,13 @@ const sessionIdIndex = process.argv.indexOf("--session-id");
 let sessionId = sessionIdIndex >= 0 ? process.argv[sessionIdIndex + 1] : client;
 let sessionFile = `/tmp/${sessionId}.jsonl`;
 let model = { provider: "fake", id: "default" };
+const entries = [];
+let leafId = null;
+function remember(message) {
+  const id = `${client}-entry-${entries.length}`;
+  entries.push({ id, parentId: leafId, type: "message", message });
+  leafId = id;
+}
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const respond = (command, data = {}) => send({
   id: command.id,
@@ -2397,7 +2408,9 @@ function prompt(command) {
     });
     send({ type: "agent_start" });
     send({ type: "turn_start" });
-    send({ type: "message_start", message: { role: "user", content: [{ type: "text", text }] } });
+    const user = { role: "user", content: [{ type: "text", text }] };
+    remember(user);
+    send({ type: "message_start", message: user });
     send({ type: "message_start", message: { role: "assistant", content: [] } });
     const reply = `reply:${client}:${text}`;
     send({
@@ -2405,6 +2418,7 @@ function prompt(command) {
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply },
     });
     const message = { role: "assistant", content: [{ type: "text", text: reply }] };
+    remember(message);
     send({ type: "message_end", message });
     send({ type: "turn_end", message, toolResults: [] });
     send({ type: "agent_end", messages: [message], willRetry: false });
@@ -2434,7 +2448,7 @@ function handle(command) {
   }
   if (command.type === "get_available_models") return respond(command, { models: [model] });
   if (command.type === "get_available_thinking_levels") return respond(command, { levels: ["off", "low"] });
-  if (command.type === "get_messages") return respond(command, { messages: [] });
+  if (command.type === "get_entries") return respond(command, { entries, leafId });
   if (command.type === "compact" || command.type === "abort") {
     return respond(command, { client, command: command.type });
   }

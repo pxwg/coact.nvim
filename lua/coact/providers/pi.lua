@@ -1,5 +1,6 @@
 local config = require("coact.config")
 local util = require("coact.util")
+local pi_stream = require("coact.providers.pi_stream")
 
 local M = {
   name = "pi",
@@ -70,6 +71,9 @@ local function new_runtime()
     active_turn_id = nil,
     last_turn_id = nil,
     turn_seq = 0,
+    summary_seq = 0,
+    transcript_revision = 0,
+    history_request_seq = 0,
     provider_ui = nil,
     branch_snapshot = nil,
     last_tree_action = nil,
@@ -77,6 +81,7 @@ local function new_runtime()
     turn_start_pending = false,
     queued_turns = {},
     user_item_seq = 0,
+    stream = pi_stream.new(),
     tool_output = {},
     tool_args = {},
     tool_calls = {},
@@ -334,7 +339,8 @@ local function next_turn_id()
 end
 
 local function state_thread_id(state)
-  return state and state.sessionId and ("pi:" .. tostring(state.sessionId)) or runtime.current_thread_id or "pi:session"
+  local id = type(state) == "table" and util.value(state.sessionId) or nil
+  return id and ("pi:" .. tostring(id)) or runtime.current_thread_id or "pi:session"
 end
 
 local function empty_provider_ui(ui)
@@ -464,6 +470,7 @@ function M._remember_state(state)
     runtime.turn_start_pending = false
     runtime.queued_turns = {}
     runtime.user_item_seq = 0
+    runtime.stream = pi_stream.new()
     runtime.tool_output = {}
     runtime.tool_args = {}
     runtime.tool_calls = {}
@@ -484,6 +491,7 @@ local function current_thread_id()
 end
 
 local function reset_turn_stream_state()
+  runtime.stream = pi_stream.new()
   runtime.user_item_seq = 0
   runtime.tool_output = {}
   runtime.tool_args = {}
@@ -705,14 +713,14 @@ local function text_content(content)
   local lines = {}
   for _, block in ipairs(type(content) == "table" and content or {}) do
     if type(block) == "table" then
-      if block.type == "text" and block.text then
+      if block.type == "text" and util.value(block.text) then
         table.insert(lines, tostring(block.text))
-      elseif block.type == "thinking" and block.thinking then
+      elseif block.type == "thinking" and util.value(block.thinking) then
         table.insert(lines, tostring(block.thinking))
       elseif block.type == "image" then
         table.insert(lines, "[image]")
       elseif block.type == "toolCall" then
-        table.insert(lines, ("[%s tool call]"):format(tostring(block.name or "tool")))
+        table.insert(lines, ("[%s tool call]"):format(tostring(util.value(block.name) or "tool")))
       end
     end
   end
@@ -874,7 +882,7 @@ local function annotate_thread_tree_entry_ids(thread, snapshot)
   for _, item_id in ipairs(thread.item_order or {}) do
     local item = thread.items and thread.items[item_id]
     local role = role_for_item(item)
-    if role then
+    if role and not item.treeEntryId then
       local entry = next_snapshot_entry(cursor, role, item_snapshot_text(item))
       if entry and item.treeEntryId ~= entry.id then
         item.treeEntryId = entry.id
@@ -1377,8 +1385,10 @@ local function finish_open_sync(operation)
   render_sync_state(thread)
 end
 
-local function read_current_thread(rpc, params, callback, opts)
-  opts = opts or {}
+local function read_current_thread(rpc, params, callback)
+  local revision = runtime.transcript_revision
+  runtime.history_request_seq = runtime.history_request_seq + 1
+  local request_seq = runtime.history_request_seq
   local sync_operation = begin_open_sync(params)
   local completed = false
   local function finish(err, result)
@@ -1395,25 +1405,28 @@ local function read_current_thread(rpc, params, callback, opts)
       return
     end
     local thread = thread_from_state(state_result, params)
-    if opts.replace_turns == true then
-      thread.replaceTurns = true
+    if util.value(state_result.isStreaming) == true then
+      -- Never splice context history into an active stream with different IDs.
+      finish(nil, { thread = thread })
+      return
     end
     request_session_stats(rpc, thread.id, function(_, stats_result)
       thread.token_usage = normalize_session_stats(stats_result) or thread.token_usage
-      request_branch_snapshot(rpc, params, function(_, branch_snapshot)
-        rpc._request_message("get_messages", {}, function(messages_err, messages_result)
-          if messages_err then
-            if opts.require_messages == true then
-              finish(messages_err, nil)
-            else
-              finish(nil, { thread = thread })
-            end
+      rpc._request_message("get_entries", {}, function(messages_err, messages_result)
+        if messages_err then
+          finish(messages_err, nil)
+          return
+        end
+        if runtime.transcript_revision == revision and runtime.history_request_seq == request_seq then
+          local messages, projection_err = require("coact.providers.pi_history").messages(messages_result)
+          if not messages then
+            finish({ message = projection_err }, nil)
             return
           end
-          thread.turns =
-            M._turns_from_messages(messages_result and messages_result.messages, thread.id, branch_snapshot)
-          finish(nil, { thread = thread })
-        end)
+          thread.turns = M._turns_from_messages(messages, thread.id)
+          thread.replaceTurns = true
+        end
+        finish(nil, { thread = thread })
       end)
     end)
   end)
@@ -1509,7 +1522,7 @@ function M.custom_request(rpc, method, params, callback)
         callback(nil, { treeAction = tree_action })
         return
       end
-      read_current_thread(rpc, params, callback, { replace_turns = true })
+      read_current_thread(rpc, params, callback)
     end)
     return true
   end
@@ -1725,7 +1738,7 @@ local function refresh_current_thread(rpc, params, callback)
       buffers.schedule_render(thread.id)
     end
     callback(nil, thread)
-  end, { replace_turns = true, require_messages = true })
+  end)
 end
 
 function M.on_compaction_completed(params)
@@ -1750,6 +1763,20 @@ function M.on_compaction_completed(params)
   end)
 end
 
+function M.on_agent_settled(params)
+  local client = require("coact.providers.pi_rpc").by_thread[params.threadId]
+  if not (client and client.initialized and client:is_running()) then
+    return
+  end
+  M.with_runtime(client.runtime, function()
+    refresh_current_thread(client, { threadId = params.threadId }, function(err)
+      if err then
+        util.notify("Pi branch history refresh failed: " .. tostring(err.message or err), vim.log.levels.WARN)
+      end
+    end)
+  end)
+end
+
 function M.on_generation_completed(payload)
   local thread = payload and payload.thread or nil
   local thread_id = thread and thread.id or nil
@@ -1764,6 +1791,7 @@ function M.on_generation_completed(payload)
 end
 
 local function message_item_id(kind, index, scope)
+  scope = scope or pi_stream.scope(runtime.stream)
   local scoped_index = scope and (tostring(scope) .. ":" .. tostring(index or 0)) or tostring(index or 0)
   return current_turn_id() .. ":" .. kind .. ":" .. scoped_index
 end
@@ -1801,7 +1829,7 @@ local function tool_item(tool_call_id, tool_name, args, state_value, result)
   key = tostring(key)
   local remembered = runtime.tool_calls[key] or {}
   local name = util.value(tool_name) or remembered.name
-  args = args or runtime.tool_args[key]
+  args = util.value(args) or util.value(runtime.tool_args[key])
   local output_text = result and tool_result_text(result) or runtime.tool_output[key]
   local item = {
     id = key,
@@ -1810,44 +1838,20 @@ local function tool_item(tool_call_id, tool_name, args, state_value, result)
     tool = name,
     arguments = args,
     input = args,
-    result = result,
+    result = util.value(result),
+    piMessageId = remembered.messageId,
+    piContentIndex = remembered.contentIndex,
   }
   if item.type == "commandExecution" then
-    item.command = args and args.command
+    item.command = type(args) == "table" and util.value(args.command) or nil
     item.aggregatedOutput = output_text
   else
     item.namespace = "pi"
-    if output_text and output_text ~= "" then
+    if output_text ~= nil then
       item.output = output_text
     end
   end
   return item
-end
-
-local function assistant_content_block(partial, index)
-  if type(partial) ~= "table" then
-    return nil
-  end
-  local content = type(partial.content) == "table" and partial.content or {}
-  local block = content[(tonumber(index) or 0) + 1]
-  return type(block) == "table" and block or nil
-end
-
-local function tool_call_from_event(event, index)
-  if type(event) ~= "table" then
-    return nil
-  end
-  if type(event.toolCall) == "table" then
-    return event.toolCall
-  end
-  local block = assistant_content_block(event.partial, index)
-  if block and block.type == "toolCall" then
-    return block
-  end
-  if type(event.partial) == "table" and event.partial.type == "toolCall" then
-    return event.partial
-  end
-  return nil
 end
 
 local function tool_item_from_call(tool, state_value)
@@ -1860,6 +1864,9 @@ local function tool_item_from_call(tool, state_value)
   end
   key = tostring(key)
   local remembered = runtime.tool_calls[key] or {}
+  if remembered.completedItem then
+    return vim.deepcopy(remembered.completedItem)
+  end
   local name = util.value(tool.name) or remembered.name
   if name == nil or name == "" then
     return nil
@@ -1884,19 +1891,6 @@ local function tool_item_from_call(tool, state_value)
   return item
 end
 
-local function tool_update_delta(tool_call_id, result)
-  local key = tostring(tool_call_id)
-  local text = tool_result_text(result)
-  local previous = runtime.tool_output[key] or ""
-  if text ~= "" then
-    runtime.tool_output[key] = text
-  end
-  if text:sub(1, #previous) == previous then
-    return text:sub(#previous + 1)
-  end
-  return text
-end
-
 local function message_items(message, status, tree_entry, id_scope)
   local items = {}
   if type(message) ~= "table" or message.role ~= "assistant" then
@@ -1904,12 +1898,13 @@ local function message_items(message, status, tree_entry, id_scope)
   end
   for index, block in ipairs(type(message.content) == "table" and message.content or {}) do
     local zero_index = index - 1
+    local previous_count = #items
     if block.type == "text" then
       table.insert(items, {
         id = assistant_item_id(zero_index, id_scope),
         type = "agentMessage",
         status = status,
-        text = tostring(block.text or ""),
+        text = tostring(util.value(block.text) or ""),
         treeEntryId = tree_entry and tree_entry.id or nil,
         treeParentId = tree_entry and tree_entry.parentId or nil,
       })
@@ -1918,21 +1913,36 @@ local function message_items(message, status, tree_entry, id_scope)
         id = reasoning_item_id(zero_index, id_scope),
         type = "reasoning",
         status = status,
-        content = { tostring(block.thinking or "") },
+        content = { tostring(util.value(block.thinking) or "") },
       })
     elseif block.type == "toolCall" then
-      local item = tool_item_from_call(block, status)
+      local item = tool_item_from_call(block, "running")
       if item then
         table.insert(items, item)
       end
     end
+    if #items > previous_count then
+      local item = items[#items]
+      item.piMessageId = message_item_id("message", 0, id_scope)
+      item.piContentIndex = zero_index
+      item.treeEntryId = tree_entry and tree_entry.id or nil
+      item.treeParentId = tree_entry and tree_entry.parentId or nil
+      if item.tool then
+        local remembered = runtime.tool_calls[item.id]
+        remembered.messageId = item.piMessageId
+        remembered.contentIndex = item.piContentIndex
+      end
+    end
   end
-  if #items == 0 and message.errorMessage then
+  if util.value(message.errorMessage) and message.errorMessage ~= "" then
+    local index = type(message.content) == "table" and #message.content or 0
     table.insert(items, {
-      id = assistant_item_id(0, id_scope),
+      id = assistant_item_id(index, id_scope),
       type = "agentMessage",
       status = "error",
       text = tostring(message.errorMessage),
+      piMessageId = message_item_id("message", 0, id_scope),
+      piContentIndex = index,
     })
   end
   return items
@@ -1985,8 +1995,9 @@ local function history_summary_item(message, role, summary_index, tree_entry)
   }
 end
 
-function M._turns_from_messages(messages, thread_id, branch_snapshot)
+local function turns_from_messages(messages, thread_id, branch_snapshot)
   local turns = {}
+  local tools = {}
   local turn_index = 0
   local summary_index = 0
   local history_assistant_index = 0
@@ -1995,13 +2006,13 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
     if message.role == "user" then
       history_assistant_index = 0
       local message_text = text_content(message.content)
-      local tree_entry = next_snapshot_entry(tree_cursor, "user", message_text)
+      local tree_entry = message._piEntry or next_snapshot_entry(tree_cursor, "user", message_text)
       turn_index = turn_index + 1
       table.insert(turns, {
         id = ("pi-history-%d"):format(turn_index),
         items = {
           {
-            id = ("pi-history-%d:user"):format(turn_index),
+            id = tree_entry and ("pi-entry:" .. tree_entry.id .. ":user") or ("pi-history-%d:user"):format(turn_index),
             type = "userMessage",
             status = "completed",
             content = {
@@ -2017,31 +2028,96 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
       })
     elseif message.role == "assistant" then
       history_assistant_index = history_assistant_index + 1
-      local tree_entry = next_snapshot_entry(tree_cursor, "assistant", text_content(message.content))
+      local tree_entry = message._piEntry
+        or next_snapshot_entry(tree_cursor, "assistant", text_content(message.content))
       local turn
       turn, turn_index = ensure_history_turn(turns, turn_index)
       local old_turn = runtime.active_turn_id
       runtime.active_turn_id = turn.id
-      vim.list_extend(
-        turn.items,
-        message_items(message, "completed", tree_entry, ("history-%d"):format(history_assistant_index))
-      )
+      local items = message_items(message, "completed", tree_entry, ("history-%d"):format(history_assistant_index))
+      if message._piEntry then
+        for index, item in ipairs(items) do
+          item.piMessageId = "pi-entry:" .. tree_entry.id
+          if not item.tool then
+            item.id = item.piMessageId .. ":" .. tostring(item.piContentIndex or index - 1)
+          else
+            runtime.tool_calls[item.id].messageId = item.piMessageId
+          end
+        end
+      end
+      for _, item in ipairs(items) do
+        if item.tool then
+          tools[item.id] = item
+        end
+      end
+      vim.list_extend(turn.items, items)
       runtime.active_turn_id = old_turn
     elseif message.role == "toolResult" then
       local turn = turns[#turns]
       if turn then
-        table.insert(turn.items, tool_item(message.toolCallId, message.toolName, {}, "completed", message))
+        local item = tool_item(
+          message.toolCallId,
+          message.toolName,
+          nil,
+          message.isError == true and "error" or "completed",
+          message
+        )
+        if item then
+          local previous = tools[item.id]
+          if previous then
+            for key, value in pairs(item) do
+              previous[key] = value
+            end
+          else
+            tools[item.id] = item
+            table.insert(turn.items, item)
+          end
+        end
       end
     elseif message.role == "branchSummary" or message.role == "compactionSummary" then
       summary_index = summary_index + 1
       local summary = tostring(util.value(message.summary) or "")
-      local tree_entry = next_snapshot_entry(tree_cursor, message.role, summary)
+      local tree_entry = message._piEntry or next_snapshot_entry(tree_cursor, message.role, summary)
       local turn
       turn, turn_index = ensure_history_turn(turns, turn_index)
       table.insert(turn.items, history_summary_item(message, message.role, summary_index, tree_entry))
+    elseif message.role == "bashExecution" or message.role == "custom" and message.display == true then
+      local turn
+      turn, turn_index = ensure_history_turn(turns, turn_index)
+      local entry = message._piEntry or {}
+      local item = {
+        id = "pi-entry:" .. tostring(entry.id or (#turn.items + 1)) .. ":operation",
+        type = message.role == "bashExecution" and "commandExecution" or "piCustomMessage",
+        command = util.value(message.command),
+        aggregatedOutput = util.value(message.output),
+        exitCode = util.value(message.exitCode),
+        status = message.cancelled == true and "cancelled"
+          or message.exitCode and message.exitCode ~= vim.NIL and message.exitCode ~= 0 and "error"
+          or "completed",
+        title = util.value(message.customType) or "Pi message",
+        text = text_content(message.content),
+        treeEntryId = entry.id,
+        treeParentId = entry.parentId,
+      }
+      table.insert(turn.items, item)
     end
   end
   return turns
+end
+
+function M._turns_from_messages(messages, thread_id, branch_snapshot)
+  -- History projection must not mutate an in-flight stream/tool registry.
+  return M.with_runtime(new_runtime(), turns_from_messages, messages, thread_id, branch_snapshot)
+end
+
+local function place_tool_slot(item, index)
+  item.piMessageId = item.piMessageId or message_item_id("message", 0)
+  item.piContentIndex = item.piContentIndex or index
+  local remembered = runtime.tool_calls[item.id]
+  if remembered then
+    remembered.messageId = item.piMessageId
+    remembered.contentIndex = item.piContentIndex
+  end
 end
 
 local turn_scoped_events = {
@@ -2095,7 +2171,20 @@ local function message_start_notifications(message, thread_id)
         item = item,
       })
     )
+  elseif role == "branchSummary" or role == "compactionSummary" then
+    runtime.summary_seq = runtime.summary_seq + 1
+    table.insert(
+      out,
+      notification("item/completed", {
+        threadId = thread_id,
+        turnId = turn_id,
+        item = history_summary_item(message, role, "live-" .. runtime.summary_seq),
+      })
+    )
   else
+    if role == "assistant" then
+      pi_stream.start(runtime.stream, message)
+    end
     for _, item in ipairs(message_items(message, "running")) do
       table.insert(
         out,
@@ -2115,6 +2204,16 @@ function M.decode_notification(message)
     return nil
   end
   local thread_id = current_thread_id()
+  if
+    turn_scoped_events[message.type]
+    or message.type == "message_start"
+    or message.type == "turn_start"
+    or message.type == "agent_start"
+    or message.type == "compaction_start"
+    or message.type == "compaction_end"
+  then
+    runtime.transcript_revision = runtime.transcript_revision + 1
+  end
 
   if message.type == "turn_start" then
     -- A Pi turn may be an automatic tool continuation. Wait for message_start
@@ -2197,7 +2296,7 @@ function M.decode_notification(message)
     for _, item in ipairs(message_items(message.message, "completed")) do
       table.insert(
         out,
-        notification("item/completed", {
+        notification(item.tool and item.status == "running" and "item/started" or "item/completed", {
           threadId = thread_id,
           turnId = turn_id,
           item = item,
@@ -2218,12 +2317,28 @@ function M.decode_notification(message)
 
   if message.type == "message_update" then
     local event = type(message.assistantMessageEvent) == "table" and message.assistantMessageEvent or {}
-    local index = tonumber(event.contentIndex) or 0
+    local index = tonumber(util.value(event.contentIndex)) or 0
+    if event.type == "text_start" or event.type == "thinking_start" then
+      local thinking = event.type == "thinking_start"
+      return notification("item/started", {
+        threadId = thread_id,
+        turnId = turn_id,
+        item = {
+          id = thinking and reasoning_item_id(index) or assistant_item_id(index),
+          type = thinking and "reasoning" or "agentMessage",
+          status = "running",
+          piMessageId = message_item_id("message", 0),
+          piContentIndex = index,
+        },
+      })
+    end
     if event.type == "text_delta" then
       return notification("item/agentMessage/delta", {
         threadId = thread_id,
         turnId = turn_id,
         itemId = assistant_item_id(index),
+        piMessageId = message_item_id("message", 0),
+        piContentIndex = index,
         delta = event.delta,
       })
     end
@@ -2232,15 +2347,18 @@ function M.decode_notification(message)
         threadId = thread_id,
         turnId = turn_id,
         itemId = reasoning_item_id(index),
+        piMessageId = message_item_id("message", 0),
+        piContentIndex = index,
         contentIndex = 0,
         delta = event.delta,
       })
     end
     if event.type == "toolcall_start" or event.type == "toolcall_delta" then
-      local item = tool_item_from_call(tool_call_from_event(event, index), "running")
+      local item = tool_item_from_call(pi_stream.update(runtime.stream, event), "running")
       if not item then
         return nil
       end
+      place_tool_slot(item, index)
       return notification("item/started", {
         threadId = thread_id,
         turnId = turn_id,
@@ -2248,11 +2366,12 @@ function M.decode_notification(message)
       })
     end
     if event.type == "toolcall_end" then
-      local item = tool_item_from_call(tool_call_from_event(event, index), "completed")
+      local item = tool_item_from_call(pi_stream.update(runtime.stream, event), "running")
       if not item then
         return nil
       end
-      return notification("item/completed", {
+      place_tool_slot(item, index)
+      return notification("item/started", {
         threadId = thread_id,
         turnId = turn_id,
         item = item,
@@ -2266,7 +2385,7 @@ function M.decode_notification(message)
     for _, item in ipairs(message_items(message.message, "completed")) do
       table.insert(
         out,
-        notification("item/completed", {
+        notification(item.tool and item.status == "running" and "item/started" or "item/completed", {
           threadId = thread_id,
           turnId = turn_id,
           item = item,
@@ -2290,24 +2409,22 @@ function M.decode_notification(message)
   end
 
   if message.type == "tool_execution_update" then
-    runtime.tool_args[tostring(message.toolCallId)] = message.args or runtime.tool_args[tostring(message.toolCallId)]
-    local item_type = tool_item_type(message.toolName)
-    if item_type == "commandExecution" then
-      return notification("item/commandExecution/outputDelta", {
-        threadId = thread_id,
-        turnId = turn_id,
-        itemId = tostring(message.toolCallId),
-        delta = tool_update_delta(message.toolCallId, message.partialResult),
-      })
+    if util.value(message.partialResult) == nil then
+      return nil
     end
-    return notification("item/mcpToolCall/progress", {
+    runtime.tool_args[tostring(message.toolCallId)] = util.value(message.args)
+      or runtime.tool_args[tostring(message.toolCallId)]
+    -- Pi partialResult is an accumulated snapshot, not an append-only delta.
+    -- Tools may replace or truncate progress; never append a rewritten snapshot.
+    local item = tool_item(message.toolCallId, message.toolName, nil, "running", util.value(message.partialResult))
+    if not item then
+      return nil
+    end
+    runtime.tool_output[item.id] = tool_result_text(message.partialResult)
+    return notification("item/started", {
       threadId = thread_id,
       turnId = turn_id,
-      itemId = tostring(message.toolCallId),
-      toolName = message.toolName,
-      args = runtime.tool_args[tostring(message.toolCallId)],
-      delta = tool_update_delta(message.toolCallId, message.partialResult),
-      progress = message.partialResult,
+      item = item,
     })
   end
 
@@ -2322,6 +2439,8 @@ function M.decode_notification(message)
     if not item then
       return nil
     end
+    runtime.tool_calls[item.id] = runtime.tool_calls[item.id] or {}
+    runtime.tool_calls[item.id].completedItem = vim.deepcopy(item)
     return notification("item/completed", {
       threadId = thread_id,
       turnId = turn_id,

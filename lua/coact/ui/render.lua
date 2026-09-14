@@ -1607,7 +1607,11 @@ local function response_groups(blocks)
   for _, block in ipairs(blocks or {}) do
     local turn_id = util.value(block.message_id)
     local group = turn_id and groups_by_turn[turn_id] or nil
-    if block.type == "UserBlock" then
+    if block.type == "BranchSummaryBlock" or block.type == "CompactionSummaryBlock" then
+      current = nil
+      groups_by_turn = {}
+      group = nil
+    elseif block.type == "UserBlock" then
       group = start_group(block)
       if turn_id then
         groups_by_turn[turn_id] = group
@@ -1698,6 +1702,18 @@ local function compact_activity_segments(thread, blocks)
   return out
 end
 
+-- Pi owns placement through messages/content slots. Reasoning and tools keep
+-- their own foldable blocks; wrapping them under a later output would change
+-- both identity and placement as streaming output arrives.
+local function pi_render_blocks(blocks)
+  local _, group_by_block = response_groups(blocks)
+  local out = {}
+  for _, block in ipairs(blocks) do
+    table.insert(out, response_grouped_block(block, group_by_block[block]))
+  end
+  return out
+end
+
 function M.select_render_tree(thread)
   local blocks = {}
   util.list_extend(blocks, events.normalize_thread(thread))
@@ -1706,6 +1722,9 @@ function M.select_render_tree(thread)
   util.list_extend(blocks, thread.local_blocks or {})
   if config.get().render.show_raw_events then
     util.list_extend(blocks, thread.raw_blocks or {})
+  end
+  if tostring(thread.id):match("^pi:") then
+    return pi_render_blocks(blocks)
   end
   return compact_activity_segments(thread, blocks)
 end

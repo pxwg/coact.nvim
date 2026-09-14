@@ -444,6 +444,18 @@ item_converters.contextCompaction = function(item, turn_id)
   }
 end
 
+item_converters.piCustomMessage = function(item, turn_id)
+  return {
+    type = "AgentTimelineBlock",
+    message_id = turn_id,
+    item_id = item.id,
+    title = item.title,
+    text = item.text,
+    state = status_of(item),
+    raw = item,
+  }
+end
+
 item_converters.branchSummary = function(item, turn_id)
   return context_summary_block(item, turn_id, "BranchSummaryBlock", "branch")
 end
@@ -486,7 +498,10 @@ function M.block_for_item(item, turn_id)
   end
   local converter = item_converters[item.type]
   if converter then
-    return converter(item, turn_id)
+    local block = converter(item, turn_id)
+    block.treeEntryId = util.value(item.treeEntryId or item.tree_entry_id)
+    block.treeParentId = util.value(item.treeParentId or item.tree_parent_id)
+    return block
   end
   return {
     type = "RawEventBlock",

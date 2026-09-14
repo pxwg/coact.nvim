@@ -378,6 +378,8 @@ function M.upsert_item(thread_id, turn_id, item)
     return nil
   end
   local existing = thread.items[item.id] or {}
+  local placement_changed = item.piMessageId ~= nil
+    and (existing.piMessageId ~= item.piMessageId or existing.piContentIndex ~= item.piContentIndex)
   for key, value in pairs(item) do
     existing[key] = value
   end
@@ -386,6 +388,26 @@ function M.upsert_item(thread_id, turn_id, item)
   thread.items[item.id] = existing
   thread.item_turns[item.id] = turn_id
   append_unique(thread.item_order, item.id)
+  if placement_changed and existing.piMessageId and type(existing.piContentIndex) == "number" then
+    -- A late authoritative block occupies its message's content slot, not the
+    -- time at which it happened to arrive (e.g. empty/redacted thinking).
+    local positions, ids = {}, {}
+    for index, id in ipairs(thread.item_order) do
+      if thread.items[id].piMessageId == existing.piMessageId then
+        table.insert(positions, index)
+        table.insert(ids, id)
+      end
+    end
+    table.sort(ids, function(a, b)
+      return thread.items[a].piContentIndex < thread.items[b].piContentIndex
+    end)
+    for index = #positions, 1, -1 do
+      table.remove(thread.item_order, positions[index])
+    end
+    for index, id in ipairs(ids) do
+      table.insert(thread.item_order, positions[1] + index - 1, id)
+    end
+  end
   return existing
 end
 

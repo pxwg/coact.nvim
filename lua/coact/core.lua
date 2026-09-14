@@ -588,6 +588,13 @@ end
 
 handlers["item/agentMessage/delta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "agentMessage")
+  if params.piMessageId then
+    state.upsert_item(
+      params.threadId,
+      params.turnId,
+      { id = params.itemId, piMessageId = params.piMessageId, piContentIndex = params.piContentIndex }
+    )
+  end
   append_field(item, "text", params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", agent_label() .. " is responding...")
   if not buffers.try_stream_delta(params.threadId, params.itemId, params.delta) then
@@ -600,6 +607,13 @@ handlers["item/reasoning/textDelta"] = function(params)
     return
   end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
+  if params.piMessageId then
+    state.upsert_item(
+      params.threadId,
+      params.turnId,
+      { id = params.itemId, piMessageId = params.piMessageId, piContentIndex = params.piContentIndex }
+    )
+  end
   item.content = item.content or {}
   local index = (tonumber(util.value(params.contentIndex)) or 0) + 1
   item.content[index] = text_value(item.content[index]) .. text_value(params.delta)
@@ -869,6 +883,8 @@ handlers["pi/agent_settled"] = function(params)
   set_generation(thread, "idle", nil)
   if pending_compaction_refresh then
     refresh_completed_pi_compaction(pending_compaction_refresh)
+  else
+    require("coact.providers.pi").on_agent_settled(params)
   end
   schedule(params.threadId)
 end
