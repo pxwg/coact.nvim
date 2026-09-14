@@ -6,9 +6,11 @@ vim.opt.runtimepath:append(vim.fn.getcwd())
 local id = "pi:kitty-transcript-fixed"
 local state = require("coact.state")
 local render = require("coact.ui.render")
-local function signature(thread)
+local function signature(thread, full_history)
   local out = {}
-  for _, block in ipairs(render.select_render_tree(thread)) do
+  for _, block in
+    ipairs(full_history and require("coact.events").normalize_thread(thread) or render.select_render_tree(thread))
+  do
     local item = block.raw or {}
     table.insert(out, { block.type, block.text or "", item.arguments or {}, item.output or "", item.status or "" })
   end
@@ -58,13 +60,8 @@ function _G.CoactPiTranscriptCheck(phase)
       "compaction failed to preserve branch history"
     )
     local blocks = render.select_render_tree(thread)
-    assert(
-      blocks[1].type == "UserBlock"
-        and blocks[6].type == "AssistantBlock"
-        and blocks[7].type == "CompactionSummaryBlock"
-        and blocks[8].type == "BranchSummaryBlock"
-    )
-    local current = signature(thread)
+    assert(#blocks == 2 and blocks[1].type == "CompactionSummaryBlock" and blocks[2].type == "BranchSummaryBlock")
+    local current = signature(thread, true)
     for index, block in ipairs(_G.CoactPiLiveSignature) do
       assert(vim.deep_equal(current[index], block), "compaction must not change prior history")
     end

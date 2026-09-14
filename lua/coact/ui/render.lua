@@ -24,12 +24,14 @@ local foldable_types = {
   QueuedUserBlock = true,
   AssistantBlock = true,
   ErrorBlock = true,
+  BranchSummaryBlock = true,
+  CompactionSummaryBlock = true,
 }
+
+local summary_types = { BranchSummaryBlock = true, CompactionSummaryBlock = true }
 
 local placeholder_types = {
   ActivitySummaryBlock = true,
-  BranchSummaryBlock = true,
-  CompactionSummaryBlock = true,
   ReasoningBlock = true,
   ToolCallBlock = true,
   PatchBlock = true,
@@ -590,6 +592,13 @@ local function mark_placeholder(thread, line, key, block, body_lines)
 end
 
 local function header_virt_text(mark)
+  if mark.block and summary_types[mark.block.type] then
+    local decoration = stream_decoration_for_block(mark.block)
+    return {
+      { decoration.marker .. "▾ ", decoration.hl_group },
+      { tostring(mark.title or ""), "CoactBlockPlaceholderTitle" },
+    }
+  end
   local hl_group = header_hl(mark.kind)
   return {
     { "▍ ", hl_group },
@@ -675,6 +684,45 @@ local function placeholder_virt_text(mark)
   return chunks
 end
 
+-- Native fold presentation only: the body remains ordinary buffer text.
+function M.foldtext()
+  local thread = require("coact.state").thread_for_buf(0)
+  local block = thread and thread.render_index and thread.render_index[vim.v.foldstart]
+  if not (block and summary_types[block.type]) then
+    return vim.fn.foldtext()
+  end
+  local decoration = stream_decoration_for_block(block)
+  local chunks = placeholder_virt_text({
+    expanded = false,
+    title = placeholder_title(block),
+    meta = placeholder_meta(block),
+    decoration = decoration,
+  })
+  table.insert(
+    chunks,
+    1,
+    { decoration and decoration.marker or "", decoration and decoration.hl_group or "CoactBlockPlaceholder" }
+  )
+  local hint = table.remove(chunks)
+  local info = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1] or {}
+  local width = math.max(1, vim.api.nvim_win_get_width(0) - (info.textoff or 0))
+  local budget = math.max(1, width - vim.fn.strdisplaywidth(hint[1]))
+  local out = {}
+  for _, chunk in ipairs(chunks) do
+    if budget <= 0 then
+      break
+    end
+    local text = budget < 3 and vim.fn.strdisplaywidth(chunk[1]) > budget and string.rep(".", budget)
+      or truncate_display(chunk[1], budget)
+    table.insert(out, { text, chunk[2] })
+    budget = budget - vim.fn.strdisplaywidth(text)
+  end
+  if width > vim.fn.strdisplaywidth(hint[1]) then
+    table.insert(out, hint)
+  end
+  return out
+end
+
 local function virtual_body_lines(mark)
   if not mark.expanded then
     return nil
@@ -756,8 +804,12 @@ end
 local function apply_stream_decoration_marks(thread, bufnr)
   for _, mark in ipairs(thread.stream_decoration_marks or {}) do
     for lnum = mark.start_line, mark.finish_line do
+      local marker = mark.marker
+      if mark.block and summary_types[mark.block.type] then
+        marker = "  │ "
+      end
       vim.api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
-        virt_text = { { mark.marker, mark.hl_group } },
+        virt_text = { { marker, mark.hl_group } },
         virt_text_pos = "inline",
         priority = 1100,
         strict = false,
@@ -1398,6 +1450,23 @@ local function replace_buffer_lines(bufnr, lines)
   return true
 end
 
+local function capture_summary_folds(thread, bufnr)
+  thread.summary_fold_states = thread.summary_fold_states or {}
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.api.nvim_win_is_valid(win) and vim.wo[win].foldenable then
+      local states = thread.summary_fold_states[win] or {}
+      thread.summary_fold_states[win] = states
+      vim.api.nvim_win_call(win, function()
+        for _, fold in ipairs(thread.folds or {}) do
+          if fold.summary_id then
+            states[fold.summary_id] = vim.fn.foldclosed(fold.start) ~= -1
+          end
+        end
+      end)
+    end
+  end
+end
+
 local function apply_manual_folds(thread, bufnr)
   bufnr = bufnr or (thread and thread.bufnr)
   if not thread or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
@@ -1409,6 +1478,7 @@ local function apply_manual_folds(thread, bufnr)
       vim.api.nvim_win_call(win, function()
         local view = vim.fn.winsaveview()
         vim.wo[win].foldmethod = "manual"
+        vim.wo[win].foldtext = "v:lua.require'coact.ui.render'.foldtext()"
         vim.wo[win].foldenable = true
         vim.wo[win].foldlevel = 99
         vim.cmd("silent! normal! zE")
@@ -1423,6 +1493,12 @@ local function apply_manual_folds(thread, bufnr)
           end
         end
         vim.cmd("silent! normal! zR")
+        local states = thread.summary_fold_states and thread.summary_fold_states[win] or {}
+        for _, fold in ipairs(thread.folds or {}) do
+          if fold.summary_id and states[fold.summary_id] ~= false then
+            vim.cmd(("silent! %dfoldclose"):format(fold.start))
+          end
+        end
         vim.fn.winrestview(view)
       end)
     end
@@ -1737,7 +1813,15 @@ end
 
 function M.select_render_tree(thread)
   local blocks = {}
-  util.list_extend(blocks, events.normalize_thread(thread))
+  local history = events.normalize_thread(thread)
+  local first_visible = 1
+  for index, block in ipairs(history) do
+    if block.type == "CompactionSummaryBlock" then
+      first_visible = index
+    end
+  end
+  -- Render-only pruning: the state/session and selected branch remain intact.
+  util.list_extend(blocks, vim.list_slice(history, first_visible))
   util.list_extend(blocks, compact_hook_timeline_blocks(thread.timeline_blocks))
   util.list_extend(blocks, events.pending_blocks(thread))
   util.list_extend(blocks, thread.local_blocks or {})
@@ -1878,6 +1962,12 @@ render_block = function(thread, lines, block, opts)
       add(lines, "")
     end
     text_start, text_finish, auto_closed_line = add_guarded_text(thread, lines, block.text)
+  elseif summary_types[block.type] then
+    local title = block.type == "CompactionSummaryBlock" and "Context compacted" or "Branch summary"
+    local line = add(lines, "### " .. title)
+    mark_header(thread, line, "section", title, {}, block)
+    add(lines, "")
+    add_guarded_text(thread, lines, table.concat(placeholder_body_lines(block), "\n"))
   elseif placeholder_types[block.type] then
     render_placeholder(thread, lines, block, opts)
   elseif block.type == "ErrorBlock" then
@@ -1899,7 +1989,11 @@ render_block = function(thread, lines, block, opts)
   end
   local fold_index = nil
   if foldable_types[block.type] and finish > start then
-    table.insert(thread.folds, { start = start, finish = finish })
+    table.insert(thread.folds, {
+      start = start,
+      finish = finish,
+      summary_id = summary_types[block.type] and (block.item_id or block_key(block, opts)) or nil,
+    })
     fold_index = #thread.folds
   end
   local decoration = stream_decoration_for_block(block)
@@ -1949,6 +2043,7 @@ function M.render(thread)
   setup_highlights()
 
   local bufnr = thread.bufnr
+  capture_summary_folds(thread, bufnr)
   local snapshots = capture_window_views(thread, bufnr)
   thread.prompt_lines = nil
   thread.prompt_start = nil
@@ -2213,6 +2308,12 @@ function M.toggle_under_cursor()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local mark = thread.placeholder_index and thread.placeholder_index[lnum]
   if not mark then
+    local block = thread.render_index and thread.render_index[lnum]
+    if block and summary_types[block.type] and vim.fn.foldlevel(lnum) > 0 then
+      vim.cmd("normal! za")
+      capture_summary_folds(thread, thread.bufnr)
+      return
+    end
     util.notify("No expandable Coact block under cursor", vim.log.levels.WARN)
     return
   end

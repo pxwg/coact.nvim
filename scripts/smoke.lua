@@ -390,6 +390,7 @@ do
   dofile("scripts/pi-transcript-test.lua").run()
   dofile("scripts/pi-history-test.lua").run()
   dofile("scripts/pi-activity-test.lua").run()
+  dofile("scripts/pi-summary-fold-test.lua").run()
   local pi_command = pi_provider.command(require("coact.config").get())
   assert(vim.tbl_contains(pi_command, "pi"), "Pi provider command should invoke pi")
   assert(
@@ -1923,44 +1924,18 @@ do
     local summary_buf = vim.api.nvim_create_buf(false, true)
     state.bind_buffer(summary_thread, summary_buf)
     summary_render.render(summary_thread)
+    assert(#summary_thread.placeholder_marks == 0, "summaries must not use virtual-text placeholders")
+    local summary_text = table.concat(vim.api.nvim_buf_get_lines(summary_buf, 0, -1, false), "\n")
     assert(
-      #summary_thread.placeholder_marks == 2
-        and summary_thread.placeholder_marks[1].title == "Context compacted"
-        and summary_thread.placeholder_marks[2].title == "Branch summary",
-      "Pi summaries should render as distinct collapsed placeholder blocks"
+      summary_text:match("Compacted from 120000 tokens")
+        and summary_text:match("Preserve compacted work")
+        and summary_text:match("Explore the sibling branch"),
+      "complete summary bodies must exist in buffer text"
     )
-    local collapsed_summary_marks = vim.inspect(vim.tbl_map(function(mark)
-      return vim.api.nvim_buf_get_extmark_by_id(
-        summary_buf,
-        summary_render.namespace(),
-        mark.extmark_id,
-        { details = true }
-      )
-    end, summary_thread.placeholder_marks))
-    assert(
-      collapsed_summary_marks:match("120000 tokens before")
-        and collapsed_summary_marks:match("Preserve compacted work")
-        and collapsed_summary_marks:match("Explore the sibling branch"),
-      "collapsed Pi summary rows should expose token and goal previews"
-    )
-    for _, mark in ipairs(summary_thread.placeholder_marks) do
-      summary_thread.expanded_blocks[mark.key] = true
-    end
-    summary_render.render(summary_thread)
-    local expanded_summary_marks = vim.inspect(vim.tbl_map(function(mark)
-      return vim.api.nvim_buf_get_extmark_by_id(
-        summary_buf,
-        summary_render.namespace(),
-        mark.extmark_id,
-        { details = true }
-      )
-    end, summary_thread.placeholder_marks))
-    assert(
-      expanded_summary_marks:match("Compacted from 120000 tokens")
-        and expanded_summary_marks:match("Preserve compacted work")
-        and expanded_summary_marks:match("Explore the sibling branch"),
-      "expanded Pi summary rows should expose their full summary bodies"
-    )
+    local summary_folds = vim.tbl_filter(function(fold)
+      return fold.summary_id ~= nil
+    end, summary_thread.folds)
+    assert(#summary_folds == 2, "summaries should create native fold ranges")
     local summary_detail = require("coact.ui.detail")
     local compaction_detail = table.concat(summary_detail.lines_for(summary_blocks[1]), "\n")
     local branch_detail = table.concat(summary_detail.lines_for(summary_blocks[4]), "\n")

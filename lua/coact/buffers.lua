@@ -25,6 +25,7 @@ local restorable_window_options = {
   "linebreak",
   "foldmethod",
   "foldexpr",
+  "foldtext",
   "foldenable",
   "foldlevel",
   "conceallevel",
@@ -43,6 +44,7 @@ local history_window_options = {
   linebreak = true,
   foldmethod = "manual",
   foldexpr = "0",
+  foldtext = "v:lua.require'coact.ui.render'.foldtext()",
   foldenable = true,
   foldlevel = 99,
 }

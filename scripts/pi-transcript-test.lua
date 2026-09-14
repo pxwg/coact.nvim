@@ -116,6 +116,9 @@ function M.run()
 
   local before = {}
   for _, item_id in ipairs(thread.item_order) do
+    if thread.items[item_id].type == "compactionSummary" then
+      before = {}
+    end
     table.insert(before, thread.items[item_id].type)
   end
   local after = {}
@@ -159,11 +162,7 @@ function M.run()
     }),
   })
   local blocks = render.select_render_tree(boundary)
-  assert(
-    blocks[1].type == "ReasoningBlock"
-      and blocks[2].type == "CompactionSummaryBlock"
-      and blocks[3].type == "AssistantBlock"
-  )
+  assert(#blocks == 2 and blocks[1].type == "CompactionSummaryBlock" and blocks[2].type == "AssistantBlock")
   -- Rewritten and empty cumulative progress must replace, never append.
   send({ type = "tool_execution_start", toolCallId = "rewrite-progress", toolName = "read", args = {} })
   for _, value in ipairs({ "old progress", "replacement", "" }) do

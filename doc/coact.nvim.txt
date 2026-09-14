@@ -243,15 +243,19 @@ navigation. The result remains as a collapsed `Branch summary` block at Pi's
 active-branch position: after a selected non-user entry, after the parent of a
 selected user prompt restored to the composer, or at the transcript root when
 revisiting the first prompt. Pi compaction checkpoints render separately as
-`Context compacted` blocks where compaction happened, preserving earlier chat.
-Both forms use compact extmark metadata, `za` expansion, and `K` detail.
+`Context compacted` sections where compaction happened. Both summary forms
+contain real buffer text inside native Neovim folds, initially closed. Styled
+foldtext preserves the original icons, colors, metadata/preview and `za` hint.
+Use `za` to access, select and copy the complete text; `K` still opens detail.
+Only compact prunes the rendered prefix before its latest occurrence. This
+never removes history from state/session; branch summaries do not prune.
 
-Pi chat is the selected branch's root-to-leaf history, derived from native
+Pi history state is the selected branch's root-to-leaf path, derived from native
 `get_entries` and `leafId`, not the model context returned by `get_messages`.
 Other branches are excluded. Resume, tree navigation and settled runs reconcile
 persisted entry IDs. After a reply finishes, adjacent completed thinking/tool
 blocks cluster in place under `Thinking finished`; text, user messages and
-summaries remain boundaries. Compaction does not erase chat ancestors.
+summaries remain boundaries. Compaction pruning is a render-only policy.
 
 When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi
 extension that registers `nvim_exec_lua`. The tool runs with the thread's
@@ -564,7 +568,7 @@ The block types include:
 
 Headers keep markdown heading lines in the transcript buffer and render compact
 role labels through overlay extmarks; header metadata is right-aligned with
-extmarks. Reasoning/tool/patch/summary/agent blocks are placeholders with
+extmarks. Reasoning/tool/patch/agent blocks are placeholders with
 virtual body lines. One user run keeps a single assistant response frame across provider
 turn ids. Activity before each visible output compacts into a collapsed
 `Thinking finished` row, while activity after partial output remains live until
@@ -597,7 +601,7 @@ Thread/composer buffer keys:
   CTRL-S    submit prompt; with Pi, submits during generation queue follow-ups
   ENTER     submit prompt from composer normal mode
   i/a/...   open composer from history preview
-  za        expand/collapse placeholder block
+  za        expand/collapse placeholder or native summary fold
   K         history opens full block detail; composer hovers @... context docs
   <Esc><Esc>
             with Pi, open the session tree; history preselects the current

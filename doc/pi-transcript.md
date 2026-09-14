@@ -4,8 +4,11 @@
 
 - **Tree:** all persisted branches and their parent/child relationships. An entry
   shown below another branch's leaf need not have happened after that leaf.
-- **Chat:** the selected branch's root-to-leaf history, including compactions at
-  the points where they happened. Compaction never deletes chat ancestors.
+- **History state:** the selected branch's root-to-leaf history, including
+  compactions where they happened. Compaction never deletes history ancestors.
+- **Chat rendering:** starts at the latest compaction on that branch. This is
+  render-only prefix pruning; state, session entries and tree history remain
+  intact. A branch summary does not prune anything.
 - **Model context:** the summary and retained messages selected by Pi. This is
   not the chat history, and is not used as its data source.
 
@@ -46,6 +49,27 @@ Entry IDs determine persisted message/block identities and tree navigation
 annotations. Repeated text on sibling branches does not affect identity.
 Assistant content order and tool declaration/result correlation are preserved.
 
+## Native summary folds
+
+Compaction and branch-summary sections write their complete text into the
+history buffer and use native manual folds, closed initially. A highlighted
+`foldtext` caption reuses the original summary icons, title, metadata/preview
+and `za expand` hint, clipped to the window width. This is fold presentation,
+not a virtual-text body. Expanded sections keep the icon in the header and
+use the tool-block-style indented colored gutter on every body line, including
+blank and final lines, without a bottom corner.
+`za`, `zo` and
+`zc` operate on actual folds; expanded body lines can be navigated, selected
+and yanked. Open/closed state is preserved per window across rerenders, keyed
+by summary item identity. Tools retain their existing placeholder rendering.
+
+Pruning belongs only to `select_render_tree`: the latest compaction cuts the
+visible history prefix, including older compactions. It does not mutate
+`thread.items`, `item_order`, persisted entries, or Pi's model context. Pi may
+still retain pre-compaction messages in model context; this is a chat display
+policy, not a claim that every hidden line was summarized. Selecting a branch
+without that compaction renders that branch without this cutoff.
+
 ## Streaming and reconciliation
 
 Pi's backend turn, assistant message and tool execution are distinct:
@@ -82,7 +106,9 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
 Smoke includes `scripts/pi-transcript-test.lua`, `scripts/pi-history-test.lua`
-and `scripts/pi-activity-test.lua`:
+and `scripts/pi-activity-test.lua`; `scripts/pi-summary-fold-test.lua` checks
+native fold opening, direct yanking, fold-state persistence and render-only
+pruning. Other checks include:
 modern/legacy deltas, ordered slots, repeated assistant messages, tool errors,
 nulls, live/history races, branch switches with identical prompts, multiple
 compactions, retained-tail non-duplication, empty leaves and broken graphs.
@@ -104,6 +130,6 @@ CoactPiTranscriptCheck('branch')
 
 The deterministic JSONL peer exercises subprocess transport, adapter, state and
 rendering without model credentials or workspace writes. `reload` checks
-normalized parity; `compact` checks the unchanged history prefix followed by
-summary events; `branch` verifies sibling exclusion. This is not a live-model
+normalized parity; `compact` checks preserved history state with a pruned
+summary view; `branch` verifies sibling exclusion. This is not a live-model
 generation test.
