@@ -2,6 +2,9 @@
 
 ## Verification
 
+- Run all validation on the remote test host, including headless Neovim, formatting/syntax checks, DeepSeek integration, and native Claude Code integration. Do not run those tests on the development machine.
+- `scripts/test-claude-remote.sh` syncs source and runs the Claude checks remotely. Keep API credentials in private remote environment files or launchers, never in the repository. Claude tests use API authentication through Neovim, not Claude account login.
+
 - After behavior changes to coact.nvim Lua, docs, app-server/RPC handling, parser/completion, slash commands, patch review, dynamic tools, or TUI rendering, run the headless smoke script:
 
 ```sh
@@ -26,13 +29,17 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 
 ## Edit Modes
 
-- In pair edit mode, workspace edits should use Codex's native `apply_patch` tool.
+- For the Codex provider in pair edit mode, workspace edits should use Codex's native `apply_patch` tool.
 - Pair mode routes native `apply_patch` through a Neovim `PreToolUse` hook that opens interactive file-buffer hunk review before the native tool completes.
 - After Neovim review, accepted hunks are written through the `patch_session` file-buffer path, then coact.nvim returns to native `apply_patch` with an approval and no-op completion patch.
 - Pair mode should accept native app-server permission/file-change approvals only for `apply_patch` items already reviewed by the Neovim hook; unreviewed native file changes should be declined.
 - Do not call `nvim.apply_patch` in pair mode unless explicit legacy compatibility is enabled for that path.
 - Patch application must refuse modified loaded buffers unless a future safe path explicitly preserves or reconciles user buffer changes.
 - Yolo mode uses native `apply_patch` directly without the Neovim `PreToolUse` review hook.
+- Claude pair mode deliberately permits Bash for tests/builds/inspection; it is a cooperative review policy, not a write sandbox. Prompt file modifications through MCP `edit` (precise replacements) or `openDiff` (full contents), both using Neovim review.
+- Claude review tools may target paths outside the thread workspace. Preserve dirty-buffer refusal and exact-match/conflict checks; do not restore workspace containment restrictions without a new user decision.
+- Claude history navigation reuses the Pi tree UI/keymaps but explicitly confirms conversation-only rewind into a new native branch. Preserve original sessions and never implicitly roll back workspace files; `r` only reveals local transcript entries.
+- Claude busy submissions are FIFO follow-ups, not immediate steering. Keep queue state per thread, cancel unsent entries on stop/exit, and include separate-Neovim restart tests when changing disk history or pending-fork restoration.
 
 ## Commits
 

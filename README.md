@@ -16,6 +16,8 @@ and Pi RPC:
 pi --mode rpc
 ```
 
+and Claude Code's bidirectional `stream-json` protocol (including SDK MCP tool requests).
+
 The provider layer keeps each backend protocol small and explicit while normalizing sessions, turns, messages, tool calls, and settings into the same Neovim UI model.
 
 ## Features
@@ -45,6 +47,7 @@ The provider layer keeps each backend protocol small and explicit while normaliz
 - A working provider executable:
   - `codex` with `app-server` support for the default Codex provider.
   - Optional: `pi` with `--mode rpc`, `--session-id`, and RPC `get_entries` support for the Pi provider.
+  - Optional: Claude Code with stream-json control and SDK MCP support; validated with native CLI 2.1.280.
 - `git` on `$PATH` is optional for legacy unified-diff compatibility in the internal `nvim.apply_patch` implementation.
 - Optional: `snacks.nvim` for thread picking.
 - Optional: `blink.cmp` for prompt completions.
@@ -68,7 +71,7 @@ Default configuration:
 
 ```lua
 require("coact").setup({
-  provider = "codex", -- "codex" or "pi"
+  provider = "codex", -- "codex", "pi", or "claude"
   app_server = {
     command = { "codex", "app-server", "--listen", "stdio://" },
     initialize_timeout_ms = 10000,
@@ -187,6 +190,125 @@ require("coact").setup({
 
 On macOS, `sanitize_malloc_env` removes inherited `MallocStackLogging*` variables before spawning app-server. This avoids noisy malloc runtime messages from parent GUI environments; set it to `false` if you intentionally need those variables while debugging Codex.
 
+### Claude Code
+
+```lua
+require("coact").setup({
+  provider = "claude",
+  providers = {
+    claude = {
+      command = { "claude-ds" }, -- or { "claude" }; executable argv, not a shell alias
+      initialize_timeout_ms = 30000,
+      -- config_dir = "~/.claude", -- otherwise CLAUDE_CONFIG_DIR, then ~/.claude
+      -- max_queued_prompts = 20,
+      -- max_history_bytes = 64 * 1024 * 1024,
+      -- model = "deepseek-reasoner",
+      -- models = { "deepseek-reasoner", "deepseek-chat" }, -- optional gateway catalog
+      -- env = {}, -- prefer credentials in the process environment/private launcher
+    },
+  },
+})
+```
+
+Each thread owns a persistent Claude process. Prompts, streaming text/thinking,
+MCP calls/results, interruptions, and completion use structured protocol messages;
+there is no terminal scraping. The IDE tool contracts are inspired by
+[coder/claudecode.nvim](https://github.com/coder/claudecode.nvim/blob/main/PROTOCOL.md).
+Unlike that plugin's WebSocket discovery server, Coact uses SDK MCP JSON-RPC
+inside Claude's bidirectional stream-json control channel: no extra plugin,
+WebSocket port, IDE lockfile, or terminal UI is required.
+
+The `coact` MCP server exposes `getCurrentSelection` (source-buffer text/cursor),
+`getDiagnostics`, `edit` (precise replacements), and `openDiff` (complete new file
+contents). `edit` accepts `{ path, edits = [{ oldText, newText }, ...] }`: every
+oldText must match exactly once in the **original** file, and edits must not
+overlap. Only snippets cross the protocol; Neovim builds the diff locally. Both
+write tools use the existing changed-block review and refuse modified loaded
+buffers. Absolute paths, `~/` paths, and relative paths outside the thread
+workspace are allowed and still reviewed. Native Edit/Write remain unavailable
+in pair mode so the model prefers these review tools.
+
+Pair mode exposes Read/Glob/Grep/**Bash**/Skill and restricts MCP servers to this
+bridge. Bash permission requests are allowed for tests, builds, and inspection.
+The prompt instructs Claude not to bypass review using shell writes, but Bash
+can write files: **this is a cooperative review policy, not a security sandbox**.
+Yolo leaves native tools available and approves CLI permission requests;
+explicit calls to `edit` or `openDiff` still request review.
+
+After opening a Claude thread, `/model` loads its CLI model catalog and switches
+via `set_model` while idle. For compatible gateways, `providers.claude.models`
+can replace the CLI's Anthropic-oriented choices with endpoint-supported model
+IDs; the CLI catalog alone does not guarantee gateway model availability.
+`/compact` executes Claude's native `/compact` command over stream-json, reserves
+the thread until completion, and reports compaction progress/completion in Coact.
+`/skills` and `$` completion expose the thread's discovered custom commands/skills;
+built-in prompt skills are added when the CLI reports them in system/init.
+`$skill:name` becomes a native `/name` invocation, without fake skill file paths.
+Use one skill invocation per submission. Catalogs are process snapshots and new
+on-disk skills may require a new thread to refresh.
+
+The thread picker reads native Claude `projects/*/<session-id>.jsonl` history
+without starting a CLI. Resume restores persisted text, thinking, and tool
+results, then continues through native `--resume`, including after Neovim restarts.
+The history root follows `providers.claude.config_dir`, provider environment
+`CLAUDE_CONFIG_DIR`, process environment `CLAUDE_CONFIG_DIR`, then `~/.claude`.
+Malformed chains and histories exceeding `max_history_bytes` (64 MiB by default)
+fail explicitly; an unfinished trailing JSONL write is ignored until complete.
+
+Submitting while generating queues a **FIFO follow-up** in the same thread.
+Coact sends it only after the current turn finishes: this is not immediate
+steering or concurrent execution. `/stop` cancels the active turn and unsent
+follow-ups; process exit also fails the unsent queue. The queue is in memory,
+not persisted across restarts; its default limit is 20. Other threads remain
+independent. Model changes and compaction require an idle thread.
+
+`/tree`, `gt`, `gT`, and normal-mode `<Esc><Esc>` reuse the Pi tree UI, including
+movement, paging, branch navigation, search, and filters. Claude labels it
+**rewind history**. `r` only reveals an entry already in the current transcript;
+it never silently rewinds. Enter asks for confirmation, then creates a new
+conversation branch with native `--fork-session --resume-session-at`:
+- User message: rewind **before** it and restore its text as an editable draft.
+- Assistant text: rewind **after** that response.
+- Unfinished tool exchanges and non-message entries cannot be checkpoints.
+
+Rewind leaves workspace files **unchanged** and preserves the original session;
+it does not invoke Claude file rollback. Branch relationships live in
+`<config-dir>/coact-branches/` so branches remain discoverable before their first
+new prompt, across restarts, and alongside their original history. Native
+branches created outside Coact lack this Coact-specific family metadata.
+Stop generation and queued follow-ups before using rewind history. A pre-compaction
+checkpoint requires an ancestor whose native resumable chain still contains it;
+otherwise Coact rejects it rather than silently restoring the wrong context.
+
+Remaining limitations: text context only; no immediate steering, reasoning-level
+picker, or Codex-only slash commands. Review tools support text files up to
+2 MiB, not renames, binary files, or empty new files. Unknown operations fail
+explicitly.
+
+A DeepSeek-compatible private launcher can set `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL` before executing `claude "$@"`.
+Export the token in a separate shell assignment before referencing it; do not
+rely on another assignment inside the same `env` command. With that setup,
+Claude account login is unnecessary. Never put tokens in this repository.
+
+All Claude validation should run remotely, including formatter and smoke checks:
+
+```sh
+bash scripts/test-claude-remote.sh mba-backup /Users/s.h./coact-validation/coact.nvim \
+  /Users/s.h./coact-validation/bin/claude-ds
+```
+
+The runner copies source, then runs checks on the SSH host. Omit the launcher
+argument for fixture-only tests. The live test uses headless Neovim to verify
+DeepSeek responses, source-buffer MCP calls, Bash, model switching, skill invocation,
+compaction, cross-workspace incremental review, and interrupted review without login.
+Three separate Neovim processes also verify FIFO follow-ups/cancellation, native
+disk restore, shared tree keymaps, conversation-only rewind, pending-fork restart,
+and branch context selection (including across compaction). Supply the launcher and credentials privately on the host;
+the runner never transfers or prints credentials.
+
+### Pi
+
 To use Pi as the active provider:
 
 ```lua
@@ -262,7 +384,7 @@ The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `c
 :Coact add-selection
 ```
 
-Opening a provider thread starts in preview state with a read-only `coact-history` transcript buffer using the full UI height. Pi opens that buffer immediately from local session metadata and shows a transient in-buffer session loading spinner while its independent execution unit starts, restores the session, and hydrates conversation history; loading state is renderer chrome rather than transcript content, and failures remain visible in the opened buffer. New Pi sessions receive their final session id before launch so the loading buffer already belongs to the eventual execution unit. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, or `S` to open the unnamed `coact-input` composer below it. Type in the composer and press `<C-s>` or normal-mode `<CR>` to submit; normal-mode `q` closes the composer and returns to preview without discarding the draft. Press normal-mode `K` over an `@...` context token in the composer to open the same LSP-style hover float used by completion documentation. With the Pi provider, submitting while a turn is still generating queues the text as a follow-up. The composer grows with wrapped input up to `ui.composer.max_height`, then scrolls internally. The composer buffer is left unnamed rather than using a `coact://` URI so path-oriented completion sources keep a normal editing context. In history, use `za` on a placeholder block to expand or collapse reasoning/tool/agent details, `K` to open the full block detail buffer, `g?` for history key help, `gs` to toggle the status detail page, `gS` to show/hide the status chrome, `gt` for the Pi tree, `gT` to open the Pi tree preselected at the user/assistant message under cursor, normal-mode `<Esc><Esc>` to open the Pi tree preselected at the current message when available (or as a normal tree from the composer), `r` inside the Pi tree to reveal a selected entry in the current Neovim transcript when it is already on the rendered branch, `gc` for runtime status, `gy` to copy the latest output, `gd` for workspace diff, `gr` to refresh rendering, and `g]` / `g[` to jump to the next/previous message block. During streaming, transcript windows preserve their cursor and view by default. Set `ui.auto_scroll = true` to make windows near the bottom follow the conversation; cursor movement or scrolling away then suspends follow for that window.
+Opening a provider thread starts in preview state with a read-only `coact-history` transcript buffer using the full UI height. Pi opens that buffer immediately from local session metadata and shows a transient in-buffer session loading spinner while its independent execution unit starts, restores the session, and hydrates conversation history; loading state is renderer chrome rather than transcript content, and failures remain visible in the opened buffer. New Pi sessions receive their final session id before launch so the loading buffer already belongs to the eventual execution unit. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, or `S` to open the unnamed `coact-input` composer below it. Type in the composer and press `<C-s>` or normal-mode `<CR>` to submit; normal-mode `q` closes the composer and returns to preview without discarding the draft. Press normal-mode `K` over an `@...` context token in the composer to open the same LSP-style hover float used by completion documentation. With Pi or Claude, submitting while a turn is still generating queues the text as a follow-up. The composer grows with wrapped input up to `ui.composer.max_height`, then scrolls internally. The composer buffer is left unnamed rather than using a `coact://` URI so path-oriented completion sources keep a normal editing context. In history, use `za` on a placeholder block to expand or collapse reasoning/tool/agent details, `K` to open the full block detail buffer, `g?` for history key help, `gs` to toggle the status detail page, `gS` to show/hide the status chrome, `gt` for the Pi tree or Claude rewind history, `gT` to preselect the user/assistant message under cursor, normal-mode `<Esc><Esc>` to preselect the current message when available (or open the plain tree from the composer), `r` inside the tree to reveal a selected entry in the current transcript (Claude never rewinds implicitly), `gc` for runtime status, `gy` to copy the latest output, `gd` for workspace diff, `gr` to refresh rendering, and `g]` / `g[` to jump to the next/previous message block. During streaming, transcript windows preserve their cursor and view by default. Set `ui.auto_scroll = true` to make windows near the bottom follow the conversation; cursor movement or scrolling away then suspends follow for that window.
 
 One user run keeps a single Coact response frame even when a provider splits it across internal turn ids. For Codex, activity before each visible assistant output compacts into a collapsed `Thinking finished` row. Activity emitted after partial output stays as live reasoning/tool placeholders until the next output boundary, preserving folded activity → output → folded activity → output chronology.
 

@@ -50,7 +50,12 @@ local commands = {
   { name = "raw", detail = "Toggle raw event scrollback", category = "ui" },
   { name = "resume", detail = "Resume a saved conversation", category = "threads" },
   { name = "new", detail = "Start a new conversation", category = "threads" },
-  { name = "tree", detail = "Navigate the current Pi session tree", category = "threads", providers = { pi = true } },
+  {
+    name = "tree",
+    detail = "Navigate session history (Pi tree / Claude rewind)",
+    category = "threads",
+    providers = { pi = true, claude = true },
+  },
   { name = "review", detail = "Ask Codex to review the working tree", category = "workspace" },
   { name = "status", detail = "Display session configuration and token usage", category = "status" },
   { name = "debug-config", detail = "Print config layer and requirements diagnostics", category = "status" },
@@ -235,11 +240,17 @@ local function tree_action(value)
   if type(nested) == "table" then
     return tree_action(nested)
   end
-  if object.__coactNvimPiTreeAction ~= true then
+  if object.__coactNvimPiTreeAction ~= true and object.__coactTreeAction ~= true then
     return nil
   end
   local action = object.action
-  if action ~= "reveal" and action ~= "cancel" and action ~= "noop" and action ~= "navigateTree" then
+  if
+    action ~= "reveal"
+    and action ~= "cancel"
+    and action ~= "noop"
+    and action ~= "navigateTree"
+    and action ~= "rewind"
+  then
     return nil
   end
   return object
@@ -582,34 +593,39 @@ local function model_label(model)
   return label
 end
 
-local function request_models(actions, callback)
+local function request_models(thread_id, actions, callback)
+  local catalog_thread_id = providers.current().catalog_scope == "thread" and current_thread_id(thread_id) or nil
   ensure_server(actions, function()
     local all = {}
     local function page(cursor)
-      rpc.request("model/list", { limit = 200, cursor = cursor, includeHidden = false }, function(err, result)
-        if err then
-          notify("model/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
-          callback({})
-          return
-        end
-        for _, model in ipairs(as_table(field(result, "data"))) do
-          if model.hidden ~= true then
-            table.insert(all, model)
+      rpc.request(
+        "model/list",
+        { threadId = catalog_thread_id, limit = 200, cursor = cursor, includeHidden = false },
+        function(err, result)
+          if err then
+            notify("model/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+            callback({})
+            return
+          end
+          for _, model in ipairs(as_table(field(result, "data"))) do
+            if model.hidden ~= true then
+              table.insert(all, model)
+            end
+          end
+          local next_cursor = text_or_nil(field(result, "nextCursor"))
+          if next_cursor then
+            page(next_cursor)
+          else
+            table.sort(all, function(a, b)
+              if a.isDefault ~= b.isDefault then
+                return a.isDefault == true
+              end
+              return tostring(a.displayName or a.model or a.id) < tostring(b.displayName or b.model or b.id)
+            end)
+            callback(all)
           end
         end
-        local next_cursor = text_or_nil(field(result, "nextCursor"))
-        if next_cursor then
-          page(next_cursor)
-        else
-          table.sort(all, function(a, b)
-            if a.isDefault ~= b.isDefault then
-              return a.isDefault == true
-            end
-            return tostring(a.displayName or a.model or a.id) < tostring(b.displayName or b.model or b.id)
-          end)
-          callback(all)
-        end
-      end)
+      )
     end
     page(nil)
   end)
@@ -655,7 +671,8 @@ local function reasoning_effort_label(choice)
 end
 
 local function open_model(actions, thread_id)
-  request_models(actions, function(models)
+  thread_id = current_thread_id(thread_id)
+  request_models(thread_id, actions, function(models)
     present_result(select_result({
       title = provider_title() .. " model",
       empty_message = "no " .. provider_title() .. " models available",
@@ -708,7 +725,7 @@ end
 
 local function open_fast(args, actions, thread_id)
   local arg = args[1] and args[1]:lower() or ""
-  request_models(actions, function(models)
+  request_models(thread_id, actions, function(models)
     local model = active_model_from_catalog(models, thread_id)
     if not model then
       notify("no active model is available", vim.log.levels.WARN)
@@ -1425,9 +1442,26 @@ local function open_tree(actions, thread_id, opts)
           present_result(notify_result("thread/tree returned no thread", vim.log.levels.ERROR))
           return
         end
+        local source = state.get_thread(id)
         local thread = state.update_thread_from_payload(thread_payload)
-        require("coact.buffers").schedule_render(thread.id)
-        present_result(notify_result(provider_title() .. " tree updated"))
+        local buffers = require("coact.buffers")
+        if thread.id ~= id then
+          if source then
+            thread.context_bufnr, thread.context_winid = source.context_bufnr, source.context_winid
+          end
+          buffers.open(thread.id)
+          if type(result.draftText) == "string" then
+            buffers.set_prompt_text(thread.id, result.draftText)
+          end
+        else
+          buffers.schedule_render(thread.id)
+        end
+        present_result(
+          notify_result(
+            provider_title()
+              .. (action and action.action == "rewind" and " conversation rewound; files unchanged" or " tree updated")
+          )
+        )
       end
     )
   end)
@@ -1542,35 +1576,40 @@ local function open_memories(args, actions, thread_id)
   })
 end
 
-local function open_skills(actions)
+local function open_skills(actions, thread_id)
+  local catalog_thread_id = providers.current().catalog_scope == "thread" and current_thread_id(thread_id) or nil
   ensure_server(actions, function()
-    rpc.request("skills/list", { cwds = { config.cwd() }, forceReload = false }, function(err, result)
-      if err then
-        notify("skills/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
-        return
-      end
-      local skills = {}
-      for _, entry in ipairs(as_table(field(result, "data"))) do
-        for _, skill in ipairs(as_table(field(entry, "skills"))) do
-          table.insert(skills, skill)
+    rpc.request(
+      "skills/list",
+      { threadId = catalog_thread_id, cwds = { config.cwd() }, forceReload = false },
+      function(err, result)
+        if err then
+          notify("skills/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+          return
         end
+        local skills = {}
+        for _, entry in ipairs(as_table(field(result, "data"))) do
+          for _, skill in ipairs(as_table(field(entry, "skills"))) do
+            table.insert(skills, skill)
+          end
+        end
+        table.sort(skills, function(a, b)
+          return tostring(a.name) < tostring(b.name)
+        end)
+        present_result(select_result({
+          title = provider_title() .. " skill",
+          empty_message = "no " .. provider_title() .. " skills available",
+          items = skills,
+          format_item = function(skill)
+            local description = text_or_nil(skill.shortDescription)
+            return text(skill.name) .. (description and (" - " .. description) or "")
+          end,
+          on_select = function(skill)
+            return insert_result("$skill:" .. text(skill.name))
+          end,
+        }))
       end
-      table.sort(skills, function(a, b)
-        return tostring(a.name) < tostring(b.name)
-      end)
-      present_result(select_result({
-        title = provider_title() .. " skill",
-        empty_message = "no " .. provider_title() .. " skills available",
-        items = skills,
-        format_item = function(skill)
-          local description = text_or_nil(skill.shortDescription)
-          return text(skill.name) .. (description and (" - " .. description) or "")
-        end,
-        on_select = function(skill)
-          return insert_result("$skill:" .. text(skill.name))
-        end,
-      }))
-    end)
+    )
   end)
 end
 
@@ -1663,8 +1702,8 @@ local handlers = {
   memories = function(args, actions, thread_id)
     return open_memories(args, actions, thread_id)
   end,
-  skills = function(args, actions)
-    open_skills(actions)
+  skills = function(args, actions, thread_id)
+    open_skills(actions, thread_id)
   end,
   logout = function(args, actions)
     logout(actions)

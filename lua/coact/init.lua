@@ -210,7 +210,7 @@ local function submit_streaming_behavior(thread, opts)
   if requested == "steer" or requested == "followUp" then
     return requested
   end
-  if not providers.is("pi") or not thread then
+  if not (providers.is("pi") or providers.current().supports_follow_up) or not thread then
     return nil
   end
   if thread.active_turn_id or busy_generations[thread.generation] then
@@ -315,7 +315,7 @@ function M.open(thread_id)
     return
   end
   local existing = state.get_thread(thread_id)
-  if existing and (not providers.is("pi") or rpc.is_running(thread_id)) then
+  if existing and (providers.current().transport_scope ~= "thread" or rpc.is_running(thread_id)) then
     buffers.open(thread_id)
     return
   end
@@ -341,7 +341,7 @@ function M.resume(thread_id, opts)
     existing
     and existing.bufnr
     and vim.api.nvim_buf_is_valid(existing.bufnr)
-    and (not providers.is("pi") or rpc.is_running(thread_id))
+    and (providers.current().transport_scope ~= "thread" or rpc.is_running(thread_id))
   then
     buffers.open(thread_id)
     return
@@ -353,7 +353,13 @@ function M.resume(thread_id, opts)
       function(err, result)
         local thread = state.get_thread(thread_id)
         if err then
-          set_thread_open_state(thread, "failed", "failed", "Could not restore Pi session", err)
+          set_thread_open_state(
+            thread,
+            "failed",
+            "failed",
+            "Could not restore " .. providers.title() .. " session",
+            err
+          )
           if thread and thread.bufnr then
             buffers.schedule_render(thread_id)
           end
@@ -452,6 +458,11 @@ function M.submit_text(text, thread_id, opts)
                 failed_thread.generation = pending_request.previous_generation or failed_thread.generation
                 failed_thread.status_message = pending_request.previous_status_message
               end
+            elseif failed_thread.active_turn_id and pending_request then
+              -- A backend may reject an overlapping submission while its
+              -- existing turn (including compaction) is still running.
+              failed_thread.generation = pending_request.previous_generation
+              failed_thread.status_message = pending_request.previous_status_message
             else
               failed_thread.generation = "idle"
               failed_thread.status_message = nil

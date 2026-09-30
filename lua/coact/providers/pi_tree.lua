@@ -666,9 +666,11 @@ local function render_model(state, width, height)
     spans[#lines] = hl and { { start_col = 0, end_col = #text, hl_group = hl } } or {}
   end
 
-  add_plain("Session Tree" .. status_labels(state), "CoactPiTreeTitle")
+  add_plain((state.title or "Session Tree") .. status_labels(state), "CoactPiTreeTitle")
   add_plain(
-    "j/k ctrl-n/p move · ctrl-d/u half-page · ctrl-f/b page · gg/G edge · h/l branch · enter tree · r reveal · d/t/u/L/a filters · / search",
+    "j/k ctrl-n/p move · ctrl-d/u half-page · ctrl-f/b page · gg/G edge · h/l branch · enter "
+      .. (state.action_label or "tree")
+      .. " · r reveal · d/t/u/L/a filters · / search",
     "CoactPiTreeHelp"
   )
   add_plain("Type / to search: " .. tostring(state.search_query or ""), "CoactPiTreeHelp")
@@ -914,6 +916,8 @@ local function reveal_selected(state)
   end
   if revealed then
     finish(state, tree_action("reveal", id))
+  elseif state.reveal_only then
+    finish(state, tree_action("unavailable", id, { reason = reason or "entry is not in the current transcript" }))
   else
     finish(state, tree_action("navigateTree", id, { fallbackReason = reason or "tree entry is not visible locally" }))
   end
@@ -1080,7 +1084,7 @@ local function map_keys(state)
     end
   end)
   key("/", function()
-    vim.ui.input({ prompt = "Pi tree search: ", default = state.search_query }, function(input)
+    vim.ui.input({ prompt = state.search_prompt or "Pi tree search: ", default = state.search_query }, function(input)
       if state.finished then
         return
       end
@@ -1141,6 +1145,8 @@ function M.select(message, callback, opts)
   opts = opts or {}
   state.thread_id = opts.thread_id or opts.threadId or value(payload.threadId) or value(payload.thread_id)
   state.callback = callback
+  state.title, state.action_label = opts.title, opts.action_label
+  state.search_prompt, state.reveal_only = opts.search_prompt, opts.reveal_only
   setup_highlights()
 
   local bufnr = vim.api.nvim_create_buf(false, true)
@@ -1148,7 +1154,7 @@ function M.select(message, callback, opts)
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "wipe"
   vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].filetype = "coact-pi-tree"
+  vim.bo[bufnr].filetype = opts.filetype or "coact-pi-tree"
   vim.bo[bufnr].readonly = true
   vim.bo[bufnr].modifiable = false
 
@@ -1164,7 +1170,7 @@ function M.select(message, callback, opts)
     height = height,
     row = row,
     col = col,
-    title = " Pi session tree ",
+    title = " " .. (opts.title or "Pi session tree") .. " ",
     title_pos = "center",
   })
   if not ok then
@@ -1182,6 +1188,7 @@ function M.select(message, callback, opts)
   map_keys(state)
   draw(state)
   force_normal_mode(state)
+  return state
 end
 
 function M._render_for_test(payload, opts)

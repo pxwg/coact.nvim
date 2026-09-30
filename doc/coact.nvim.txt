@@ -23,7 +23,8 @@ coding agents become collaborators that propose and revise work with you.
 
 coact.nvim runs a coding-agent provider and presents provider threads as Neovim
 buffers. Built-in adapters include Codex app-server through `codex app-server
---listen stdio://` and Pi RPC through `pi --mode rpc`.
+--listen stdio://`, Pi RPC through `pi --mode rpc`, and Claude Code through
+bidirectional stream-json with SDK MCP.
 A thread buffer is named:
 >
   coact://thread/<thread-id>
@@ -60,6 +61,75 @@ Neovim file buffers before the provider runtime continues.
 ==============================================================================
 SETUP                                                     *coact.nvim-setup*
 
+Claude Code setup (no terminal UI or claudecode.nvim dependency):
+>
+  require("coact").setup({
+    provider = "claude",
+    providers = { claude = { command = { "claude-ds" } } },
+  })
+<
+Use { "claude" } for the normal CLI. Authentication is inherited from the
+process environment/private launcher; DeepSeek API credentials do not require
+Claude account login. Do not store credentials in plugin configuration files
+tracked by git.
+
+Claude uses one stream-json process per thread, with SDK MCP JSON-RPC for
+getCurrentSelection (source-buffer text/cursor), getDiagnostics, edit, and openDiff.
+This follows the IDE tool approach of coder/claudecode.nvim, but does not expose
+its WebSocket discovery protocol. Pair mode exposes Read/Glob/Grep/Bash/Skill.
+Bash is allowed for testing/builds/inspection and can also write files: the
+review policy relies on model cooperation, not a security sandbox. Native
+Edit/Write are unavailable; the prompt directs changes through the MCP tools.
+
+edit accepts a path and edits array of {oldText, newText}; matches must be
+unique and non-overlapping in the original file. Neovim constructs the diff
+locally, then uses the same changed-block review as openDiff. Absolute paths,
+~/ paths, and paths outside the workspace are allowed. Dirty loaded buffers
+are still refused. Both tools review even in yolo mode. The 2 MiB text-file
+limit remains; renames, binary files, and empty new files are unsupported.
+
+/model switches an idle thread through the CLI control protocol. Optionally
+set providers.claude.models = { "deepseek-reasoner", "deepseek-chat" } to replace
+the CLI model catalog with gateway-supported IDs. /compact sends the native
+compression command and reserves the thread until completion. /skills and $
+completion use thread-scoped catalogs; $skill:name invokes the native command.
+Only one skill invocation per prompt is supported. New skills on disk may need
+a new thread to refresh the CLI catalog.
+
+Claude lists native projects/*/<session-id>.jsonl history without launching a
+CLI and restores persisted text/thinking/tool results with native --resume.
+History root precedence: providers.claude.config_dir, provider env.CLAUDE_CONFIG_DIR,
+process CLAUDE_CONFIG_DIR, ~/.claude. max_history_bytes defaults to 64 MiB per
+session; corrupt chains/oversized files fail explicitly. An incomplete final
+JSONL record is ignored until written completely.
+
+Submissions during generation become FIFO follow-ups, sent after the active
+turn finishes, not immediate steering. max_queued_prompts defaults to 20.
+/stop cancels the active turn and unsent follow-ups; process exit fails the
+unsent queue. Queues are in memory and do not survive Neovim restart.
+
+/tree, gt, gT, and normal-mode <Esc><Esc> reuse the Pi tree UI and its navigation,
+search, filter, and paging keys. Claude labels it rewind history. r only reveals
+an entry in the current transcript and never rewinds. Enter asks for confirmation
+and forks a new conversation at the selected checkpoint using native
+--fork-session --resume-session-at. Selecting a user rewinds before it and puts
+its text in the composer; selecting assistant text rewinds after it. Unfinished
+tool exchanges and non-message entries are not valid checkpoints. Rewinding to
+the first user starts an empty conversation with that user's text as a draft.
+
+Rewind preserves the original session and DOES NOT change workspace files.
+It is conversation rewind, not Claude file rollback. Coact stores branch-family
+metadata in <config-dir>/coact-branches/, including forks not yet written by the
+CLI, so they survive restart and stay navigable alongside their original branch.
+External Claude forks without Coact metadata are listed as independent sessions.
+Stop generation and queued follow-ups before opening rewind history. Native CLI
+resume excludes pre-compaction checkpoints; Coact uses a preserved resumable
+ancestor when available and otherwise rejects that checkpoint explicitly.
+
+Claude accepts text context only; images, immediate steering, a reasoning-level
+picker, and Codex-only slash commands are unsupported. See README for the
+remote-only validation runner, including three-process history/queue/tree tests.
+
 Minimal setup:
 >
   require("coact").setup()
@@ -68,7 +138,7 @@ Minimal setup:
 Default options:
 >
   require("coact").setup({
-    provider = "codex", -- "codex" or "pi"
+    provider = "codex", -- "codex", "pi", or "claude"
     app_server = {
       command = { "codex", "app-server", "--listen", "stdio://" },
       initialize_timeout_ms = 10000,
@@ -598,14 +668,20 @@ notification blocks.
 
 Thread/composer buffer keys:
 >
-  CTRL-S    submit prompt; with Pi, submits during generation queue follow-ups
+  CTRL-S    submit prompt; with Pi/Claude, generation-time submissions queue follow-ups
   ENTER     submit prompt from composer normal mode
   i/a/...   open composer from history preview
   za        expand/collapse placeholder or native summary fold
   K         history opens full block detail; composer hovers @... context docs
+  gt        open Pi session tree or Claude rewind history
+  gT        open tree preselected at the user/assistant message under cursor
   <Esc><Esc>
-            with Pi, open the session tree; history preselects the current
-            message when it has a tree entry id, composer opens the plain tree
+            with Pi/Claude, open history; preselect the current message when
+            it has a saved entry id, or open the plain tree from the composer
+  r (tree)  reveal a selected entry locally; Claude never implicitly rewinds
+  ENTER (tree)
+            Pi navigates its tree; Claude confirms a new conversation branch
+            at the checkpoint without rolling back workspace files
   q         close composer in compose state, close UI from history
 <
 

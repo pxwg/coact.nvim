@@ -46,6 +46,15 @@ local function schedule(fn)
   vim.schedule(fn)
 end
 
+local custom_transports = {}
+local function custom_transport()
+  local name = providers.current().transport
+  if name then
+    custom_transports[name] = custom_transports[name] or require(name)
+    return custom_transports[name]
+  end
+end
+
 local function pi_rpc()
   return require("coact.providers.pi_rpc")
 end
@@ -159,6 +168,10 @@ local function feed_stderr(data)
 end
 
 function M.is_running(thread_id)
+  local transport = custom_transport()
+  if transport then
+    return transport.is_running(thread_id)
+  end
   if providers.is("pi") then
     return pi_rpc().is_running(thread_id)
   end
@@ -166,6 +179,10 @@ function M.is_running(thread_id)
 end
 
 function M.is_initialized(thread_id)
+  local transport = custom_transport()
+  if transport then
+    return transport.is_initialized(thread_id)
+  end
   if providers.is("pi") then
     return pi_rpc().is_initialized(thread_id)
   end
@@ -173,6 +190,10 @@ function M.is_initialized(thread_id)
 end
 
 function M.pending_count(thread_id)
+  local transport = custom_transport()
+  if transport then
+    return transport.pending_count(thread_id)
+  end
   if providers.is("pi") then
     return pi_rpc().pending_count(thread_id)
   end
@@ -184,6 +205,10 @@ function M.pending_count(thread_id)
 end
 
 function M.client_count()
+  local transport = custom_transport()
+  if transport then
+    return transport.client_count()
+  end
   if providers.is("pi") then
     return pi_rpc().client_count()
   end
@@ -250,6 +275,10 @@ local function register_native_hook_trust(callback)
 end
 
 function M.prewarm(callback)
+  local transport = custom_transport()
+  if transport then
+    return transport.prewarm(callback)
+  end
   if providers.is("pi") then
     return pi_rpc().prewarm(callback)
   end
@@ -260,6 +289,10 @@ function M.prewarm(callback)
 end
 
 function M.start(callback)
+  local transport = custom_transport()
+  if transport then
+    return transport.start(callback)
+  end
   if providers.is("pi") then
     return pi_rpc().start(callback)
   end
@@ -367,6 +400,9 @@ function M.start(callback)
 end
 
 function M.stop()
+  for _, transport in pairs(custom_transports) do
+    transport.stop()
+  end
   local loaded_pi_rpc = package.loaded["coact.providers.pi_rpc"]
   if loaded_pi_rpc then
     loaded_pi_rpc.stop()
@@ -381,6 +417,10 @@ function M.stop()
 end
 
 function M.send(message)
+  local transport = custom_transport()
+  if transport then
+    return transport.send(message)
+  end
   if providers.is("pi") then
     return pi_rpc().send(message)
   end
@@ -391,6 +431,10 @@ function M.send(message)
 end
 
 function M._request_message(method, params, callback)
+  local transport = custom_transport()
+  if transport then
+    return transport.request_raw(method, params, callback)
+  end
   if providers.is("pi") then
     return pi_rpc().request_raw(method, params, callback)
   end
@@ -412,6 +456,10 @@ function M._request_message(method, params, callback)
 end
 
 function M.request(method, params, callback)
+  local transport = custom_transport()
+  if transport then
+    return transport.request(method, params, callback)
+  end
   if providers.is("pi") then
     return pi_rpc().request(method, params, callback)
   end
@@ -426,6 +474,10 @@ function M.request(method, params, callback)
 end
 
 function M.notify(method, params)
+  local transport = custom_transport()
+  if transport then
+    return transport.notify(method, params)
+  end
   if providers.is("pi") then
     return pi_rpc().notify(method, params)
   end

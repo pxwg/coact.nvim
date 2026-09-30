@@ -1887,6 +1887,16 @@ function M.open(opts)
   return session
 end
 
+-- Abort an outstanding provider review when its transport closes or cancels.
+function M.cancel(session)
+  if session and not session.completed then
+    for _, block in ipairs(pending_blocks(session)) do
+      reject_block_without_finish(block, "provider review cancelled")
+    end
+    complete(session, true)
+  end
+end
+
 function M._active_session(bufnr)
   if bufnr == nil or bufnr == 0 then
     bufnr = vim.api.nvim_get_current_buf()

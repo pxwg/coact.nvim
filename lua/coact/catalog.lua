@@ -264,7 +264,28 @@ function M.static_for_trigger(trigger)
   return vim.deepcopy(static[trigger] or {})
 end
 
+local function provider_skill_items(thread)
+  local provider = require("coact.providers").current()
+  if type(provider.skill_catalog) ~= "function" then
+    return nil
+  end
+  local items = {}
+  for _, skill in ipairs(provider.skill_catalog(thread) or {}) do
+    local item = normalize_skill(skill)
+    if item then
+      table.insert(items, item)
+    end
+  end
+  return items
+end
+
 local function cached(kind)
+  if kind == "skills" then
+    local items = provider_skill_items()
+    if items then
+      return items
+    end
+  end
   return state.get_cache(cache_key(kind), config.get().completion.ttl_ms or 30000)
 end
 
@@ -374,6 +395,13 @@ end
 
 function M.refresh(kind, callback)
   callback = callback or function() end
+  if kind == "skills" then
+    local items = provider_skill_items()
+    if items then
+      callback(items)
+      return
+    end
+  end
   if inflight[kind] then
     table.insert(inflight[kind], callback)
     return
@@ -437,11 +465,11 @@ function M.items_for_trigger(trigger, prefix, callback)
   M.refresh(kind, callback)
 end
 
-function M.find_skill(name)
+function M.find_skill(name, thread)
   if vim.startswith(name, "skill:") then
     name = name:sub(7)
   end
-  for _, item in ipairs(M.dynamic("skills")) do
+  for _, item in ipairs(provider_skill_items(thread) or M.dynamic("skills")) do
     if item.data and item.data.name == name then
       return item.data
     end

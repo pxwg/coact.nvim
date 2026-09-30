@@ -9,6 +9,18 @@ local defaults = {
   },
   providers = {
     codex = {},
+    claude = {
+      command = { "claude" },
+      config_dir = nil, -- defaults to env.CLAUDE_CONFIG_DIR or ~/.claude
+      max_history_bytes = 64 * 1024 * 1024,
+      max_queued_prompts = 20,
+      model = nil,
+      models = nil, -- optional replacement for the CLI model catalog (e.g. gateways)
+      env = {},
+      extra_args = {},
+      initialize_timeout_ms = 30000,
+      max_message_bytes = 8 * 1024 * 1024,
+    },
     pi = {
       command = { "pi", "--mode", "rpc" },
       config_dir = nil,

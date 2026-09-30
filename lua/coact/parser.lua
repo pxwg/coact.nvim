@@ -382,16 +382,16 @@ function M.parse(text, parse_opts)
       end
     elseif token and vim.startswith(token, "$skill:") and opts.completion.enabled then
       local name = token:sub(8)
-      local skill = catalog.find_skill(name)
-      if skill and skill.path then
-        table.insert(inputs, { type = "skill", name = skill.name, path = skill.path })
+      local skill = catalog.find_skill(name, parse_opts.thread)
+      if skill and (skill.path or skill.command) then
+        table.insert(inputs, { type = "skill", name = skill.name, path = skill.path, command = skill.command })
       else
         table.insert(body, line)
       end
     elseif token and token:sub(1, 1) == "$" and opts.completion.enabled then
-      local skill = catalog.find_skill(token:sub(2))
-      if skill and skill.path then
-        table.insert(inputs, { type = "skill", name = skill.name, path = skill.path })
+      local skill = catalog.find_skill(token:sub(2), parse_opts.thread)
+      if skill and (skill.path or skill.command) then
+        table.insert(inputs, { type = "skill", name = skill.name, path = skill.path, command = skill.command })
       else
         table.insert(body, line)
       end
