@@ -2,6 +2,8 @@ vim.opt.runtimepath:append(".")
 
 local coact = require("coact")
 coact.setup()
+dofile("scripts/claude-smoke.lua")()
+dofile("scripts/claude-history-smoke.lua")()
 assert(require("coact.config").get().ui.auto_scroll == false, "streaming should preserve the cursor by default")
 assert(
   #vim.api.nvim_get_autocmds({ group = "CoactNvimLifecycle", event = "VimLeavePre" }) == 1,

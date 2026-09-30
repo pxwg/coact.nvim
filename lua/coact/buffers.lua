@@ -516,10 +516,10 @@ local function open_history_help()
     "- `g?`: show this help",
     "- `gs`: toggle status detail page",
     "- `gS`: show/hide the status chrome",
-    "- `gt`: open Pi session tree when the Pi provider is active",
-    "- `gT`: open Pi session tree at the message under cursor",
-    "- `<Esc><Esc>`: open Pi session tree, preselected at the message under cursor when available",
-    "- `r` in the Pi tree: reveal a selected entry in the current transcript when possible",
+    "- `gt`: open Pi session tree or Claude rewind history",
+    "- `gT`: open history at the message under cursor",
+    "- `<Esc><Esc>`: open history, preselected at the message under cursor when available",
+    "- `r` in the tree: reveal an entry locally; Claude Enter confirms conversation-only rewind into a new branch",
     "- `gc`: show current Coact runtime status",
     "- `gy`: copy latest assistant output",
     "- `gd`: show workspace diff",
@@ -621,19 +621,19 @@ local function open_tree_at_cursor(bufnr)
     return util.notify("current buffer is not a Coact history buffer", vim.log.levels.WARN)
   end
   local ok, providers = pcall(require, "coact.providers")
-  if not (ok and providers.is("pi")) then
-    return util.notify("Tree rollback from a message is only available with the Pi provider", vim.log.levels.WARN)
+  if not (ok and (providers.is("pi") or providers.current().tree)) then
+    return util.notify("This provider does not support history navigation", vim.log.levels.WARN)
   end
   local tree_entry_id, err, supported_block = cursor_tree_context(thread)
   if err then
     return util.notify(err or "No Coact block under cursor", vim.log.levels.WARN)
   end
   if not tree_entry_id and not supported_block then
-    return util.notify("Pi tree rollback is only supported for user and assistant messages", vim.log.levels.WARN)
+    return util.notify("History navigation is only supported for user and assistant messages", vim.log.levels.WARN)
   end
   if not tree_entry_id then
     return util.notify(
-      "No Pi tree entry id for this message yet; refresh history after the turn completes",
+      "No saved history entry id for this message yet; retry after the turn completes",
       vim.log.levels.WARN
     )
   end
@@ -646,7 +646,7 @@ local function open_tree_from_current_context(bufnr)
     return
   end
   local ok, providers = pcall(require, "coact.providers")
-  if not (ok and providers.is("pi")) then
+  if not (ok and (providers.is("pi") or providers.current().tree)) then
     return
   end
   local tree_entry_id = nil
@@ -659,7 +659,7 @@ end
 local function double_escape_tree_keymap(bufnr)
   vim.keymap.set("n", "<Esc><Esc>", function()
     open_tree_from_current_context(bufnr)
-  end, { buffer = bufnr, silent = true, desc = "Open Pi session tree from Coact context" })
+  end, { buffer = bufnr, silent = true, desc = "Open session history tree from Coact context" })
 end
 
 local function configure_history_buffer(bufnr, thread_id)
@@ -694,10 +694,10 @@ local function configure_history_buffer(bufnr, thread_id)
   end, { buffer = bufnr, silent = true, desc = "Toggle Coact statusline" })
   vim.keymap.set("n", "gt", function()
     slash_action(vim.b[bufnr].coact_thread_id, "/tree")
-  end, { buffer = bufnr, silent = true, desc = "Open Pi session tree" })
+  end, { buffer = bufnr, silent = true, desc = "Open session history tree" })
   vim.keymap.set("n", "gT", function()
     open_tree_at_cursor(bufnr)
-  end, { buffer = bufnr, silent = true, desc = "Open Pi session tree at message" })
+  end, { buffer = bufnr, silent = true, desc = "Open session history tree at message" })
   vim.keymap.set("n", "gc", function()
     require("coact").show_status()
   end, { buffer = bufnr, silent = true, desc = "Show Coact status" })

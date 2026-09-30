@@ -806,6 +806,12 @@ handlers["turn/plan/updated"] = function(params)
   schedule(params.threadId)
 end
 
+-- Provider-neutral compaction progress belongs in chrome, not chat prose.
+handlers["thread/compaction/started"] = function(params)
+  set_generation(state.ensure_thread(params.threadId), "summarizing", agent_label() .. " is compacting context...")
+  schedule(params.threadId)
+end
+
 handlers["thread/compacted"] = function(params)
   append_timeline("thread/compacted", params, "Context compacted", "completed", "Context was compacted.")
 end
