@@ -6,8 +6,8 @@ local command = live and { live } or { "node", vim.fn.getcwd() .. "/scripts/clau
 local workspace = root .. "/workspace"
 vim.fn.mkdir(workspace, "p")
 require("coact").setup({
-  provider = "claude",
-  providers = {
+  default_adapter = "claude",
+  adapters = {
     claude = {
       command = command,
       config_dir = root .. "/config",

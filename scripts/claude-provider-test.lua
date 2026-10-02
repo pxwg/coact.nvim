@@ -3,8 +3,8 @@
 local live = vim.env.COACT_CLAUDE_LIVE
 local command = live and { live } or { "node", vim.fn.getcwd() .. "/scripts/claude-rpc-fixture.mjs" }
 require("coact").setup({
-  provider = "claude",
-  providers = {
+  default_adapter = "claude",
+  adapters = {
     claude = {
       command = command,
       initialize_timeout_ms = 60000,

@@ -1,3 +1,4 @@
+local config = require("coact.config")
 local M = {}
 function M.open(params, callback)
   local rpc = require("coact.providers.claude_rpc")
@@ -26,48 +27,56 @@ function M.open(params, callback)
     finished = true
     callback(e, r)
   end
-  return require("coact.providers.pi_tree").select({ options = { payload } }, function(choice)
-    if not choice then
-      done(nil, { treeAction = { __coactTreeAction = true, action = "cancel" } })
-      return
-    end
-    if type(choice) == "table" then
-      if choice.action == "reveal" then
-        done(nil, { treeAction = choice })
-      else
-        done({ message = choice.reason or "Entry is not visible in this transcript; Enter explicitly rewinds" })
-      end
-      return
-    end
-    local source = owners[choice]
-    local target, target_err = history.read(source)
-    if not target then
-      done({ message = target_err })
-      return
-    end
-    local checkpoint
-    checkpoint, target_err = history.checkpoint(target, choice)
-    if not checkpoint then
-      done({ message = target_err })
-      return
-    end
-    local label = checkpoint.draft and "Rewind before this user message" or "Rewind after this assistant response"
-    vim.ui.select({ "Rewind conversation into a new branch (files unchanged)", "Cancel" }, {
-      prompt = label .. "; original history is preserved:",
-    }, function(_, index)
-      if index ~= 1 then
+  return require("coact.providers.pi_tree").select(
+    { options = { payload } },
+    config.bind(function(choice)
+      if not choice then
         done(nil, { treeAction = { __coactTreeAction = true, action = "cancel" } })
         return
       end
-      rpc.rewind(params.threadId, choice, done, source)
-    end)
-  end, {
-    thread_id = params.threadId,
-    title = "Claude rewind history",
-    action_label = "rewind",
-    search_prompt = "Claude history search: ",
-    filetype = "coact-claude-tree",
-    reveal_only = true,
-  })
+      if type(choice) == "table" then
+        if choice.action == "reveal" then
+          done(nil, { treeAction = choice })
+        else
+          done({ message = choice.reason or "Entry is not visible in this transcript; Enter explicitly rewinds" })
+        end
+        return
+      end
+      local source = owners[choice]
+      local target, target_err = history.read(source)
+      if not target then
+        done({ message = target_err })
+        return
+      end
+      local checkpoint
+      checkpoint, target_err = history.checkpoint(target, choice)
+      if not checkpoint then
+        done({ message = target_err })
+        return
+      end
+      local label = checkpoint.draft and "Rewind before this user message" or "Rewind after this assistant response"
+      vim.ui.select(
+        { "Rewind conversation into a new branch (files unchanged)", "Cancel" },
+        {
+          prompt = label .. "; original history is preserved:",
+        },
+        config.bind(function(_, index)
+          if index ~= 1 then
+            done(nil, { treeAction = { __coactTreeAction = true, action = "cancel" } })
+            return
+          end
+          rpc.rewind(params.threadId, choice, done, source)
+        end)
+      )
+    end),
+    {
+      thread_id = params.threadId,
+      title = "Claude rewind history",
+      action_label = "rewind",
+      search_prompt = "Claude history search: ",
+      filetype = "coact-claude-tree",
+      reveal_only = true,
+    }
+  )
 end
 return M

@@ -67,23 +67,79 @@ Use your plugin manager of choice. With `lazy.nvim`:
 
 ## Setup
 
+`:Coact` (or `:Coact adapters`) opens the adapter picker, then offers a new
+session or that adapter's history. `:Coact new [prompt]` and `:Coact pick`
+select an adapter before continuing directly to new-session/history flows.
+The configured default is the first, initially selected item, **not** a search
+prefix; all adapters remain visible. Cancelling the adapter picker does nothing.
+
+`default_adapter` references an entry in `adapters` by name. Each entry selects
+a protocol provider and overrides that agent's launch options. Multiple entries
+can use the same provider with different commands, arguments, environment, models,
+or history directories:
+
+```lua
+require("coact").setup({
+  default_adapter = "pi_work",
+  adapters = {
+    pi_work = {
+      provider = "pi",
+      command = { "pi", "--mode", "rpc" },
+      extra_args = { "--model", "your-model" },
+      env = { PI_OFFLINE = "1" },
+    },
+    claude = { provider = "claude", command = { "claude-ds" } },
+    codex = {
+      provider = "codex",
+      command = { "codex", "app-server", "--listen", "stdio://" },
+      extra_args = { "-c", "model=your-model" },
+    },
+  },
+})
+```
+
+The built-in `codex`, `claude`, and `pi` entries remain available. Each profile
+starts from its protocol's built-in defaults, then applies its own launch options;
+it does not inherit another named profile's overrides. Argument lists replace
+rather than concatenate defaults. Use argv tables for `command` and keep the
+required RPC/app-server flags. Adapter `provider` names the protocol; Pi's model
+API provider is `model_provider`. Keep secrets in private launchers/environment files.
+
+Selecting an adapter does not rewrite `default_adapter`. Loaded sessions retain
+their resolved launch configuration, transport, callbacks, and catalogs; switching
+or focusing another agent does not stop them or reroute their requests. Reopening
+an already loaded native session reuses its original adapter rather than creating
+a second owner. `:Coact restart` still stops all runtimes.
+
+**Breaking configuration change:** top-level `provider`, `providers`, and
+`app_server` are removed and rejected with a migration error. Move the default
+selection to `default_adapter`, agent options to `adapters.<name>`, and Codex
+app-server options to `adapters.codex`. Pi's old `providers.pi.provider` moves to
+`adapters.pi.model_provider`. There is no legacy alias or fallback.
+
 Default configuration:
 
 ```lua
 require("coact").setup({
-  provider = "codex", -- "codex", "pi", or "claude"
-  app_server = {
-    command = { "codex", "app-server", "--listen", "stdio://" },
-    initialize_timeout_ms = 10000,
-    sanitize_malloc_env = true,
-  },
-  providers = {
-    codex = {},
+  default_adapter = "codex", -- references adapters.codex
+  adapters = {
+    codex = {
+      provider = "codex",
+      command = { "codex", "app-server", "--listen", "stdio://" },
+      extra_args = {},
+      env = {},
+      initialize_timeout_ms = 10000,
+      sanitize_malloc_env = true,
+    },
+    claude = { provider = "claude", command = { "claude" } },
     pi = {
+      provider = "pi",
       command = { "pi", "--mode", "rpc" },
       config_dir = nil,
       session_dir = nil,
-      provider = nil,
+      model_provider = nil,
+      env = {},
+      sanitize_malloc_env = true,
       model = nil,
       thinking = nil,
       no_session = false,
@@ -188,14 +244,14 @@ require("coact").setup({
 })
 ```
 
-On macOS, `sanitize_malloc_env` removes inherited `MallocStackLogging*` variables before spawning app-server. This avoids noisy malloc runtime messages from parent GUI environments; set it to `false` if you intentionally need those variables while debugging Codex.
+On macOS, `adapters.codex.sanitize_malloc_env` removes inherited `MallocStackLogging*` variables before spawning app-server. This avoids noisy malloc runtime messages from parent GUI environments; set it to `false` if you intentionally need those variables while debugging Codex.
 
 ### Claude Code
 
 ```lua
 require("coact").setup({
-  provider = "claude",
-  providers = {
+  default_adapter = "claude",
+  adapters = {
     claude = {
       command = { "claude-ds" }, -- or { "claude" }; executable argv, not a shell alias
       initialize_timeout_ms = 30000,
@@ -236,7 +292,7 @@ Yolo leaves native tools available and approves CLI permission requests;
 explicit calls to `edit` or `openDiff` still request review.
 
 After opening a Claude thread, `/model` loads its CLI model catalog and switches
-via `set_model` while idle. For compatible gateways, `providers.claude.models`
+via `set_model` while idle. For compatible gateways, `adapters.claude.models`
 can replace the CLI's Anthropic-oriented choices with endpoint-supported model
 IDs; the CLI catalog alone does not guarantee gateway model availability.
 `/compact` executes Claude's native `/compact` command over stream-json, reserves
@@ -250,7 +306,7 @@ on-disk skills may require a new thread to refresh.
 The thread picker reads native Claude `projects/*/<session-id>.jsonl` history
 without starting a CLI. Resume restores persisted text, thinking, and tool
 results, then continues through native `--resume`, including after Neovim restarts.
-The history root follows `providers.claude.config_dir`, provider environment
+The history root follows `adapters.claude.config_dir`, provider environment
 `CLAUDE_CONFIG_DIR`, process environment `CLAUDE_CONFIG_DIR`, then `~/.claude`.
 Malformed chains and histories exceeding `max_history_bytes` (64 MiB by default)
 fail explicitly; an unfinished trailing JSONL write is ignored until complete.
@@ -313,8 +369,8 @@ To use Pi as the active provider:
 
 ```lua
 require("coact").setup({
-  provider = "pi",
-  providers = {
+  default_adapter = "pi",
+  adapters = {
     pi = {
       command = { "pi", "--mode", "rpc" },
       -- Optional isolation. Omit these to use Pi's normal ~/.pi/agent state.
@@ -339,7 +395,7 @@ Pi chat displays the **selected branch's history**, not the model's compacted co
 
 The thread picker reads Pi's `parentSession` metadata, groups forked session files beneath their parent with tree connectors, and keeps every fork independently selectable. Local JSONL metadata is cached by file size and modification time, so opening the picker does not require starting Pi and unchanged sessions are not reparsed. After the picker becomes visible, `picker_prewarm` opportunistically starts one unbound Pi RPC client after `prewarm_delay_ms`; a selected session claims that same client even when it is still starting, and an unclaimed client stops after `prewarm_idle_timeout_ms`. `/reasoning` queries Pi for the current model's available thinking levels when the picker opens, so model-declared holes and extended levels such as `max` are honored. Submitting another prompt while one Pi thread is generating queues it as a Pi `followUp` for that same thread; submitting in another Pi thread starts or queues work only in that thread. Queued prompts remain visible once under a distinct `Queued request` header with queue state and FIFO position until Pi delivers each user message, at which point the normal user message replaces the pending block without duplication. Pi queue updates stay internal rather than creating transcript blocks, and Pi's settled event clears the busy indicator. Choosing a summary during Pi tree navigation keeps the transcript observable with a `Coact summarizing...` spinner until Pi finishes the branch summary and navigation. The completed Pi `branchSummary` then remains as a collapsed `Branch summary` block at its active-branch position: after a selected non-user entry, after the parent of a selected user prompt restored to the composer, or at the transcript root when revisiting the first prompt. Pi compaction entries render as `Context compacted` sections and prune only the rendered prefix before the latest compact; the selected-branch history remains intact. Compaction and branch summaries contain their full text as real buffer lines inside native Neovim folds: `za` expands directly selectable/copyable text, while `K` still opens detail. Branch summaries never prune earlier content. Pi extension UI status requests (`ctx.ui.setStatus`, `setWidget`, and `setTitle`) are mirrored into window status chrome so Pi-side status customizations remain visible in Neovim without overloading the split separator or input box.
 
-When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi extension that registers `nvim_exec_lua`. The tool executes Lua with the thread's remembered source window or buffer temporarily current. Its chunk can begin with `local ctx, args = ...`, use `vim.cmd`, `vim.api`, `vim.fn`, or plugin Lua APIs, and return one JSON-serializable value. Calls are serialized, and results larger than `max_result_bytes` or `max_result_lines` are written as JSON to a temporary file. If `providers.pi.tools` is an explicit allowlist, include `nvim_exec_lua` to activate it.
+When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi extension that registers `nvim_exec_lua`. The tool executes Lua with the thread's remembered source window or buffer temporarily current. Its chunk can begin with `local ctx, args = ...`, use `vim.cmd`, `vim.api`, `vim.fn`, or plugin Lua APIs, and return one JSON-serializable value. Calls are serialized, and results larger than `max_result_bytes` or `max_result_lines` are written as JSON to a temporary file. If `adapters.pi.tools` is an explicit allowlist, include `nvim_exec_lua` to activate it.
 
 `nvim_exec_lua` is a full-trust escape hatch into the live editor: it can read unsaved buffers, mutate editor state, write files, run shell-capable Ex commands, or close Neovim. Routine workspace file changes should continue to use the reviewed `edit` and `write` tools. Set `nvim_tools.enabled = false` when that live-editor capability should not be exposed.
 
@@ -367,6 +423,8 @@ The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `c
 ## Commands
 
 ```vim
+:Coact
+:Coact adapters
 :Coact new [initial prompt]
 :Coact open [thread-id]
 :Coact resume <thread-id>
@@ -458,7 +516,7 @@ The review buffer indexes file changes and unified-diff hunk headers with extmar
 
 The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` approves the current changed block and prompts for an approval comment, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` approves the rest with one approval-comment prompt, `gr` rejects the rest with a reason, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before approving; coact.nvim writes the final approved buffer state and returns the review summary to the provider as hook context, including approval comments, rejection reasons, and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
 
-For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result. Targets accepted by `providers.pi.edit_bridge.direct_write` run that patch session non-interactively and return the same full-approval result without disclosing the configured directories to Pi.
+For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result. Targets accepted by `adapters.pi.edit_bridge.direct_write` run that patch session non-interactively and return the same full-approval result without disclosing the configured directories to Pi.
 
 `edit.mode = "yolo"` tells the active provider to use its native file-edit path directly without the Neovim review bridge. Calls to `nvim.apply_patch` are rejected while the tool is not exposed. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` still selects yolo mode unless `edit.mode` is set explicitly.
 

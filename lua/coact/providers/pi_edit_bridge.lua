@@ -14,8 +14,7 @@ local direct_write_enabled = false
 
 local function bridge_opts()
   local opts = config.get()
-  local providers = opts.providers or {}
-  local pi = providers.pi or {}
+  local pi = opts.adapter or {}
   return pi.edit_bridge or {}
 end
 
@@ -42,7 +41,7 @@ local function direct_write_context()
 end
 
 -- This is deliberately the same callback contract exposed by
--- providers.pi.edit_bridge.direct_write, so this implementation is also a
+-- adapters.<name>.edit_bridge.direct_write, so this implementation is also a
 -- complete configuration example.
 local function configure_system_temp_direct_write(allowlist, context)
   allowlist:add(context.os_tmpdir)
@@ -64,7 +63,7 @@ end
 local function run_direct_write_configurator(label, configure, allowlist, context)
   local ok, result = pcall(configure, allowlist, context)
   if not ok then
-    error(("providers.pi.edit_bridge.direct_write %s failed: %s"):format(label, tostring(result)), 0)
+    error(("adapters.<name>.edit_bridge.direct_write %s failed: %s"):format(label, tostring(result)), 0)
   end
   if result ~= nil and result ~= allowlist then
     allowlist:add(result)
@@ -841,7 +840,7 @@ function M.setup()
 
   local setting = bridge_opts().direct_write
   if setting ~= nil and type(setting) ~= "boolean" and type(setting) ~= "function" then
-    error("providers.pi.edit_bridge.direct_write must be true, false, or a function", 0)
+    error("adapters.<name>.edit_bridge.direct_write must be true, false, or a function", 0)
   end
   if setting == false then
     return
@@ -1054,6 +1053,10 @@ function M.review_payload_async(payload, done)
   payload = type(payload) == "table" and payload or {}
   local cwd = util.value(payload.cwd) or config.cwd()
   local thread_id = payload_thread_id(payload)
+  local ctx = config.thread_context(thread_id)
+  if ctx and ctx ~= config.context() then
+    return config.with_context(ctx, M.review_payload_async, payload, done)
+  end
   if util.value(payload.__coactClientId or payload.clientId or payload.client_id) and not thread_id then
     done({
       success = false,
@@ -1080,7 +1083,7 @@ function M.review_payload_async(payload, done)
     return
   end
 
-  vim.schedule(function()
+  require("coact.runtime").schedule(function()
     local interactive = not direct_write_allowed(cwd, change.path)
     local session, open_err = require("coact.patch_session").open({
       request_id = util.value(payload.toolCallId) or util.value(payload.tool_call_id) or tostring(vim.uv.hrtime()),

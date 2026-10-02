@@ -2,14 +2,15 @@ local config = require("coact.config")
 local provider = require("coact.providers.pi")
 local util = require("coact.util")
 
-local M = {
+local runtime_scope = require("coact.runtime")
+local M = runtime_scope.state({
   clients = {},
   by_thread = {},
   starting = {},
   utility = nil,
   prewarm_generation = 0,
-  next_client_id = 1,
-}
+})
+local next_client_id = 1
 
 local Client = {}
 Client.__index = Client
@@ -23,7 +24,7 @@ local function decode(line)
 end
 
 local function schedule(callback)
-  vim.schedule(callback)
+  runtime_scope.schedule(callback)
 end
 
 local function expected_exit(code, stopping)
@@ -52,7 +53,7 @@ local function env_empty(env)
 end
 
 local function sanitize_malloc_env_enabled(opts)
-  return not (opts.app_server and opts.app_server.sanitize_malloc_env == false)
+  return not (opts.adapter and opts.adapter.sanitize_malloc_env == false)
 end
 
 local function invoke(client, callback, ...)
@@ -119,9 +120,10 @@ local function client_api(client)
 end
 
 local function new_client(launch)
-  local id = ("pi-client-%d"):format(M.next_client_id)
-  M.next_client_id = M.next_client_id + 1
+  local id = ("pi-client-%d"):format(next_client_id)
+  next_client_id = next_client_id + 1
   local runtime = provider.new_runtime()
+  runtime.adapter_context = config.context()
   runtime.client_id = id
   runtime.suppress_state_updates = true
   local client = client_api(setmetatable({
@@ -441,7 +443,7 @@ function Client:start(callback)
     job_opts.env = env
   end
 
-  self.job_id = vim.fn.jobstart(command, job_opts)
+  self.job_id = runtime_scope.jobstart(command, job_opts)
   if self.job_id <= 0 then
     self.job_id = nil
     self.starting = false
@@ -797,7 +799,7 @@ end
 
 function M.prewarm(callback)
   callback = callback or function() end
-  local pi = ((config.get().providers or {}).pi or {})
+  local pi = config.get().adapter or {}
   if pi.picker_prewarm == false then
     callback(nil, false)
     return nil
@@ -823,7 +825,7 @@ function M.prewarm(callback)
 
   local timeout = math.max(0, tonumber(pi.prewarm_idle_timeout_ms) or 60000)
   if timeout > 0 then
-    vim.defer_fn(function()
+    runtime_scope.defer(function()
       if generation == M.prewarm_generation and M.utility == utility and not utility.thread_id then
         M.utility = nil
         utility:stop()
@@ -1006,18 +1008,25 @@ function M.notify(method, params)
 end
 
 function M.with_client(thread_id, callback)
-  return ensure_thread_client(thread_id, function(err, client)
-    callback(err, client)
+  return config.with_context(config.thread_context(thread_id), function()
+    return ensure_thread_client(thread_id, config.bind(callback))
   end)
 end
 
 function M.client_for_thread(thread_id)
-  return M.by_thread[thread_id]
+  local ctx = config.thread_context(thread_id)
+  return config.with_context(ctx, function()
+    return M.by_thread[thread_id]
+  end)
 end
 
 function M.thread_id_for_client(client_id)
-  local client = client_id and M.clients[client_id] or nil
-  return client and client.thread_id or nil
+  local thread_id
+  M._each_context(function()
+    local client = client_id and M.clients[client_id] or nil
+    thread_id = client and client.thread_id or thread_id
+  end)
+  return thread_id
 end
 
 function M.is_running(thread_id)

@@ -50,13 +50,13 @@ end
 
 local function ensure_server(callback)
   setup_once()
-  rpc.start(function(err, result)
+  rpc.start(config.bind(function(err, result)
     if err then
       util.notify(providers.title() .. " provider failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
       return
     end
     callback(result)
-  end)
+  end))
 end
 
 local function edit_tool_instruction()
@@ -262,6 +262,11 @@ end
 
 function M.new_thread(opts)
   opts = opts or {}
+  setup_once()
+  local current_buf = vim.api.nvim_get_current_buf()
+  local source_bufnr = opts.source_bufnr
+    or (context.is_coact_buffer(current_buf) and context.target_buffer() or current_buf)
+  local source_winid = opts.source_winid or vim.api.nvim_get_current_win()
   if providers.is("pi") then
     setup_once()
     opts.session_id = opts.session_id or uuid_v4()
@@ -276,6 +281,7 @@ function M.new_thread(opts)
     })
     set_thread_open_state(thread, "starting", "starting", "Starting Pi execution unit…")
     buffers.open(thread_id)
+    context.capture_thread_buffer(thread, source_bufnr, source_winid)
     rpc.request("thread/start", thread_start_params(opts), function(err, result)
       if err then
         set_thread_open_state(thread, "failed", "failed", "Could not start Pi session", err)
@@ -285,6 +291,7 @@ function M.new_thread(opts)
       end
       thread = state.update_thread_from_payload(result.thread)
       finish_open_thread(thread)
+      context.capture_thread_buffer(thread, source_bufnr, source_winid)
       if opts.prompt and opts.prompt ~= "" then
         M.submit_text(opts.prompt, thread.id)
       end
@@ -299,6 +306,7 @@ function M.new_thread(opts)
       end
       local thread = state.update_thread_from_payload(result.thread)
       buffers.open(thread.id)
+      context.capture_thread_buffer(thread, source_bufnr, source_winid)
       if opts.prompt and opts.prompt ~= "" then
         M.submit_text(opts.prompt, thread.id)
       end
@@ -333,6 +341,10 @@ end
 
 function M.resume(thread_id, opts)
   opts = opts or {}
+  local current_buf = vim.api.nvim_get_current_buf()
+  local source_bufnr = opts.source_bufnr
+    or (context.is_coact_buffer(current_buf) and context.target_buffer() or current_buf)
+  local source_winid = opts.source_winid or vim.api.nvim_get_current_win()
   if not thread_id or thread_id == "" then
     return util.notify("usage: :Coact resume <thread-id>", vim.log.levels.WARN)
   end
@@ -344,6 +356,7 @@ function M.resume(thread_id, opts)
     and (providers.current().transport_scope ~= "thread" or rpc.is_running(thread_id))
   then
     buffers.open(thread_id)
+    context.capture_thread_buffer(existing, source_bufnr, source_winid)
     return
   end
   local function request_resume()
@@ -368,6 +381,7 @@ function M.resume(thread_id, opts)
         end
         thread = state.update_thread_from_payload(result.thread)
         finish_open_thread(thread)
+        context.capture_thread_buffer(thread, source_bufnr, source_winid)
       end
     )
   end
@@ -380,6 +394,7 @@ function M.resume(thread_id, opts)
     local thread = state.update_thread_from_payload(payload)
     set_thread_open_state(thread, "starting", "starting", "Starting Pi execution unit…")
     buffers.open(thread_id)
+    context.capture_thread_buffer(thread, source_bufnr, source_winid)
     request_resume()
     return
   end
@@ -573,7 +588,13 @@ function M.list_threads(callback)
 end
 
 function M.pick_thread()
+  setup_once()
   require("coact.pickers").threads()
+end
+
+function M.pick_adapter(opts)
+  setup_once()
+  require("coact.pickers").adapters(opts)
 end
 
 function M.health()
@@ -588,6 +609,7 @@ function M.status()
   local active_thread = state.get_thread(state.active_thread_id)
   local thread = current_thread or active_thread
   return {
+    adapter = config.context().name,
     provider = providers.current_id(),
     provider_title = providers.title(),
     server_running = rpc.is_running(thread and thread.id or nil),
@@ -614,6 +636,7 @@ end
 function M.show_status()
   local status = M.status()
   local lines = {
+    "adapter: " .. tostring(status.adapter),
     "provider: " .. tostring(status.provider),
     "server: " .. (status.server_running and "running" or "stopped"),
     "initialized: " .. tostring(status.server_initialized),
@@ -737,8 +760,11 @@ function M.add_selection()
 end
 
 local commands = {
+  adapters = function()
+    M.pick_adapter()
+  end,
   new = function(args)
-    M.new_thread({ prompt = table.concat(args, " ") })
+    M.pick_adapter({ action = "new", prompt = table.concat(args, " ") })
   end,
   open = function(args)
     M.open(args[1])
@@ -747,7 +773,7 @@ local commands = {
     M.resume(args[1])
   end,
   pick = function()
-    M.pick_thread()
+    M.pick_adapter({ action = "pick" })
   end,
   list = function()
     M.list_threads()
@@ -803,7 +829,7 @@ local commands = {
 function M.command(opts)
   setup_once()
   local args = vim.split(opts.args or "", "%s+", { trimempty = true })
-  local name = table.remove(args, 1) or "open"
+  local name = table.remove(args, 1) or "adapters"
   local command = commands[name]
   if not command then
     util.notify("unknown Coact command: " .. name, vim.log.levels.ERROR)
@@ -881,6 +907,31 @@ function M.complete_command(arglead, line)
     return filtered(loaded_thread_ids(), value_prefix)
   end
   return {}
+end
+
+-- Public thread operations must keep their owner even when invoked from a
+-- different buffer. RPC callbacks retain this scope across async boundaries.
+for name, thread_arg in pairs({ open = 1, resume = 1, submit_text = 2 }) do
+  local operation = M[name]
+  M[name] = function(...)
+    setup_once()
+    local id = select(thread_arg, ...) or state.active_thread_id
+    return config.with_context(config.thread_context(id) or config.context(), operation, ...)
+  end
+end
+for _, name in ipairs({ "stop", "status", "health" }) do
+  local operation = M[name]
+  M[name] = function(...)
+    setup_once()
+    local id = buffers.get_thread_id() or state.active_thread_id
+    return config.with_context(config.thread_context(id) or config.context(), operation, ...)
+  end
+end
+local new_thread = M.new_thread
+M.new_thread = function(opts)
+  setup_once()
+  local ctx = opts and opts.adapter and config.resolve_adapter(opts.adapter) or config.context()
+  return config.with_context(ctx, new_thread, opts)
 end
 
 M._thread_start_params = thread_start_params

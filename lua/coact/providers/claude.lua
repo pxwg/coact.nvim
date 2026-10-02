@@ -32,7 +32,7 @@ local M = {
 }
 
 function M.options()
-  return config.get().providers.claude or {}
+  return config.get().adapter or {}
 end
 
 function M.command(_, launch)

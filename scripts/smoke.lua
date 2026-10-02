@@ -368,8 +368,8 @@ do
   local pi_temp = vim.fn.tempname()
   vim.fn.mkdir(pi_temp, "p")
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         config_dir = vim.fs.joinpath(pi_temp, "config"),
         session_dir = vim.fs.joinpath(pi_temp, "sessions"),
@@ -2281,8 +2281,8 @@ do
     pi_provider._runtime.last_turn_id = nil
   end)()
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         edit_bridge = {
           enabled = false,
@@ -2306,8 +2306,8 @@ do
     "Pi should inject nvim_exec_lua without enabling the edit-review bridge"
   )
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         edit_bridge = {
           enabled = false,
@@ -2450,8 +2450,8 @@ process.stdin.on("data", (chunk) => {
   )
 
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         command = { "node", fake_pi_rpc_path },
         session_dir = fake_pi_session_dir,
@@ -2797,8 +2797,8 @@ assert(effective_turn_params.effort == "medium", "turn/start should use updated 
 assert(effective_turn_params.serviceTier == "fast", "turn/start should use updated thread service tier");
 (function()
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         edit_bridge = {
           enabled = false,
@@ -4050,7 +4050,7 @@ assert(
 end)();
 (function()
   local pi_bridge = require("coact.providers.pi_edit_bridge")
-  coact.setup({ provider = "pi" })
+  coact.setup({ default_adapter = "pi" })
   local default_direct_file = vim.fs.joinpath(session_dir, "pi-default-direct-write.txt")
   local default_direct_result = nil
   local current_before_default_direct = vim.api.nvim_get_current_buf()
@@ -4076,7 +4076,7 @@ end)();
     "Pi edit bridge should directly apply default system-temp writes without opening an interactive window"
   )
 
-  coact.setup({ provider = "pi", providers = { pi = { edit_bridge = { direct_write = false } } } })
+  coact.setup({ default_adapter = "pi", adapters = { pi = { edit_bridge = { direct_write = false } } } })
   local disabled_direct_file = vim.fs.joinpath(session_dir, "pi-disabled-direct-write.txt")
   vim.fn.writefile({ "before" }, disabled_direct_file)
   local disabled_direct_result = nil
@@ -4121,8 +4121,8 @@ end)();
   local callback_saw_defaults = false
   local callback_matching_is_safe = false
   coact.setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         edit_bridge = {
           direct_write = function(allowlist, context)
@@ -4558,6 +4558,13 @@ source:get_completions({
 end)
 assert(image_path_done, "image path completion suppression callback should run synchronously")
 
+-- setup above creates a fresh adapter scope; catalogs must not leak across it.
+state.set_cache(catalog.cache_key("skills"), {
+  { label = "$skill:smoke", detail = "Smoke skill", data = { name = "smoke", path = "/tmp/smoke" } },
+})
+state.set_cache(catalog.cache_key("tools"), {
+  { label = "/smoke/read", detail = "Smoke MCP tool", filterText = "/read smoke" },
+})
 local skill_done = false
 source:get_completions({
   line = "$",
@@ -4764,7 +4771,7 @@ end)()
 
 do
   local function smoke_pi_slash_provider()
-    coact.setup({ provider = "pi" })
+    coact.setup({ default_adapter = "pi" })
     local pi_slash_labels = vim.tbl_map(function(item)
       return item.label
     end, slash.items(""))
@@ -4958,7 +4965,7 @@ do
   local original_resume = coact.resume
   local picked_opts = nil
   local resumed_thread_id = nil
-  coact.setup({ provider = "pi" })
+  coact.setup({ default_adapter = "pi" })
   coact.list_threads = function(callback)
     callback({
       {

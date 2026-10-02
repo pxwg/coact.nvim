@@ -2,9 +2,9 @@
 return function()
   local config = require("coact.config")
   local rpc = require("coact.rpc")
-  local saved, handlers = vim.deepcopy(config.get()), rpc.handlers
+  local saved, handlers = vim.deepcopy(config.root()), rpc.handlers
   local events = {}
-  config.setup({ provider = "claude" })
+  config.setup({ default_adapter = "claude" })
   rpc.set_handlers({
     notification = function(event)
       table.insert(events, event)
