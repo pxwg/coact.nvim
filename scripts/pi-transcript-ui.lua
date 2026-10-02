@@ -91,8 +91,8 @@ end
 -- Set this flag when loading the assertions into the existing fixed UI.
 if not _G.CoactPiTranscriptAttach then
   require("coact").setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         command = { "node", vim.fn.getcwd() .. "/scripts/pi-transcript-rpc-fixture.mjs" },
         picker_prewarm = false,

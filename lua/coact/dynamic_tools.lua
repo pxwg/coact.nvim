@@ -604,7 +604,9 @@ local function apply_patch_runtime_args(patch)
     return { apply_patch }, { stdin = patch }
   end
 
-  local app_command = config.get().app_server and config.get().app_server.command or nil
+  local opts = config.get()
+  local adapter = opts.adapter.provider == "codex" and opts.adapter or opts.adapters.codex
+  local app_command = adapter and adapter.command
   local codex = type(app_command) == "table" and app_command[1] or "codex"
   if vim.fn.executable(codex) ~= 1 and vim.fn.exepath(codex) == "" then
     return nil, nil, "Codex executable is required to verify native apply_patch patches: " .. tostring(codex)
@@ -877,13 +879,13 @@ handlers.apply_patch = function(arguments, thread, message)
   local changes
   local responded = false
 
-  local function respond(text, success)
+  local respond = config.bind(function(text, success)
     if responded then
       return
     end
     responded = true
     rpc.respond(message.id, text_response(with_diagnostics(text, thread), success))
-  end
+  end)
 
   if is_native_apply_patch(patch) then
     local err

@@ -12,7 +12,16 @@ local M = {
 }
 
 function M.command(opts)
-  return opts.app_server and opts.app_server.command or { "codex", "app-server", "--listen", "stdio://" }
+  local server = opts.adapter or {}
+  local command = vim.deepcopy(server.command or { "codex", "app-server", "--listen", "stdio://" })
+  if type(command) == "table" then
+    vim.list_extend(command, server.extra_args or {})
+  end
+  return command
+end
+
+function M.env(opts, env)
+  return vim.tbl_extend("force", env or {}, (opts.adapter or {}).env or {})
 end
 
 function M.prepare_command(command, env)

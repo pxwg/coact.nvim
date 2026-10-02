@@ -16,7 +16,9 @@ export PATH="/opt/homebrew/bin:$HOME/.local/bin:$HOME/.local/share/nvim/mason/bi
 node --check scripts/claude-rpc-fixture.mjs
 bash -n scripts/test-claude-remote.sh
 stylua --check --indent-type Spaces --indent-width 2 lua/coact/providers/claude*.lua lua/coact/rpc.lua lua/coact/config.lua lua/coact/patch_session.lua lua/coact/core.lua lua/coact/init.lua lua/coact/catalog.lua lua/coact/parser.lua lua/coact/slash.lua lua/coact/buffers.lua lua/coact/providers/pi_tree.lua scripts/claude-smoke.lua scripts/claude-provider-test.lua scripts/claude-history-smoke.lua scripts/claude-history-test.lua scripts/smoke.lua
+stylua --check --indent-type Spaces --indent-width 2 lua/coact/runtime.lua lua/coact/pickers.lua scripts/adapter-picker-test.lua
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
+nvim --headless -u NONE -c 'set rtp+=.' -l scripts/adapter-picker-test.lua
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/claude-provider-test.lua
 history_root="$(mktemp -d)"
 trap 'rm -rf "$history_root"' EXIT

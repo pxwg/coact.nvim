@@ -3,9 +3,13 @@ local util = require("coact.util")
 local M = {}
 
 local function choose(title, choices, callback)
-  vim.ui.select(choices, { prompt = title }, function(choice)
-    callback(choice or "cancel")
-  end)
+  vim.ui.select(
+    choices,
+    { prompt = title },
+    require("coact.config").bind(function(choice)
+      callback(choice or "cancel")
+    end)
+  )
 end
 
 function M.command(message)

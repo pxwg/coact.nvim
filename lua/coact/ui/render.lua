@@ -1958,7 +1958,7 @@ render_block = function(thread, lines, block, opts)
   elseif block.type == "AssistantBlock" then
     if not opts.assistant_body then
       local line = add(lines, "## Coact")
-      mark_header(thread, line, "assistant", providers.agent_label(), assistant_meta(thread, block), block)
+      mark_header(thread, line, "assistant", providers.agent_label(thread), assistant_meta(thread, block), block)
       add(lines, "")
     end
     text_start, text_finish, auto_closed_line = add_guarded_text(thread, lines, block.text)
@@ -2027,7 +2027,14 @@ local function render_assistant_group(thread, lines, blocks, index)
   end
 
   local line = add(lines, "## Coact")
-  mark_header(thread, line, "assistant", providers.agent_label(), assistant_meta(thread, header_block), header_block)
+  mark_header(
+    thread,
+    line,
+    "assistant",
+    providers.agent_label(thread),
+    assistant_meta(thread, header_block),
+    header_block
+  )
   add(lines, "")
   while index <= #blocks and assistant_group_id(blocks[index]) == group_id do
     render_block(thread, lines, blocks[index], { assistant_body = true, block_index = index })

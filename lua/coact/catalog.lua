@@ -2,7 +2,7 @@ local config = require("coact.config")
 local state = require("coact.state")
 
 local M = {}
-local inflight = {}
+local inflight = require("coact.runtime").state({})
 
 local static = {
   ["@"] = {

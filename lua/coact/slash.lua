@@ -413,16 +413,20 @@ local function select_one(items, opts, callback)
       end
       return item
     end
-  vim.ui.select(items, {
-    prompt = opts.prompt,
-    format_item = function(item)
-      return text(format_item(item))
-    end,
-  }, function(choice)
-    if choice then
-      present_result(callback(choice))
-    end
-  end)
+  vim.ui.select(
+    items,
+    {
+      prompt = opts.prompt,
+      format_item = function(item)
+        return text(format_item(item))
+      end,
+    },
+    config.bind(function(choice)
+      if choice then
+        present_result(callback(choice))
+      end
+    end)
+  )
 end
 
 present_result = function(value)

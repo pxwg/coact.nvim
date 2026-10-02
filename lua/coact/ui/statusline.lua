@@ -24,7 +24,7 @@ local function provider_ui(thread)
 end
 
 local function is_pi_thread(thread)
-  return providers.current_id() == "pi" or tostring(thread and thread.id or ""):match("^pi:") ~= nil
+  return providers.current_id(thread) == "pi" or tostring(thread and thread.id or ""):match("^pi:") ~= nil
 end
 
 local function clean_status_text(text)
@@ -404,7 +404,7 @@ local function provider_title(thread)
   if is_pi_thread(thread) then
     return "Pi"
   end
-  return providers.title()
+  return providers.title(thread)
 end
 
 local function thread_state_label(thread)

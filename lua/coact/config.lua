@@ -1,57 +1,65 @@
 local M = {}
 
-local defaults = {
-  provider = "codex",
-  app_server = {
+local adapter_defaults = {
+  codex = {
+    provider = "codex",
     command = { "codex", "app-server", "--listen", "stdio://" },
+    extra_args = {},
+    env = {},
     initialize_timeout_ms = 10000,
     sanitize_malloc_env = true,
   },
-  providers = {
-    codex = {},
-    claude = {
-      command = { "claude" },
-      config_dir = nil, -- defaults to env.CLAUDE_CONFIG_DIR or ~/.claude
-      max_history_bytes = 64 * 1024 * 1024,
-      max_queued_prompts = 20,
-      model = nil,
-      models = nil, -- optional replacement for the CLI model catalog (e.g. gateways)
-      env = {},
-      extra_args = {},
-      initialize_timeout_ms = 30000,
-      max_message_bytes = 8 * 1024 * 1024,
+  claude = {
+    provider = "claude",
+    command = { "claude" },
+    config_dir = nil, -- defaults to env.CLAUDE_CONFIG_DIR or ~/.claude
+    max_history_bytes = 64 * 1024 * 1024,
+    max_queued_prompts = 20,
+    model = nil,
+    models = nil, -- optional replacement for the CLI model catalog (e.g. gateways)
+    env = {},
+    extra_args = {},
+    initialize_timeout_ms = 30000,
+    max_message_bytes = 8 * 1024 * 1024,
+  },
+  pi = {
+    provider = "pi",
+    command = { "pi", "--mode", "rpc" },
+    config_dir = nil,
+    session_dir = nil,
+    model_provider = nil,
+    env = {},
+    sanitize_malloc_env = true,
+    model = nil,
+    thinking = nil,
+    no_session = false,
+    no_extensions = nil,
+    no_skills = nil,
+    no_context_files = nil,
+    offline = nil,
+    tools = nil,
+    exclude_tools = nil,
+    extra_args = {},
+    picker_prewarm = true,
+    prewarm_delay_ms = 50,
+    prewarm_idle_timeout_ms = 60000,
+    edit_bridge = {
+      enabled = true,
+      timeout_sec = 600,
+      direct_write = true,
     },
-    pi = {
-      command = { "pi", "--mode", "rpc" },
-      config_dir = nil,
-      session_dir = nil,
-      provider = nil,
-      model = nil,
-      thinking = nil,
-      no_session = false,
-      no_extensions = nil,
-      no_skills = nil,
-      no_context_files = nil,
-      offline = nil,
-      tools = nil,
-      exclude_tools = nil,
-      extra_args = {},
-      picker_prewarm = true,
-      prewarm_delay_ms = 50,
-      prewarm_idle_timeout_ms = 60000,
-      edit_bridge = {
-        enabled = true,
-        timeout_sec = 600,
-        direct_write = true,
-      },
-      nvim_tools = {
-        enabled = true,
-        max_code_bytes = 64 * 1024,
-        max_result_bytes = 50 * 1024,
-        max_result_lines = 2000,
-      },
+    nvim_tools = {
+      enabled = true,
+      max_code_bytes = 64 * 1024,
+      max_result_bytes = 50 * 1024,
+      max_result_lines = 2000,
     },
   },
+}
+
+local defaults = {
+  default_adapter = "codex",
+  adapters = vim.deepcopy(adapter_defaults),
   thread = {
     model = nil,
     model_provider = nil,
@@ -142,6 +150,10 @@ local defaults = {
 }
 
 local options = vim.deepcopy(defaults)
+local contexts = {}
+local selected
+local active_context
+local generation = 0
 local edit_modes = {
   pair = true,
   yolo = true,
@@ -184,18 +196,95 @@ local function normalize_edit_mode(resolved, user_options)
   dynamic.prefer_nvim_apply_patch = type(user_dynamic) == "table" and user_dynamic.prefer_nvim_apply_patch == true
 end
 
+function M.resolve_adapter(name)
+  name = name or options.default_adapter
+  if contexts[name] then
+    return contexts[name]
+  end
+  local adapter = options.adapters[name]
+  assert(type(adapter) == "table", "coact.nvim: unknown adapter " .. tostring(name))
+  local provider = adapter.provider or name
+  assert(adapter_defaults[provider], "coact.nvim: unknown adapter provider " .. tostring(provider))
+  local resolved = vim.deepcopy(options)
+  resolved.adapter = merge(vim.deepcopy(adapter_defaults[provider]), vim.deepcopy(adapter))
+  local ctx = { name = name, options = resolved, generation = generation }
+  contexts[name] = ctx
+  return ctx
+end
+
 function M.setup(user_options)
-  options = merge(vim.deepcopy(defaults), user_options or {})
-  normalize_edit_mode(options, user_options or {})
+  user_options = user_options or {}
+  for _, key in ipairs({ "provider", "providers", "app_server" }) do
+    assert(
+      user_options[key] == nil,
+      "coact.nvim: config." .. key .. " was removed; use default_adapter and adapters.<name> instead"
+    )
+  end
+  options = merge(vim.deepcopy(defaults), user_options)
+  normalize_edit_mode(options, user_options)
+  contexts = {}
+  generation = generation + 1
+  selected = M.resolve_adapter(options.default_adapter)
   return options
+end
+
+function M.root()
+  return options
+end
+
+function M.selected_adapter()
+  selected = selected or M.resolve_adapter()
+  return selected
+end
+
+function M.select_adapter(name)
+  selected = M.resolve_adapter(name)
+  return selected
+end
+
+function M.thread_context(thread_id)
+  local state = package.loaded["coact.state"]
+  local thread = state and thread_id and state.get_thread(thread_id)
+  local ctx = thread and thread.adapter_context
+  return ctx and ctx.generation == generation and ctx or nil
+end
+
+function M.context()
+  if active_context then
+    return active_context
+  end
+  local state = package.loaded["coact.state"]
+  local thread = state and state.thread_for_buf(0)
+  return (thread and M.thread_context(thread.id)) or M.selected_adapter()
+end
+
+function M.with_context(ctx, callback, ...)
+  local previous = active_context
+  active_context = ctx or M.context()
+  local function pack(...)
+    return { n = select("#", ...), ... }
+  end
+  local result = pack(pcall(callback, ...))
+  active_context = previous
+  if not result[1] then
+    error(result[2], 0)
+  end
+  return unpack(result, 2, result.n)
+end
+
+function M.bind(callback, ctx)
+  ctx = ctx or M.context()
+  return function(...)
+    return M.with_context(ctx, callback, ...)
+  end
 end
 
 function M.get()
-  return options
+  return M.context().options
 end
 
 function M.provider_id()
-  local provider = options.provider
+  local provider = M.get().adapter.provider
   if type(provider) ~= "string" or provider == "" then
     return "codex"
   end
@@ -203,7 +292,7 @@ function M.provider_id()
 end
 
 function M.edit_mode()
-  local edit = options.edit or {}
+  local edit = M.get().edit or {}
   return edit_modes[edit.mode] and edit.mode or "pair"
 end
 

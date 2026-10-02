@@ -3,7 +3,8 @@ local provider = require("coact.providers.claude")
 local catalog = require("coact.providers.claude_catalog")
 local history = require("coact.providers.claude_history")
 local start_entry
-local M = { clients = {}, started = false, next_id = 0 }
+local runtime = require("coact.runtime")
+local M = runtime.state({ clients = {}, started = false, next_id = 0 })
 local function obj(value)
   return type(value) == "table" and value or {}
 end
@@ -50,7 +51,7 @@ local function finish(client, status, error_message)
   turn.error = error_message and { message = error_message } or nil
   client.turn, client.compacting = nil, false
   emit(client, "turn/completed", { turn = vim.deepcopy(turn) })
-  vim.schedule(function()
+  runtime.schedule(function()
     if client.job and client.initialized and not client.turn and not client.interrupting and not client.closing then
       local entry = table.remove(client.queue or {}, 1)
       if entry then
@@ -98,7 +99,7 @@ local function control(client, request, callback)
     entry.callback({ message = err })
     return
   end
-  vim.defer_fn(function()
+  runtime.defer(function()
     if client.pending[id] == entry then
       client.pending[id] = nil
       entry.callback({ message = "Claude control request timed out: " .. request.subtype })
@@ -479,13 +480,13 @@ local function launch(params, callback)
   end
   env.CLAUDE_CODE_ENTRYPOINT = "sdk-cli"
   env.CLAUDE_CONFIG_DIR = history.config_dir()
-  client.job = vim.fn.jobstart(cmd, {
+  client.job = runtime.jobstart(cmd, {
     cwd = client.cwd,
     env = env,
     clear_env = true,
     stdin = "pipe",
     on_stdout = function(_, data)
-      vim.schedule(function()
+      runtime.schedule(function()
         if client.job then
           feed(client, data)
         end
@@ -496,7 +497,7 @@ local function launch(params, callback)
       client.stderr_seen = client.stderr_seen or #table.concat(data, "") > 0
     end,
     on_exit = function(_, code)
-      vim.schedule(function()
+      runtime.schedule(function()
         if client.job then
           if client.tail ~= "" then
             feed(client, { "", "" })

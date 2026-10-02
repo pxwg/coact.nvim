@@ -10,8 +10,7 @@ local nonce = nil
 
 local function bridge_opts()
   local opts = config.get()
-  local providers = opts.providers or {}
-  local pi = providers.pi or {}
+  local pi = opts.adapter or {}
   return pi.nvim_tools or {}
 end
 

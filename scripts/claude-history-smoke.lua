@@ -1,8 +1,8 @@
 return function()
   local config = require("coact.config")
-  local old = vim.deepcopy(config.get())
+  local old = vim.deepcopy(config.root())
   local root = vim.fn.tempname()
-  config.setup({ provider = "claude", providers = { claude = { config_dir = root } } })
+  config.setup({ default_adapter = "claude", adapters = { claude = { config_dir = root } } })
   local h = require("coact.providers.claude_history")
   local function id(n)
     return string.format("10000000-1111-4111-8111-%012d", n)
@@ -83,9 +83,9 @@ return function()
   assert(not h.parse("bad\n{}\n", session, path), "invalid complete records must not silently disappear")
   local missing = assert(h.parse(vim.json.encode(record(32, 999, "user", "missing")), session, path))
   assert(not h.chain(missing, id(32)))
-  config.get().providers.claude.max_history_bytes = 10
+  config.get().adapter.max_history_bytes = 10
   assert(not h.read(session), "oversized histories must fail explicitly")
-  config.get().providers.claude.max_history_bytes = 64 * 1024 * 1024
+  config.get().adapter.max_history_bytes = 64 * 1024 * 1024
   local tool_chain = assert(h.parse(
     table.concat({
       vim.json.encode(record(40, nil, "user", "tool prompt")),

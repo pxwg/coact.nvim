@@ -2,16 +2,16 @@ local config = require("coact.config")
 local providers = require("coact.providers")
 local util = require("coact.util")
 
-local M = {}
-
-M.job_id = nil
-M.next_id = 1
-M.pending = {}
-M.handlers = {}
-M.stdout_tail = ""
-M.stderr_tail = ""
-M.initialized = false
-M.stopping = false
+local runtime = require("coact.runtime")
+local M = runtime.state({
+  next_id = 1,
+  pending = {},
+  handlers = {},
+  stdout_tail = "",
+  stderr_tail = "",
+  initialized = false,
+  stopping = false,
+}, { "handlers" })
 
 local function encode(value)
   return vim.json.encode(value)
@@ -39,11 +39,11 @@ local function env_empty(env)
 end
 
 local function sanitize_malloc_env_enabled(opts)
-  return not (opts.app_server and opts.app_server.sanitize_malloc_env == false)
+  return not (opts.adapter and opts.adapter.sanitize_malloc_env == false)
 end
 
 local function schedule(fn)
-  vim.schedule(fn)
+  runtime.schedule(fn)
 end
 
 local custom_transports = {}
@@ -205,14 +205,24 @@ function M.pending_count(thread_id)
 end
 
 function M.client_count()
-  local transport = custom_transport()
-  if transport then
-    return transport.client_count()
+  local total = 0
+  M._each_context(function()
+    if M.job_id and M.job_id > 0 then
+      total = total + 1
+    end
+  end)
+  for _, transport in pairs(custom_transports) do
+    transport._each_context(function()
+      total = total + transport.client_count()
+    end)
   end
-  if providers.is("pi") then
-    return pi_rpc().client_count()
+  local pi = package.loaded["coact.providers.pi_rpc"]
+  if pi then
+    pi._each_context(function()
+      total = total + pi.client_count()
+    end)
   end
-  return M.is_running() and 1 or 0
+  return total
 end
 
 local function register_native_hook_trust(callback)
@@ -305,7 +315,7 @@ function M.start(callback)
 
   local opts = config.get()
   local provider = providers.current()
-  local command = provider.command and provider.command(opts) or opts.app_server.command
+  local command = provider.command and provider.command(opts) or opts.adapter.command
   M.stdout_tail = ""
   M.stderr_tail = ""
   M.initialized = false
@@ -364,7 +374,7 @@ function M.start(callback)
     job_opts.env = env
   end
 
-  M.job_id = vim.fn.jobstart(command, job_opts)
+  M.job_id = runtime.jobstart(command, job_opts)
 
   if M.job_id <= 0 then
     local err = "failed to start " .. providers.title() .. " provider"
@@ -401,19 +411,21 @@ end
 
 function M.stop()
   for _, transport in pairs(custom_transports) do
-    transport.stop()
+    transport._each_context(transport.stop)
   end
   local loaded_pi_rpc = package.loaded["coact.providers.pi_rpc"]
   if loaded_pi_rpc then
-    loaded_pi_rpc.stop()
+    loaded_pi_rpc._each_context(loaded_pi_rpc.stop)
   end
-  if M.job_id ~= nil and M.job_id > 0 then
-    M.stopping = true
-    vim.fn.jobstop(M.job_id)
-  end
-  M.job_id = nil
-  M.pending = {}
-  M.initialized = false
+  M._each_context(function()
+    if M.job_id ~= nil and M.job_id > 0 then
+      M.stopping = true
+      vim.fn.jobstop(M.job_id)
+    end
+    M.job_id = nil
+    M.pending = {}
+    M.initialized = false
+  end)
 end
 
 function M.send(message)
@@ -456,6 +468,11 @@ function M._request_message(method, params, callback)
 end
 
 function M.request(method, params, callback)
+  local ctx = type(params) == "table" and config.thread_context(params.threadId)
+  if ctx and ctx ~= config.context() then
+    return config.with_context(ctx, M.request, method, params, callback)
+  end
+  callback = callback and config.bind(callback) or nil
   local transport = custom_transport()
   if transport then
     return transport.request(method, params, callback)
@@ -506,6 +523,20 @@ function M.respond_error(id, message, code, data)
       data = data,
     },
   })
+end
+
+for _, name in ipairs({ "is_running", "is_initialized", "pending_count" }) do
+  local operation = M[name]
+  M[name] = function(thread_id)
+    return config.with_context(config.thread_context(thread_id) or config.context(), operation, thread_id)
+  end
+end
+for _, name in ipairs({ "notify", "_request_message" }) do
+  local operation = M[name]
+  M[name] = function(method, params, ...)
+    local ctx = type(params) == "table" and config.thread_context(params.threadId)
+    return config.with_context(ctx or config.context(), operation, method, params, ...)
+  end
 end
 
 M._app_server_env = app_server_env

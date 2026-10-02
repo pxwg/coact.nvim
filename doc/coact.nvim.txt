@@ -64,8 +64,8 @@ SETUP                                                     *coact.nvim-setup*
 Claude Code setup (no terminal UI or claudecode.nvim dependency):
 >
   require("coact").setup({
-    provider = "claude",
-    providers = { claude = { command = { "claude-ds" } } },
+    default_adapter = "claude",
+    adapters = { claude = { command = { "claude-ds" } } },
   })
 <
 Use { "claude" } for the normal CLI. Authentication is inherited from the
@@ -89,7 +89,7 @@ are still refused. Both tools review even in yolo mode. The 2 MiB text-file
 limit remains; renames, binary files, and empty new files are unsupported.
 
 /model switches an idle thread through the CLI control protocol. Optionally
-set providers.claude.models = { "deepseek-reasoner", "deepseek-chat" } to replace
+set adapters.claude.models = { "deepseek-reasoner", "deepseek-chat" } to replace
 the CLI model catalog with gateway-supported IDs. /compact sends the native
 compression command and reserves the thread until completion. /skills and $
 completion use thread-scoped catalogs; $skill:name invokes the native command.
@@ -98,7 +98,7 @@ a new thread to refresh the CLI catalog.
 
 Claude lists native projects/*/<session-id>.jsonl history without launching a
 CLI and restores persisted text/thinking/tool results with native --resume.
-History root precedence: providers.claude.config_dir, provider env.CLAUDE_CONFIG_DIR,
+History root precedence: adapters.claude.config_dir, provider env.CLAUDE_CONFIG_DIR,
 process CLAUDE_CONFIG_DIR, ~/.claude. max_history_bytes defaults to 64 MiB per
 session; corrupt chains/oversized files fail explicitly. An incomplete final
 JSONL record is ignored until written completely.
@@ -138,19 +138,25 @@ Minimal setup:
 Default options:
 >
   require("coact").setup({
-    provider = "codex", -- "codex", "pi", or "claude"
-    app_server = {
-      command = { "codex", "app-server", "--listen", "stdio://" },
-      initialize_timeout_ms = 10000,
-      sanitize_malloc_env = true,
-    },
-    providers = {
-      codex = {},
+    default_adapter = "codex", -- references adapters.codex
+    adapters = {
+      codex = {
+        provider = "codex",
+        command = { "codex", "app-server", "--listen", "stdio://" },
+        extra_args = {},
+        env = {},
+        initialize_timeout_ms = 10000,
+        sanitize_malloc_env = true,
+      },
+      claude = { provider = "claude", command = { "claude" } },
       pi = {
+        provider = "pi",
         command = { "pi", "--mode", "rpc" },
         config_dir = nil,
         session_dir = nil,
-        provider = nil,
+        model_provider = nil,
+        env = {},
+        sanitize_malloc_env = true,
         model = nil,
         thinking = nil,
         no_session = false,
@@ -246,7 +252,7 @@ Default options:
   })
 <
 
-On macOS, `app_server.sanitize_malloc_env` removes inherited
+On macOS, `adapters.codex.sanitize_malloc_env` removes inherited
 `MallocStackLogging*` variables before spawning app-server. This avoids noisy
 malloc runtime messages from parent GUI environments; set it to `false` if you
 intentionally need those variables while debugging Codex.
@@ -254,8 +260,8 @@ intentionally need those variables while debugging Codex.
 To use Pi as the active provider:
 >
   require("coact").setup({
-    provider = "pi",
-    providers = {
+    default_adapter = "pi",
+    adapters = {
       pi = {
         command = { "pi", "--mode", "rpc" },
         -- Optional isolation. Omit these to use Pi's normal ~/.pi/agent state.
@@ -333,7 +339,7 @@ remembered source window or buffer temporarily current. Lua chunks can start
 with `local ctx, args = ...`, use `vim.cmd`, `vim.api`, `vim.fn`, or plugin Lua
 APIs, and return one JSON-serializable value. Calls are serialized. Results
 larger than `max_result_bytes` or `max_result_lines` are saved as JSON in a
-temporary file. If `providers.pi.tools` is an explicit allowlist, include
+temporary file. If `adapters.pi.tools` is an explicit allowlist, include
 `nvim_exec_lua` to activate it.
 
 `nvim_exec_lua` has full access to the live editor, including unsaved buffers,
@@ -383,6 +389,8 @@ COMMANDS                                               *coact.nvim-commands*
 
                                                         *:Coact*
 >
+  :Coact
+  :Coact adapters
   :Coact new [initial prompt]
   :Coact open [thread-id]
   :Coact resume <thread-id>
@@ -400,6 +408,49 @@ COMMANDS                                               *coact.nvim-commands*
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
+`:Coact` / `:Coact adapters` opens the adapter picker, then offers New session
+or Resume session. `:Coact new [prompt]` and `:Coact pick` select an adapter
+before opening a new session or its history respectively. `:Coact open` still
+opens the active/explicit loaded thread without changing its owner.
+
+`default_adapter` is a name reference into `adapters`, not a copied launch
+configuration. It is the first/default picker choice, never a search prefix.
+Selecting another adapter does not rewrite this default; cancellation does
+nothing. For example: >lua
+  require("coact").setup({
+    default_adapter = "pi_work",
+    adapters = {
+      pi_work = {
+        provider = "pi",
+        command = { "pi", "--mode", "rpc" },
+        extra_args = { "--model", "your-model" },
+        env = { PI_OFFLINE = "1" },
+      },
+      claude = { provider = "claude", command = { "claude-ds" } },
+    },
+  })
+<
+Built-in codex/claude/pi entries remain available. Each named adapter starts
+from its protocol's built-in defaults, not another named adapter's overrides.
+Argument lists replace defaults. Use argv command tables and retain protocol
+flags. Adapter `provider` names the coding-agent protocol; Pi's model API
+provider is `model_provider`.
+
+Breaking change: top-level provider, providers, and app_server are removed.
+Old keys raise a migration error, with no compatibility fallback. Use
+ default_adapter = "pi" instead of provider = "pi";
+ adapters.pi instead of providers.pi;
+ adapters.codex instead of app_server;
+ adapters.pi.model_provider instead of providers.pi.provider.
+Keep credentials in private environment files or launchers, not configuration
+committed to a repository.
+
+Loaded threads keep their resolved adapter/configuration and execution units.
+Switching does not interrupt other agents or redirect their callbacks. Resuming
+the same loaded native session reuses its original owner. Restart/shutdown stops
+all adapter runtimes. Lua callers can bypass the picker with
+require("coact").new_thread({ adapter = "pi_work" }); pick_adapter() opens it.
+
 `:Coact status` reports the current thread's provider execution-unit state, the
 total provider client count, active/current thread ids, pending request counts,
 and the current thread generation/status.
@@ -587,7 +638,7 @@ timeout through environment variables. The override computes the proposed
 `edit`/`write` file content, opens the same in-buffer `patch_session` review
 used by `nvim.apply_patch`, and reports the accepted or rejected result back to
 Pi as the tool result. Targets accepted by
-`providers.pi.edit_bridge.direct_write` run that patch session non-interactively
+`adapters.pi.edit_bridge.direct_write` run that patch session non-interactively
 and return the same full-approval result without disclosing configured paths to
 Pi.
 

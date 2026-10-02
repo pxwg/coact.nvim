@@ -299,6 +299,10 @@ local function apply_anchor_marks(bufnr, anchors)
 end
 
 local function submit_decision(proposal, action)
+  local config = require("coact.config")
+  if proposal.adapter_context and proposal.adapter_context ~= config.context() then
+    return config.with_context(proposal.adapter_context, submit_decision, proposal, action)
+  end
   if proposal.on_decision then
     local ok, err = pcall(proposal.on_decision, action, proposal)
     if not ok then
@@ -467,6 +471,7 @@ function M.request_approval(message)
   else
     proposal = modern_proposal(message)
   end
+  proposal.adapter_context = require("coact.config").context()
   local ok, bufnr = pcall(M.open, proposal)
   if not ok then
     local rpc = require("coact.rpc")

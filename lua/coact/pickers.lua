@@ -465,12 +465,24 @@ local function schedule_provider_prewarm()
     return
   end
   local delay = math.max(0, tonumber(opts.delay_ms) or 0)
-  vim.defer_fn(function()
+  require("coact.runtime").defer(function()
     require("coact.rpc").prewarm(function() end)
   end, delay)
 end
 
-function M.threads()
+function M.threads(opts)
+  opts = opts or {}
+  local config = require("coact.config")
+  local ctx = config.context()
+  local source_bufnr = opts.source_bufnr or vim.api.nvim_get_current_buf()
+  local source_winid = opts.source_winid or vim.api.nvim_get_current_win()
+  local resume = config.bind(function(thread)
+    require("coact").resume(thread.id, {
+      thread = thread,
+      source_bufnr = source_bufnr,
+      source_winid = source_winid,
+    })
+  end, ctx)
   require("coact").list_threads(function(threads)
     local provider_title = require("coact.providers").title()
     if #threads == 0 then
@@ -495,7 +507,7 @@ function M.threads()
         preview = "preview",
         confirm = function(picker, item)
           picker:close()
-          require("coact").resume(item.thread.id, { thread = item.thread })
+          resume(item.thread)
         end,
       })
       schedule_provider_prewarm()
@@ -509,11 +521,97 @@ function M.threads()
       end,
     }, function(tree_node)
       if tree_node then
-        require("coact").resume(tree_node.thread.id, { thread = tree_node.thread })
+        resume(tree_node.thread)
       end
     end)
     schedule_provider_prewarm()
   end)
+end
+
+-- Put the configured default first rather than pre-filling the search query.
+-- This also gives vim.ui.select (which has no portable selected-index option)
+-- the same initial choice as Snacks.
+function M.adapters(opts)
+  opts = opts or {}
+  local config = require("coact.config")
+  local root = config.root()
+  local items = {}
+  for name, adapter in pairs(root.adapters) do
+    items[#items + 1] = {
+      name = name,
+      text = name
+        .. "  ("
+        .. (adapter.provider or name)
+        .. ")"
+        .. (name == root.default_adapter and "  [default]" or ""),
+    }
+  end
+  table.sort(items, function(a, b)
+    if a.name == root.default_adapter then
+      return b.name ~= root.default_adapter
+    end
+    if b.name == root.default_adapter then
+      return false
+    end
+    return a.name < b.name
+  end)
+  local context = require("coact.context")
+  local source_bufnr = vim.api.nvim_get_current_buf()
+  if context.is_coact_buffer(source_bufnr) then
+    source_bufnr = context.target_buffer()
+  end
+  local source_winid = vim.api.nvim_get_current_win()
+  local function choose(item)
+    if not item then
+      return
+    end
+    local ctx = config.select_adapter(item.name)
+    local proceed = config.bind(function(action)
+      if action == "new" then
+        require("coact").new_thread({
+          adapter = item.name,
+          prompt = opts.prompt,
+          source_bufnr = source_bufnr,
+          source_winid = source_winid,
+        })
+      elseif action == "pick" then
+        M.threads({ source_bufnr = source_bufnr, source_winid = source_winid })
+      end
+    end, ctx)
+    if opts.action then
+      proceed(opts.action)
+    else
+      vim.ui.select({ "new", "pick" }, {
+        prompt = item.name,
+        format_item = function(action)
+          return action == "new" and "New session" or "Resume session"
+        end,
+      }, proceed)
+    end
+  end
+  local ok, snacks = pcall(require, "snacks")
+  if ok and snacks.picker then
+    snacks.picker.pick({
+      title = "Coact Adapters",
+      items = items,
+      format = "text",
+      matcher = { sort_empty = false },
+      sort = { fields = { "score:desc", "idx" } },
+      confirm = function(picker, item)
+        picker:close()
+        vim.schedule(function()
+          choose(item)
+        end)
+      end,
+    })
+  else
+    vim.ui.select(items, {
+      prompt = "Coact adapter",
+      format_item = function(item)
+        return item.text
+      end,
+    }, choose)
+  end
 end
 
 return M

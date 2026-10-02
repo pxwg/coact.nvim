@@ -88,7 +88,7 @@ function M.check()
   end
 
   local app_executable = type(provider.executable) == "function" and provider.executable(opts)
-    or executable(opts.app_server and opts.app_server.command)
+    or executable(opts.adapter and opts.adapter.command)
 
   local native_pair_hook_enabled = config.edit_mode() == "pair"
     and opts.edit

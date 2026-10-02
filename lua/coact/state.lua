@@ -3,9 +3,13 @@ local util = require("coact.util")
 
 M.threads = {}
 M.active_thread_id = nil
-M.pending_server_requests = {}
 M.render_timers = {}
-M.cache = {}
+local scoped = require("coact.runtime").state({ cache = {}, pending_server_requests = {} })
+setmetatable(M, {
+  __index = function(_, key)
+    return scoped[key]
+  end,
+})
 
 local function append_unique(list, value)
   for _, existing in ipairs(list) do
@@ -126,6 +130,7 @@ function M.ensure_thread(thread_id, attrs)
   if not thread then
     thread = {
       id = thread_id,
+      adapter_context = require("coact.config").context(),
       thread = nil,
       bufnr = nil,
       winid = nil,

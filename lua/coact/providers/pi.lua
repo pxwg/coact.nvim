@@ -115,7 +115,7 @@ function M.with_runtime(target, callback, ...)
   local args = pack_values(...)
   active_runtime = target
   local results = pack_values(pcall(function()
-    return callback(unpack_values(args, 1, args.n))
+    return config.with_context(target.adapter_context, callback, unpack_values(args, 1, args.n))
   end))
   active_runtime = previous
   if not results[1] then
@@ -164,7 +164,7 @@ local image_mime_by_ext = {
 
 local function provider_opts(opts)
   opts = opts or config.get()
-  return (opts.providers and opts.providers.pi) or {}
+  return opts.adapter or {}
 end
 
 function M.picker_prewarm_options(opts)
@@ -242,7 +242,7 @@ function M.command(opts, launch)
   local args = {}
   append_arg(args, "--session-id", launch.session_id)
   append_arg(args, "--session", launch.session_file)
-  append_arg(args, "--provider", pi.provider or (opts.thread and opts.thread.model_provider))
+  append_arg(args, "--provider", pi.model_provider or (opts.thread and opts.thread.model_provider))
   append_arg(args, "--model", effective_model(opts))
   append_arg(args, "--thinking", effective_thinking(opts))
   append_arg(args, "--session-dir", pi.session_dir)
@@ -269,6 +269,9 @@ function M.env(opts, env)
   end
   if pi.offline == true then
     env.PI_OFFLINE = "1"
+  end
+  for key, value in pairs(pi.env or {}) do
+    env[key] = value
   end
   return env
 end
