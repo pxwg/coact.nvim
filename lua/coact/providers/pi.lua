@@ -8,6 +8,7 @@ local M = {
   agent_label = "Pi",
   protocol = "pi-rpc",
   transport_scope = "thread",
+  catalog_scope = "thread",
   thread_list_requires_transport = false,
   slash = {
     commands = {
@@ -28,6 +29,7 @@ local M = {
       stop = true,
       tree = true,
     },
+    model_scopes = true,
     reasoning_label = "thinking",
     reasoning_effort_title = "thinking level",
     load_reasoning_efforts = function(rpc, callback, thread_id)
@@ -284,6 +286,7 @@ function M.prepare_command(command, env, launch)
   end
   command, env, err = require("coact.providers.pi_nvim_bridge").prepare_command(command, env, launch)
   if command then
+    command = require("coact.providers.pi_models").prepare_command(command)
     command = without_host_nvim_env(command)
   end
   return command, env, err
@@ -592,7 +595,8 @@ local function model_id(model)
   end
   local provider = util.value(model.provider)
   local id = util.value(model.modelId) or util.value(model.model_id) or util.value(model.id) or util.value(model.model)
-  if provider and id and not tostring(id):find("/", 1, true) then
+  -- Pi model ids are opaque and may themselves contain slashes.
+  if provider and id then
     return tostring(provider) .. "/" .. tostring(id)
   end
   return id and tostring(id) or nil
@@ -1617,6 +1621,10 @@ function M.custom_request(rpc, method, params, callback)
   end
 
   if method == "model/list" then
+    if params.scope == "scoped" and runtime.scoped_models and #runtime.scoped_models > 0 then
+      callback(nil, { data = vim.deepcopy(runtime.scoped_models) })
+      return true
+    end
     rpc._request_message("get_available_models", {}, function(err, result)
       if err then
         callback(err, nil)
@@ -2702,6 +2710,19 @@ function M.handle_raw_message(message, rpc)
     return true
   end
   if message.method == "setStatus" then
+    if message.statusKey == "coact.nvim.scoped-models" then
+      local ok, models = pcall(vim.json.decode, util.value(message.statusText) or "[]")
+      runtime.scoped_models = {}
+      if ok and type(models) == "table" and models ~= vim.NIL then
+        for _, model in ipairs(models) do
+          local normalized = normalize_model(model)
+          if normalized then
+            table.insert(runtime.scoped_models, normalized)
+          end
+        end
+      end
+      return true
+    end
     return handle_set_status(message)
   end
   if message.method == "setWidget" then

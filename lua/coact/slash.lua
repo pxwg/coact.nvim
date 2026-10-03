@@ -597,14 +597,14 @@ local function model_label(model)
   return label
 end
 
-local function request_models(thread_id, actions, callback)
+local function request_models(thread_id, actions, callback, scope)
   local catalog_thread_id = providers.current().catalog_scope == "thread" and current_thread_id(thread_id) or nil
   ensure_server(actions, function()
     local all = {}
     local function page(cursor)
       rpc.request(
         "model/list",
-        { threadId = catalog_thread_id, limit = 200, cursor = cursor, includeHidden = false },
+        { threadId = catalog_thread_id, limit = 200, cursor = cursor, includeHidden = false, scope = scope },
         function(err, result)
           if err then
             notify("model/list failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
@@ -674,15 +674,27 @@ local function reasoning_effort_label(choice)
   return label
 end
 
-local function open_model(actions, thread_id)
+local function open_model(actions, thread_id, scope)
   thread_id = current_thread_id(thread_id)
+  local scoped = provider_slash().model_scopes == true
+  scope = scoped and (scope or "scoped") or nil
   request_models(thread_id, actions, function(models)
+    if scoped then
+      table.insert(models, {
+        scope_switch = scope == "all" and "scoped" or "all",
+        displayName = scope == "all" and "Switch to scoped models" or "Show all models",
+      })
+    end
     present_result(select_result({
-      title = provider_title() .. " model",
+      title = provider_title() .. " model" .. (scoped and (" (" .. scope .. ")") or ""),
       empty_message = "no " .. provider_title() .. " models available",
       items = models,
       format_item = model_label,
       on_select = function(model)
+        if model.scope_switch then
+          open_model(actions, thread_id, model.scope_switch)
+          return
+        end
         local efforts = reasoning_effort_options(model)
         if #efforts == 0 then
           set_model_thread(model, actions, thread_id)
@@ -698,7 +710,7 @@ local function open_model(actions, thread_id)
         })
       end,
     }))
-  end)
+  end, scope)
 end
 
 local function set_service_tier(service_tier, actions, thread_id, label)
