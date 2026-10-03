@@ -452,7 +452,24 @@ do
       injected_extension_count = injected_extension_count + 1
     end
   end
-  assert(injected_extension_count == 2, "Pi should inject separate edit-review and Neovim Lua extensions")
+  assert(injected_extension_count == 3, "Pi should inject edit-review, Neovim Lua, and model-scope extensions")
+  pi_provider.with_runtime(pi_provider.new_runtime(), function()
+    assert(pi_provider.handle_raw_message({
+      type = "extension_ui_request",
+      method = "setStatus",
+      statusKey = "coact.nvim.scoped-models",
+      statusText = '[{"provider":"test","id":"scoped"},null]',
+    }, {}))
+    pi_provider.custom_request({}, "model/list", { scope = "scoped" }, function(err, result)
+      assert(not err and #result.data == 1 and result.data[1].id == "test/scoped")
+    end)
+    assert(pi_provider.handle_raw_message({
+      type = "extension_ui_request",
+      method = "setStatus",
+      statusKey = "coact.nvim.scoped-models",
+      statusText = vim.NIL,
+    }, {}))
+  end)
   local pi_nvim_extension_source = pi_nvim_bridge._extension_source()
   assert(
     pi_nvim_extension_source:match('name: "nvim_exec_lua"')
@@ -759,6 +776,11 @@ do
   })
   assert(pi_thread.id == "pi:smoke-session", "Pi session state should normalize to a thread id")
   assert(pi_thread.model == "openai/gpt-4o", "Pi model state should normalize provider/model")
+  assert(
+    pi_provider._normalize_model({ provider = "magpie-vps", id = "claude/claude-opus-5-5" }).model
+      == "magpie-vps/claude/claude-opus-5-5",
+    "Pi model ids containing slashes must retain the actual registry provider"
+  )
   local pi_max_model = pi_provider._normalize_model({
     provider = "openai",
     id = "gpt-5.6-sol",
@@ -2300,7 +2322,7 @@ do
     end
   end
   assert(
-    nvim_only_extension_count == 1
+    nvim_only_extension_count == 2
       and nvim_only_env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE
       and not nvim_only_env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR,
     "Pi should inject nvim_exec_lua without enabling the edit-review bridge"
@@ -2321,10 +2343,9 @@ do
   assert(not pi_bridge.enabled(), "Pi edit bridge should stay disabled")
   assert(not pi_nvim_bridge.enabled(), "Pi Neovim bridge should respect the provider disable switch")
   local disabled_command = pi_provider.prepare_command({ "pi", "--mode", "rpc" }, {})
-  assert(
-    not vim.tbl_contains(disabled_command, "--extension"),
-    "disabled Pi process-local bridges should not inject extensions"
-  )
+  assert(#vim.tbl_filter(function(part)
+    return part == "--extension"
+  end, disabled_command) == 1, "Pi model scope should remain available with both tool bridges disabled")
 
   local fake_pi_rpc_path = vim.fn.tempname() .. "-coact-fake-pi-rpc.mjs"
   local fake_pi_session_dir = vim.fn.tempname() .. "-coact-fake-pi-sessions"
