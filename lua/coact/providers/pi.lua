@@ -2789,6 +2789,20 @@ M._clear_session_info_cache = function()
   session_info_cache = {}
 end
 M._resolve_session_file = resolve_session_file
+
+-- Resolve an external thread reference (a Pi session file path) to a thread
+-- payload so callers outside Neovim can hand over the live Pi session.
+function M.thread_from_ref(ref)
+  local path = normalize_path(util.value(ref))
+  if not readable_file(path) then
+    return nil
+  end
+  local info = read_session_info(path)
+  if info then
+    info._sort = nil
+  end
+  return info
+end
 M._normalize_model = normalize_model
 M._message_items = message_items
 M._tool_update_delta = tool_update_delta

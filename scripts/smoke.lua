@@ -3300,6 +3300,48 @@ assert(
   "resume completion should include loaded thread ids"
 )
 assert(
+  vim.tbl_contains(coact.complete_command("", "Coact resume smoke-context "), "pi"),
+  "resume completion should offer adapters after the thread id"
+)
+do
+  local pi_provider = require("coact.providers.pi")
+  local session_file = vim.fn.tempname() .. ".jsonl"
+  vim.fn.writefile({
+    vim.json.encode({ type = "session", id = "handoff-session", cwd = vim.fn.getcwd() }),
+    vim.json.encode({
+      type = "message",
+      id = "m1",
+      message = { role = "user", content = { { type = "text", text = "Handoff prompt" } } },
+    }),
+  }, session_file)
+  local handoff = pi_provider.thread_from_ref(session_file)
+  assert(
+    handoff
+      and handoff.id == "pi:handoff-session"
+      and handoff.sessionFile == vim.fs.normalize(session_file)
+      and handoff.name == "Handoff prompt"
+      and handoff._sort == nil,
+    "Pi session files should resolve to handoff thread payloads: " .. vim.inspect(handoff)
+  )
+  assert(pi_provider.thread_from_ref("pi:handoff-session") == nil, "thread ids are not session file refs")
+  vim.fn.delete(session_file)
+  assert(
+    pcall(coact.resume, "pi:handoff-session", { adapter = "missing-adapter" }),
+    "unknown resume adapters should notify instead of raising"
+  )
+  local original_resume = coact.resume
+  local seen
+  coact.resume = function(id, opts)
+    seen = { id, opts.adapter }
+  end
+  coact.command({ args = "resume /tmp/coact dir/s.jsonl pi", fargs = { "resume", "/tmp/coact dir/s.jsonl", "pi" } })
+  coact.resume = original_resume
+  assert(
+    seen and seen[1] == "/tmp/coact dir/s.jsonl" and seen[2] == "pi",
+    ":Coact resume should keep structured arguments intact: " .. vim.inspect(seen)
+  )
+end
+assert(
   buffer_opened_events[1] and buffer_opened_events[1].bufnr == context_thread_buf,
   "opening a Coact thread should emit CoactBufferOpened"
 )

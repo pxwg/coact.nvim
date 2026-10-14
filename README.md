@@ -428,6 +428,15 @@ edit_bridge = {
 
 The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `context.os_tmpdir`, `context.nvim_tmpdir`, and the relevant temporary-directory environment values in `context.env`. `allowlist:add()` and `allowlist:remove()` accept a path or list of paths; `allowlist:paths()` returns the current snapshot and `allowlist:contains()` tests a path. Relative configured paths resolve from the setup workspace. Matching is directory-component aware and resolves existing symlinks, so prefix siblings and symlink escapes are not bypassed.
 
+#### Handing a Pi session to Neovim
+
+`extensions/pi/coact-nvim.ts` adds `/nvim [adapter]` to the Pi TUI. It waits for the current run to settle and then opens the same Pi session as a coact.nvim thread:
+
+- Inside a Neovim `:terminal` (`$NVIM` is set), the parent Neovim resumes the session and Pi exits, so a single process owns the session file.
+- Otherwise, the Pi TUI suspends, Neovim runs in the foreground, and Pi reloads the session after Neovim exits, so turns added from Neovim appear when you return.
+
+Install it by linking the file into `$PI_CODING_AGENT_DIR/extensions/`, defaulting to `~/.pi/agent/extensions/`, or by loading it with `pi --extension`. `COACT_NVIM` selects the Neovim executable and `COACT_PI_ADAPTER` selects the default coact.nvim adapter (default `pi`).
+
 ## Commands
 
 ```vim
@@ -435,7 +444,7 @@ The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `c
 :Coact adapters
 :Coact new [initial prompt]
 :Coact open [thread-id]
-:Coact resume <thread-id>
+:Coact resume <thread-id> [adapter]
 :Coact pick
 :Coact list
 :Coact submit
@@ -462,7 +471,9 @@ One user run keeps a single Coact response frame even when a provider splits it 
 
 `:Coact add-buffer` appends the current source buffer path to the active chat prompt using compact direct `@path` mention syntax. `:Coact add-selection` appends `@selection` when the source buffer has a remembered Visual selection.
 
-Command-line completion covers subcommands, `attach all`, loaded chat buffer numbers, and loaded thread ids for `open`/`resume`.
+`:Coact resume <thread-id> [adapter]` resumes under the named adapter instead of the current one. Pi adapters also accept a session file path as the thread id.
+
+Command-line completion covers subcommands, `attach all`, loaded chat buffer numbers, loaded thread ids for `open`/`resume`, and adapter names for `resume`.
 
 ## Health
 
@@ -574,6 +585,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/coact/completion/blink.lua`: `blink.cmp` source.
 - `lua/coact/dynamic_tools.lua`: Neovim-backed dynamic tools.
 - `lua/coact/health.lua`: `:checkhealth coact` provider.
+- `extensions/pi/coact-nvim.ts`: Pi `/nvim` command that hands the current Pi session to coact.nvim.
 
 ## Verification
 

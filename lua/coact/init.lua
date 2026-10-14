@@ -346,7 +346,15 @@ function M.resume(thread_id, opts)
     or (context.is_coact_buffer(current_buf) and context.target_buffer() or current_buf)
   local source_winid = opts.source_winid or vim.api.nvim_get_current_win()
   if not thread_id or thread_id == "" then
-    return util.notify("usage: :Coact resume <thread-id>", vim.log.levels.WARN)
+    return util.notify("usage: :Coact resume <thread-id> [adapter]", vim.log.levels.WARN)
+  end
+  local provider = providers.current()
+  local resolved = provider.thread_from_ref and provider.thread_from_ref(thread_id) or nil
+  if resolved then
+    thread_id = resolved.id
+    opts = vim.tbl_extend("force", opts, {
+      thread = vim.tbl_extend("force", resolved, type(opts.thread) == "table" and opts.thread or {}),
+    })
   end
   local existing = state.get_thread(thread_id)
   if
@@ -763,14 +771,16 @@ local commands = {
   adapters = function()
     M.pick_adapter()
   end,
-  new = function(args)
-    M.pick_adapter({ action = "new", prompt = table.concat(args, " ") })
+  new = function(_, opts)
+    -- Keep the prompt verbatim rather than rejoining whitespace-split args.
+    local prompt = (opts.args or ""):gsub("^%s*%S+%s*", "", 1)
+    M.pick_adapter({ action = "new", prompt = prompt })
   end,
   open = function(args)
     M.open(args[1])
   end,
   resume = function(args)
-    M.resume(args[1])
+    M.resume(args[1], { adapter = args[2] })
   end,
   pick = function()
     M.pick_adapter({ action = "pick" })
@@ -828,14 +838,16 @@ local commands = {
 
 function M.command(opts)
   setup_once()
-  local args = vim.split(opts.args or "", "%s+", { trimempty = true })
+  -- fargs keeps structured arguments intact, such as session file paths
+  -- containing spaces passed through vim.cmd({ cmd = "Coact", args = ... }).
+  local args = opts.fargs and vim.list_slice(opts.fargs) or vim.split(opts.args or "", "%s+", { trimempty = true })
   local name = table.remove(args, 1) or "adapters"
   local command = commands[name]
   if not command then
     util.notify("unknown Coact command: " .. name, vim.log.levels.ERROR)
     return
   end
-  command(args)
+  command(args, opts)
 end
 
 local function filtered(candidates, prefix)
@@ -903,6 +915,11 @@ function M.complete_command(arglead, line)
   if command == "statusline" and #args <= 2 then
     return filtered({ "toggle", "show", "hide", "on", "off" }, value_prefix)
   end
+  if command == "resume" and (#args == 3 or (#args == 2 and trailing_space)) then
+    local adapters = vim.tbl_keys(config.root().adapters or {})
+    table.sort(adapters)
+    return filtered(adapters, value_prefix)
+  end
   if (command == "open" or command == "resume") and #args <= 2 then
     return filtered(loaded_thread_ids(), value_prefix)
   end
@@ -916,7 +933,17 @@ for name, thread_arg in pairs({ open = 1, resume = 1, submit_text = 2 }) do
   M[name] = function(...)
     setup_once()
     local id = select(thread_arg, ...) or state.active_thread_id
-    return config.with_context(config.thread_context(id) or config.context(), operation, ...)
+    local ctx = config.thread_context(id) or config.context()
+    local opts = name == "resume" and select(2, ...) or nil
+    local adapter = type(opts) == "table" and util.value(opts.adapter) or nil
+    if adapter and adapter ~= "" then
+      local ok, resolved = pcall(config.resolve_adapter, adapter)
+      if not ok then
+        return util.notify(tostring(resolved), vim.log.levels.ERROR)
+      end
+      ctx = resolved
+    end
+    return config.with_context(ctx, operation, ...)
   end
 end
 for _, name in ipairs({ "stop", "status", "health" }) do

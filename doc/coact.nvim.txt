@@ -394,7 +394,7 @@ COMMANDS                                               *coact.nvim-commands*
   :Coact adapters
   :Coact new [initial prompt]
   :Coact open [thread-id]
-  :Coact resume <thread-id>
+  :Coact resume <thread-id> [adapter]
   :Coact pick
   :Coact list
   :Coact submit
@@ -462,8 +462,18 @@ buffer. Configure `buffer.on_attach = function(bufnr, payload) ... end` or
 `require("coact").on("buffer_attached", cb)` to attach editor-local helpers
 such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
+`:Coact resume <thread-id> [adapter]` resumes under the named adapter instead
+of the current one. Pi adapters also accept a session file path as the thread
+id. The Pi extension `extensions/pi/coact-nvim.ts`, linked into
+`$PI_CODING_AGENT_DIR/extensions/` (default `~/.pi/agent/extensions/`), uses
+this for its `/nvim [adapter]` command: inside a Neovim :terminal it resumes the session in
+the parent Neovim and exits Pi; otherwise it suspends the Pi TUI, runs Neovim
+in the foreground, and reloads the session when Neovim exits. `COACT_NVIM`
+selects the Neovim executable and `COACT_PI_ADAPTER` the default adapter.
+
 Command-line completion covers subcommands, `attach all`, loaded chat buffer
-numbers, and loaded thread ids for `open`/`resume`.
+numbers, loaded thread ids for `open`/`resume`, and adapter names for
+`resume`.
 
 `:Coact add-buffer` appends the current source buffer path to the active chat
 prompt using compact direct `@path` mention syntax. `:Coact add-selection`
@@ -817,8 +827,9 @@ open({thread_id})~
     Open a loaded thread or read a thread by id.
 
                                                         *coact.resume()*
-resume({thread_id})~
-    Resume a thread by id.
+resume({thread_id}, {opts})~
+    Resume a thread by id. {opts}.adapter selects the adapter; Pi adapters
+    also accept a session file path as {thread_id}.
 
                                                         *coact.submit()*
 submit()~

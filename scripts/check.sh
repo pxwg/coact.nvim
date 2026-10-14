@@ -15,6 +15,7 @@ nvim_test() {
 
 run bash -n scripts/check.sh
 run node --check scripts/claude-rpc-fixture.mjs
+run node --check extensions/pi/coact-nvim.ts
 history_root="$(mktemp -d)"
 trap 'rm -rf "$history_root"' EXIT
 pi_extension="$history_root/pi-extension.mjs"
