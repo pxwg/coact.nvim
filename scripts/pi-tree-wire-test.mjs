@@ -21,10 +21,15 @@ for (let i = 1; i <= 1500; i++) {
   last = child;
 }
 root.children.push({ entry: { id: 'sibling', parentId: '0', type: 'custom', data: { secret: 'PRIVATE_DATA' } }, children: [] });
+root.children.push({ entry: { id: 'edit-omit', parentId: '0', type: 'context_edit', targetId: '0', replacement: null }, children: [] });
+root.children.push({ entry: { id: 'edit-replace', parentId: '0', type: 'context_edit', targetId: '0',
+  replacement: { content: [{ type: 'text', text: 'PRIVATE_REPLACEMENT' }] } }, children: [] });
 const result = treePickerNodes([root]);
-assert.equal(result.nodes.length, 1502);
+assert.equal(result.nodes.length, 1504);
 assert.equal(result.nodes[1].entry.id, '1');
-assert.equal(result.nodes.at(-1).entry.id, 'sibling');
+assert.equal(result.nodes.at(-3).entry.id, 'sibling');
+assert.deepEqual(JSON.parse(JSON.stringify(result.nodes.at(-2).entry)), { id: 'edit-omit', parentId: '0', type: 'context_edit', targetId: '0', replacement: null });
+assert.equal(JSON.stringify(result.nodes.at(-1).entry.replacement), '{}');
 assert.equal(result.entriesById.get('0'), root.entry);
 assert.equal(result.nodes[0].label, 'checkpoint');
 assert.equal(result.nodes[0].entry.message.content[0].text, '');

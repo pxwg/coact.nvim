@@ -493,9 +493,11 @@ function treePickerNodes(roots) {
     entriesById.set(String(source.id), source);
     const entry = {};
     for (const key of ["id", "parentId", "type", "timestamp", "customType", "display",
-      "tokensBefore", "modelId", "thinkingLevel", "name", "label"]) {
+      "tokensBefore", "modelId", "thinkingLevel", "name", "label", "targetId"]) {
       if (source[key] != null) entry[key] = source[key];
     }
+    // context_edit replacements can carry full message content; the picker only needs omit vs replace.
+    if (source.type === "context_edit") entry.replacement = source.replacement === null ? null : {};
     if (source.summary !== undefined) entry.summary = String(source.summary).slice(0, 2000);
     if (source.content !== undefined) entry.content = treeTextContent(source.content);
     if (source.message) {

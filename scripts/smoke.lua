@@ -547,6 +547,61 @@ do
       table.concat(null_tree.lines, "\n"):find("null root", 1, true),
       "Pi flat tree should normalize null roots and labels"
     )
+    local pi_v11_payload = {
+      __coactNvimPiTree = true,
+      leafId = "v11-user",
+      nodes = {
+        {
+          entry = {
+            id = "v11-root",
+            parentId = vim.NIL,
+            type = "message",
+            message = { role = "user", content = "v11 root" },
+          },
+        },
+        { entry = { id = "v11-usage", parentId = "v11-root", type = "usage", kind = "cache_warm" } },
+        {
+          entry = {
+            id = "v11-omit",
+            parentId = "v11-usage",
+            type = "context_edit",
+            targetId = "v11-root",
+            replacement = vim.NIL,
+          },
+        },
+        {
+          entry = {
+            id = "v11-replace",
+            parentId = "v11-omit",
+            type = "context_edit",
+            targetId = "v11-root",
+            replacement = {},
+          },
+        },
+        {
+          entry = {
+            id = "v11-user",
+            parentId = "v11-replace",
+            type = "message",
+            message = { role = "user", content = "v11 leaf" },
+          },
+        },
+      },
+    }
+    local v11_default = table.concat(pi_tree._render_for_test(pi_v11_payload).lines, "\n")
+    local v11_all = table.concat(pi_tree._render_for_test(pi_v11_payload, { filter_mode = "all" }).lines, "\n")
+    assert(
+      v11_default:find("v11 leaf", 1, true)
+        and not v11_default:find("[usage]", 1, true)
+        and not v11_default:find("[context", 1, true),
+      "Pi 1.1 tree should hide usage and context_edit entries by default: " .. v11_default
+    )
+    assert(
+      not v11_all:find("[usage]", 1, true)
+        and v11_all:find("[context omit: v11-root]", 1, true)
+        and v11_all:find("[context replace: v11-root]", 1, true),
+      "Pi 1.1 tree should label context_edit entries and never show usage entries: " .. v11_all
+    )
     local rendered_tree = pi_tree._render_for_test({
       __coactNvimPiTree = true,
       leafId = "branch-user",

@@ -272,6 +272,10 @@ local function searchable_text(state, node)
   elseif e.type == "custom" or e.type == "label" then
     table.insert(parts, tostring(e.type))
     table.insert(parts, tostring(e.customType or e.label or ""))
+  elseif e.type == "context_edit" then
+    table.insert(parts, "context")
+    table.insert(parts, value(e.replacement) == nil and "omit" or "replace")
+    table.insert(parts, tostring(value(e.targetId) or ""))
   else
     table.insert(parts, tostring(e.type or "entry"))
   end
@@ -282,6 +286,11 @@ local function passes_filter(state, flat_node)
   local e = entry(flat_node.node)
   local id = entry_id(e)
   local is_current_leaf = id ~= nil and id == state.leaf_id
+
+  -- Pi 1.1 usage entries are accounting records and never appear in /tree.
+  if e.type == "usage" then
+    return false
+  end
 
   if e.type == "message" then
     local message = as_table(e.message)
@@ -296,6 +305,7 @@ local function passes_filter(state, flat_node)
   end
 
   local is_settings = e.type == "label"
+    or e.type == "context_edit"
     or e.type == "custom"
     or e.type == "model_change"
     or e.type == "thinking_level_change"
@@ -593,6 +603,15 @@ local function entry_segments(state, node)
     append_segment(segments, "[title: " .. tostring(e.name or "empty") .. "]", "CoactPiTreeMuted")
   elseif e.type == "label" then
     append_segment(segments, "[label: " .. tostring(e.label or "(cleared)") .. "]", "CoactPiTreeMuted")
+  elseif e.type == "context_edit" then
+    append_segment(
+      segments,
+      ("[context %s: %s]"):format(
+        value(e.replacement) == nil and "omit" or "replace",
+        tostring(value(e.targetId) or "")
+      ),
+      "CoactPiTreeMuted"
+    )
   else
     append_segment(segments, "[" .. tostring(e.type or "entry") .. "]", "CoactPiTreeMuted")
   end
@@ -1193,6 +1212,10 @@ end
 
 function M._render_for_test(payload, opts)
   local state = make_state(payload)
+  if opts and opts.filter_mode then
+    state.filter_mode = opts.filter_mode
+    apply_filter(state)
+  end
   return render_model(state, opts and opts.width or 120, opts and opts.height or 24)
 end
 
