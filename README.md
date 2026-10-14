@@ -59,11 +59,16 @@ Use your plugin manager of choice. With `lazy.nvim`:
 ```lua
 {
   "pxwg/coact.nvim",
+  build = function()
+    require("coact.integrations").install()
+  end,
   config = function()
     require("coact").setup()
   end,
 }
 ```
+
+The `build` hook links agent-client integrations, currently the Pi `/nvim` extension, into their client configuration. Run `:Coact extension-install` to do the same by hand.
 
 ## Setup
 
@@ -435,7 +440,7 @@ The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `c
 - Inside a Neovim `:terminal` (`$NVIM` is set), the parent Neovim resumes the session and Pi exits, so a single process owns the session file.
 - Otherwise, the Pi TUI suspends, Neovim runs in the foreground, and Pi reloads the session after Neovim exits, so turns added from Neovim appear when you return.
 
-Install it by linking the file into `$PI_CODING_AGENT_DIR/extensions/`, defaulting to `~/.pi/agent/extensions/`, or by loading it with `pi --extension`. `COACT_NVIM` selects the Neovim executable and `COACT_PI_ADAPTER` selects the default coact.nvim adapter (default `pi`).
+`:Coact extension-install pi` (or the `build` hook from [Installation](#installation)) links it into `$PI_CODING_AGENT_DIR/extensions/`, defaulting to `~/.pi/agent/extensions/`, so plugin updates reach Pi without reinstalling. `COACT_NVIM` selects the Neovim executable and `COACT_PI_ADAPTER` selects the default coact.nvim adapter (default `pi`).
 
 ## Commands
 
@@ -457,7 +462,11 @@ Install it by linking the file into `$PI_CODING_AGENT_DIR/extensions/`, defaulti
 :Coact attach [all]
 :Coact add-buffer
 :Coact add-selection
+:Coact[!] extension-install [integration]
+:Coact[!] extension-uninstall [integration]
 ```
+
+`:Coact extension-install` links agent-client integrations shipped with the plugin; without an argument it installs all of them, currently `pi`. It relinks links into old plugin checkouts and plain copies of the shipped file, and refuses to replace other files unless invoked as `:Coact! extension-install`. `:Coact extension-uninstall` removes the link with the same protection.
 
 Opening a provider thread starts in preview state with a read-only `coact-history` transcript buffer using the full UI height. Pi opens that buffer immediately from local session metadata and shows a transient in-buffer session loading spinner while its independent execution unit starts, restores the session, and hydrates conversation history; loading state is renderer chrome rather than transcript content, and failures remain visible in the opened buffer. New Pi sessions receive their final session id before launch so the loading buffer already belongs to the eventual execution unit. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, or `S` to open the unnamed `coact-input` composer below it. Type in the composer and press `<C-s>` or normal-mode `<CR>` to submit; normal-mode `q` closes the composer and returns to preview without discarding the draft. Press normal-mode `K` over an `@...` context token in the composer to open the same LSP-style hover float used by completion documentation. With Pi or Claude, submitting while a turn is still generating queues the text as a follow-up. The composer grows with wrapped input up to `ui.composer.max_height`, then scrolls internally. The composer buffer is left unnamed rather than using a `coact://` URI so path-oriented completion sources keep a normal editing context. In history, use `za` on a placeholder block to expand or collapse reasoning/tool/agent details, `K` to open the full block detail buffer, `g?` for history key help, `gs` to toggle the status detail page, `gS` to show/hide the status chrome, `gt` for the Pi tree or Claude rewind history, `gT` to preselect the user/assistant message under cursor, normal-mode `<Esc><Esc>` to preselect the current message when available (or open the plain tree from the composer), `r` inside the tree to reveal a selected entry in the current transcript (Claude never rewinds implicitly), `gc` for runtime status, `gy` to copy the latest output, `gd` for workspace diff, `gr` to refresh rendering, and `g]` / `g[` to jump to the next/previous message block. During streaming, transcript windows preserve their cursor and view by default. Set `ui.auto_scroll = true` to make windows near the bottom follow the conversation; cursor movement or scrolling away then suspends follow for that window.
 
@@ -477,7 +486,7 @@ Command-line completion covers subcommands, `attach all`, loaded chat buffer num
 
 ## Health
 
-Run `:checkhealth coact` to verify the Neovim version, active provider executable and protocol support, the Codex apply_patch runtime when the Codex provider is active in pair mode, optional picker/completion integrations, and dynamic tool registration. `:Coact health` still performs runtime provider initialization.
+Run `:checkhealth coact` to verify the Neovim version, active provider executable and protocol support, the Codex apply_patch runtime when the Codex provider is active in pair mode, optional picker/completion integrations, agent-client integrations installed by `:Coact extension-install`, and dynamic tool registration. `:Coact health` still performs runtime provider initialization.
 
 ## Prompt Tokens
 
@@ -585,6 +594,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/coact/completion/blink.lua`: `blink.cmp` source.
 - `lua/coact/dynamic_tools.lua`: Neovim-backed dynamic tools.
 - `lua/coact/health.lua`: `:checkhealth coact` provider.
+- `lua/coact/integrations.lua`: `:Coact extension-install`/`extension-uninstall` and health checks for agent-client integrations.
 - `extensions/pi/coact-nvim.ts`: Pi `/nvim` command that hands the current Pi session to coact.nvim.
 
 ## Verification

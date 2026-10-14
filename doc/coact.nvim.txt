@@ -406,7 +406,18 @@ COMMANDS                                               *coact.nvim-commands*
   :Coact attach [all]
   :Coact add-buffer
   :Coact add-selection
+  :Coact[!] extension-install [integration]
+  :Coact[!] extension-uninstall [integration]
 <
+
+`:Coact extension-install` links agent-client integrations shipped with the
+plugin; without an argument it installs all of them, currently `pi`. It
+relinks links into old plugin checkouts and plain copies of the shipped file,
+and refuses to replace other files unless invoked as
+`:Coact! extension-install`. `:Coact extension-uninstall` removes the link
+with the same protection. Call `require("coact.integrations").install()` from
+a plugin-manager build hook to install on plugin install and update.
+|:checkhealth| coact reports whether each integration is linked.
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
 `:Coact` / `:Coact adapters` opens the adapter picker, then offers New session
@@ -464,9 +475,10 @@ such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
 `:Coact resume <thread-id> [adapter]` resumes under the named adapter instead
 of the current one. Pi adapters also accept a session file path as the thread
-id. The Pi extension `extensions/pi/coact-nvim.ts`, linked into
-`$PI_CODING_AGENT_DIR/extensions/` (default `~/.pi/agent/extensions/`), uses
-this for its `/nvim [adapter]` command: inside a Neovim :terminal it resumes the session in
+id. The Pi extension `extensions/pi/coact-nvim.ts`, installed by
+`:Coact extension-install pi` into `$PI_CODING_AGENT_DIR/extensions/` (default
+`~/.pi/agent/extensions/`), uses this for its
+`/nvim [adapter]` command: inside a Neovim :terminal it resumes the session in
 the parent Neovim and exits Pi; otherwise it suspends the Pi TUI, runs Neovim
 in the foreground, and reloads the session when Neovim exits. `COACT_NVIM`
 selects the Neovim executable and `COACT_PI_ADAPTER` the default adapter.

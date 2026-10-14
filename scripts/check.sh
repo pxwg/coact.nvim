@@ -28,14 +28,16 @@ run stylua --check --indent-type Spaces --indent-width 2 \
   lua/coact/providers/claude*.lua lua/coact/rpc.lua lua/coact/config.lua lua/coact/patch_session.lua \
   lua/coact/review/*.lua lua/coact/dynamic_tools.lua lua/coact/core.lua lua/coact/init.lua lua/coact/catalog.lua \
   lua/coact/parser.lua lua/coact/slash.lua lua/coact/buffers.lua lua/coact/providers/pi_tree.lua \
-  lua/coact/runtime.lua lua/coact/pickers.lua \
+  lua/coact/runtime.lua lua/coact/pickers.lua lua/coact/integrations.lua lua/coact/health.lua \
   scripts/review-test.lua scripts/smoke.lua scripts/adapter-picker-test.lua scripts/claude-smoke.lua \
-  scripts/claude-provider-test.lua scripts/claude-history-smoke.lua scripts/claude-history-test.lua
+  scripts/claude-provider-test.lua scripts/claude-history-smoke.lua scripts/claude-history-test.lua \
+  scripts/integrations-test.lua
 run git diff --check
 
 nvim_test scripts/review-test.lua
 nvim_test scripts/smoke.lua
 nvim_test scripts/adapter-picker-test.lua
+nvim_test scripts/integrations-test.lua
 
 # Fixture runs ignore COACT_CLAUDE_LIVE; live runs follow when it is set.
 live="${COACT_CLAUDE_LIVE:-}"

@@ -128,6 +128,8 @@ function M.check()
     vim.health.info("blink.cmp is optional; Coact prompt completions will be unavailable unless configured")
   end
 
+  require("coact.integrations").health(health_api)
+
   if opts.dynamic_tools and opts.dynamic_tools.enabled then
     local specs = require("coact.dynamic_tools").specs() or {}
     vim.health.ok(("Neovim dynamic tools enabled: %d tools (edit mode: %s)"):format(#specs, config.edit_mode()))

@@ -834,6 +834,12 @@ local commands = {
   ["add-selection"] = function()
     M.add_selection()
   end,
+  ["extension-install"] = function(args, opts)
+    require("coact.integrations").install(args, { force = opts.bang })
+  end,
+  ["extension-uninstall"] = function(args, opts)
+    require("coact.integrations").uninstall(args, { force = opts.bang })
+  end,
 }
 
 function M.command(opts)
@@ -914,6 +920,9 @@ function M.complete_command(arglead, line)
   end
   if command == "statusline" and #args <= 2 then
     return filtered({ "toggle", "show", "hide", "on", "off" }, value_prefix)
+  end
+  if command == "extension-install" or command == "extension-uninstall" then
+    return filtered(require("coact.integrations").names(), value_prefix)
   end
   if command == "resume" and (#args == 3 or (#args == 2 and trailing_space)) then
     local adapters = vim.tbl_keys(config.root().adapters or {})
