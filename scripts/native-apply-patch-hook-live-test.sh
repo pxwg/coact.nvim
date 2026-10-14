@@ -125,7 +125,7 @@ if [ "$modified" != "ok" ]; then
   die "failed to edit review buffer through Neovim RPC: $modified"
 fi
 
-accept_expr='luaeval("(function() local patch_session = require([[coact.patch_session]]); for _, b in ipairs(vim.api.nvim_list_bufs()) do local session = patch_session._active_session(b); if session and session.hunks and session.hunks[1] then patch_session._accept_hunk(session, session.hunks[1]); return [[ok]] end end; return [[missing]] end)()")'
+accept_expr='luaeval("(function() local patch_session = require([[coact.patch_session]]); for _, b in ipairs(vim.api.nvim_list_bufs()) do local session = patch_session._active_session(b); if session then patch_session._accept_hunk(session, session.hunks[1]); return [[ok]] end end; return [[missing]] end)()")'
 accepted="$("$nvim_bin" --server "$socket" --remote-expr "$accept_expr" 2>/dev/null || true)"
 if [ "$accepted" != "ok" ]; then
   die "failed to accept review hunk through Neovim RPC: $accepted"

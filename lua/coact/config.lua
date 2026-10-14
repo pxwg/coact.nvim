@@ -122,6 +122,7 @@ local defaults = {
       char_diff_max_lines = 120,
       char_diff_max_line_bytes = 1000,
       char_diff_max_total_bytes = 20000,
+      diff_algorithm = "minimal",
       keymaps = {
         accept = ".",
         reject = ",",

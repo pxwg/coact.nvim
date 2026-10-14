@@ -174,6 +174,9 @@ const replaceEditSchema = Type.Object({
     description: "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
   }),
   newText: Type.String({ description: "Replacement text for this targeted edit." }),
+  note: Type.Optional(Type.String({
+    description: "Optional one-line rationale for this edit, shown beside its hunk during Neovim review.",
+  })),
 }, { additionalProperties: false });
 
 const editSchema = Type.Object({
@@ -186,7 +189,24 @@ const editSchema = Type.Object({
 const writeSchema = Type.Object({
   path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
   content: Type.String({ description: "Content to write to the file" }),
+  notes: Type.Optional(Type.Array(Type.Object({
+    anchor: Type.String({ description: "Exact snippet of the new (or removed) text locating the hunk." }),
+    note: Type.String({ description: "Why this hunk changes." }),
+  }, { additionalProperties: false }), {
+    description: "Optional rationales shown beside matching hunks during Neovim review.",
+  })),
 }, { additionalProperties: false });
+
+function reviewNotes(items, anchorOf) {
+  const notes = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const note = typeof item?.note === "string" ? item.note.trim() : "";
+    if (note) {
+      notes.push({ anchor: anchorOf(item), note });
+    }
+  }
+  return notes;
+}
 
 function normalizeToLF(text) {
   return String(text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -325,9 +345,14 @@ function prepareEditArguments(input) {
   }
   if (typeof args.oldText === "string" && typeof args.newText === "string") {
     const edits = Array.isArray(args.edits) ? [...args.edits] : [];
-    edits.push({ oldText: args.oldText, newText: args.newText });
+    const edit = { oldText: args.oldText, newText: args.newText };
+    if (typeof args.note === "string") {
+      edit.note = args.note;
+    }
+    edits.push(edit);
     delete args.oldText;
     delete args.newText;
+    delete args.note;
     args.edits = edits;
   }
   return args;
@@ -729,6 +754,7 @@ export default function (pi) {
       "Use edit for precise changes (edits[].oldText must match exactly).",
       "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls.",
       "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits.",
+      "Optionally give an edit a short note explaining why; Neovim shows it beside that hunk while the user reviews.",
     ],
     parameters: editSchema,
     prepareArguments: prepareEditArguments,
@@ -754,6 +780,7 @@ export default function (pi) {
           oldContent: baseContent,
           newContent,
           kind: "update",
+          notes: reviewNotes(edits, (edit) => (edit.newText ? edit.newText : edit.oldText)),
         },
         signal,
       );
@@ -777,7 +804,7 @@ export default function (pi) {
     parameters: writeSchema,
     executionMode: "sequential",
 
-    async execute(toolCallId, { path, content }, signal, _onUpdate, ctx) {
+    async execute(toolCallId, { path, content, notes }, signal, _onUpdate, ctx) {
       const cwd = ctx?.cwd || process.cwd();
       const absolutePath = resolve(cwd, path);
       let oldContent = "";
@@ -802,6 +829,7 @@ export default function (pi) {
           oldContent,
           newContent: normalizeToLF(content),
           kind,
+          notes: reviewNotes(notes, (item) => (typeof item.anchor === "string" ? item.anchor : "")),
         },
         signal,
       );
@@ -1022,10 +1050,17 @@ local function build_patch(cwd, payload)
     "+++ " .. new_label,
     hunks:gsub("\n+$", ""),
   }, "\n")
+  local notes = {}
+  for _, item in ipairs(type(payload.notes) == "table" and payload.notes or {}) do
+    if type(item) == "table" and type(item.note) == "string" then
+      table.insert(notes, { anchor = type(item.anchor) == "string" and item.anchor or "", note = item.note })
+    end
+  end
   return patch, {
     kind = kind,
     path = path,
     diff = patch,
+    notes = notes,
   }, nil
 end
 

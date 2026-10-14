@@ -112,6 +112,39 @@ local specs = {
       additionalProperties = false,
     },
   },
+  {
+    namespace = "nvim",
+    name = "annotate_change",
+    description = "Optional. Call before apply_patch to attach short rationales that Neovim shows beside the matching hunks while the user reviews the patch. Each anchor is an exact snippet of the new text (or of removed text for deletions).",
+    deferLoading = true,
+    inputSchema = {
+      type = "object",
+      properties = {
+        path = {
+          type = "string",
+          description = "File the upcoming patch edits; absolute or relative to cwd.",
+        },
+        cwd = {
+          type = "string",
+          description = "Working directory for a relative path.",
+        },
+        notes = {
+          type = "array",
+          items = {
+            type = "object",
+            properties = {
+              anchor = { type = "string", description = "Exact snippet locating the hunk." },
+              note = { type = "string", description = "Why this hunk changes, in one or two sentences." },
+            },
+            required = { "anchor", "note" },
+            additionalProperties = false,
+          },
+        },
+      },
+      required = { "path", "notes" },
+      additionalProperties = false,
+    },
+  },
 }
 
 local function nvim_apply_patch_enabled()
@@ -127,7 +160,11 @@ function M.specs()
   end
   local out = {}
   for _, spec in ipairs(specs) do
-    if spec.name ~= "apply_patch" or nvim_apply_patch_enabled() then
+    local enabled = spec.name ~= "apply_patch" or nvim_apply_patch_enabled()
+    if spec.name == "annotate_change" then
+      enabled = config.edit_mode() == "pair"
+    end
+    if enabled then
       table.insert(out, spec)
     end
   end
@@ -167,6 +204,20 @@ end
 
 local function with_diagnostics(text, thread)
   return tostring(text or "") .. "\n\n" .. diagnostics_section(thread)
+end
+
+handlers.annotate_change = function(arguments)
+  local path = type(arguments.path) == "string" and arguments.path or ""
+  if path == "" or type(arguments.notes) ~= "table" then
+    return text_response("annotate_change requires a path and a notes array.", false)
+  end
+  local cwd = type(arguments.cwd) == "string" and arguments.cwd ~= "" and arguments.cwd or config.cwd()
+  path = vim.fn.expand(path)
+  if not path:match("^/") and not path:match("^%a:[/]") then
+    path = vim.fs.joinpath(cwd, path)
+  end
+  local count = require("coact.review.notes").add(vim.fs.normalize(path), arguments.notes)
+  return text_response(("Stored %d review note(s) for %s; they appear in its next Neovim review."):format(count, path))
 end
 
 handlers.diagnostics = function(_, thread)

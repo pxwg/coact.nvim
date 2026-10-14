@@ -480,7 +480,10 @@ do
   )
   local pi_extension_source = pi_bridge._extension_source()
   assert(
-    pi_extension_source:match('name: "edit"') and pi_extension_source:match('name: "write"'),
+    pi_extension_source:match('name: "edit"')
+      and pi_extension_source:match('name: "write"')
+      and pi_extension_source:find("note: Type.Optional", 1, true)
+      and pi_extension_source:find("notes: reviewNotes(", 1, true),
     "Pi edit bridge extension should override edit and write tools"
   )
   assert(
@@ -3713,9 +3716,10 @@ local diff_ns = vim.api.nvim_get_namespaces()["coact.patch_session.diff"]
 local session_hunk = session.hunks[1]
 local session_block = session.blocks[1]
 assert(
-  #session_hunk.changed_blocks == 1
-    and #session_hunk.changed_blocks[1].old_lines == 1
-    and #session_hunk.changed_blocks[1].new_lines == 1,
+  #session.hunks == 1
+    and #session_hunk.old_lines == 1
+    and #session_hunk.new_lines == 1
+    and session_hunk.origin == "agent",
   "patch session should distinguish changed lines from hunk context"
 )
 do
@@ -3750,12 +3754,8 @@ do
     not review_keymaps["<leader>ca"] and not review_keymaps["\\ca"] and not review_keymaps["<leader>cr"],
     "patch session should not register legacy leader+c review keys"
   )
-  local session_add_mark = vim.api.nvim_buf_get_extmark_by_id(
-    session_hunk.bufnr,
-    diff_ns,
-    session_hunk.display_extmark_ids[1],
-    { details = true }
-  )
+  local session_add_mark =
+    vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.display_mark_id, { details = true })
   assert(
     session_add_mark[1] == 1 and session_add_mark[3].end_row == 2,
     "patch session should highlight only the changed replacement line"
@@ -3774,7 +3774,7 @@ do
   end
   assert(has_after_char_mark, "patch session should add character-level highlights to replacement text")
   local session_old_mark =
-    vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_extmark_ids[1], { details = true })
+    vim.api.nvim_buf_get_extmark_by_id(session_hunk.bufnr, diff_ns, session_hunk.old_mark_id, { details = true })
   local session_old_virtual = vim.inspect(session_old_mark[3].virt_lines)
   assert(
     session_old_virtual:match("CoactPatchReviewBefore")
@@ -3949,18 +3949,14 @@ local delete_only_hunk = delete_only_session.hunks[1]
 local delete_only_mark = vim.api.nvim_buf_get_extmark_by_id(
   delete_only_hunk.bufnr,
   diff_ns,
-  delete_only_hunk.display_extmark_ids[1],
+  delete_only_hunk.display_mark_id,
   { details = true }
 )
-local delete_only_old_mark = vim.api.nvim_buf_get_extmark_by_id(
-  delete_only_hunk.bufnr,
-  diff_ns,
-  delete_only_hunk.old_extmark_ids[1],
-  { details = true }
-)
+local delete_only_old_mark =
+  vim.api.nvim_buf_get_extmark_by_id(delete_only_hunk.bufnr, diff_ns, delete_only_hunk.old_mark_id, { details = true })
 local delete_only_virtual = vim.inspect(delete_only_old_mark[3].virt_lines)
 assert(
-  #delete_only_hunk.display_extmark_ids == 1
+  #delete_only_session.hunks == 1
     and delete_only_mark[1] == 1
     and delete_only_mark[3].virt_text[1][1]:match("%[%-%sdeleted 1 line%]")
     and delete_only_virtual:match("remove this")
@@ -3989,12 +3985,8 @@ do
     changes = dynamic_tools._changes_from_unified_patch(long_diff_patch),
   })
   local long_diff_hunk = long_diff_session.hunks[1]
-  local long_diff_old_mark = vim.api.nvim_buf_get_extmark_by_id(
-    long_diff_hunk.bufnr,
-    diff_ns,
-    long_diff_hunk.old_extmark_ids[1],
-    { details = true }
-  )
+  local long_diff_old_mark =
+    vim.api.nvim_buf_get_extmark_by_id(long_diff_hunk.bufnr, diff_ns, long_diff_hunk.old_mark_id, { details = true })
   assert(
     #(long_diff_old_mark[3].virt_lines or {}) >= 3,
     "patch session should split long before lines into visible virtual lines"
@@ -4058,19 +4050,23 @@ local multi_session = patch_session.open({
     multi_done = session_result.accepted_blocks == 1 and session_result.rejected_blocks == 1
   end,
 })
-local multi_hunk = multi_session.hunks[1]
+local multi_blocks = multi_session.blocks
 assert(
-  #multi_session.hunks == 1
-    and #multi_session.blocks == 2
-    and #multi_hunk.changed_blocks == 2
-    and #multi_hunk.display_extmark_ids == 2
-    and #multi_hunk.old_extmark_ids == 2,
-  "patch session should keep one review hunk while rendering multiple changed blocks"
+  #multi_blocks == 2 and multi_blocks[1].old_mark_id and multi_blocks[2].old_mark_id,
+  "patch session should split one patch hunk into separately reviewable changes"
 )
-local first_multi_mark =
-  vim.api.nvim_buf_get_extmark_by_id(multi_hunk.bufnr, diff_ns, multi_hunk.display_extmark_ids[1], { details = true })
-local second_multi_mark =
-  vim.api.nvim_buf_get_extmark_by_id(multi_hunk.bufnr, diff_ns, multi_hunk.display_extmark_ids[2], { details = true })
+local first_multi_mark = vim.api.nvim_buf_get_extmark_by_id(
+  multi_blocks[1].bufnr,
+  diff_ns,
+  multi_blocks[1].display_mark_id,
+  { details = true }
+)
+local second_multi_mark = vim.api.nvim_buf_get_extmark_by_id(
+  multi_blocks[2].bufnr,
+  diff_ns,
+  multi_blocks[2].display_mark_id,
+  { details = true }
+)
 assert(
   first_multi_mark[1] == 1
     and first_multi_mark[3].end_row == 2
@@ -4078,12 +4074,12 @@ assert(
     and second_multi_mark[3].end_row == 4,
   "patch session should render each changed block without highlighting intervening context"
 )
-patch_session._reject_block(multi_session, multi_session.blocks[1], "keep old one")
+patch_session._reject_block(multi_session, multi_blocks[1], "keep old one")
 assert(
-  not multi_session.completed and multi_session.blocks[1].status == "rejected" and not multi_session.blocks[2].status,
+  not multi_session.completed and #multi_session.blocks == 1,
   "rejecting one patch block should leave other blocks in the same hunk pending"
 )
-patch_session._accept_block(multi_session, multi_session.blocks[2])
+patch_session._accept_block(multi_session, multi_blocks[2])
 vim.wait(1000, function()
   return multi_done
 end, 20)
@@ -4112,12 +4108,10 @@ assert(
     cwd = session_dir,
     changes = dynamic_tools._changes_from_unified_patch(shift_patch),
   })
-  assert(
-    #shift_session.hunks == 1 and #shift_session.blocks == 2,
-    "line-shifting patch review should still split changed blocks inside one hunk"
-  )
-  patch_session._reject_block(shift_session, shift_session.blocks[1], "keep removed line")
-  patch_session._accept_block(shift_session, shift_session.blocks[2])
+  local shift_blocks = shift_session.blocks
+  assert(#shift_blocks == 2, "line-shifting patch review should still split changed blocks inside one hunk")
+  patch_session._reject_block(shift_session, shift_blocks[1], "keep removed line")
+  patch_session._accept_block(shift_session, shift_blocks[2])
   local shift_lines = vim.fn.readfile(shift_file)
   assert(
     table.concat(shift_lines, "\n") == "top\nremove me\nmiddle\nnew tail\nbottom",
@@ -4268,6 +4262,7 @@ end)();
     oldContent = "red\ngreen\nblue\n",
     newContent = "red\nemerald\nblue\n",
     kind = "update",
+    notes = { { anchor = "emerald", note = "pi rationale" } },
   }, function(result)
     bridge_result = result
   end)
@@ -4277,6 +4272,7 @@ end)();
     return bridge_session and bridge_session.blocks[1]
   end, 20)
   assert(bridge_session and bridge_session.blocks[1], "Pi edit bridge should open an in-buffer patch session")
+  assert(bridge_session.blocks[1].notes[1] == "pi rationale", "Pi edit notes should reach their review hunk")
   patch_session._accept_block(bridge_session, bridge_session.blocks[1])
   vim.wait(1000, function()
     return bridge_result ~= nil

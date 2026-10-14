@@ -219,6 +219,7 @@ require("coact").setup({
       char_diff_max_lines = 120,
       char_diff_max_line_bytes = 1000,
       char_diff_max_total_bytes = 20000,
+      diff_algorithm = "minimal", -- vim.diff algorithm for pending changes
       keymaps = {
         accept = ".",
         reject = ",",
@@ -516,7 +517,9 @@ The review buffer indexes file changes and unified-diff hunk headers with extmar
 
 `edit.mode = "pair"` is the default. With the Codex provider, coact.nvim tells the app-server to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Approving the review writes approved changed blocks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
 
-The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` approves the current changed block and prompts for an approval comment, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` approves the rest with one approval-comment prompt, `gr` rejects the rest with a reason, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before approving; coact.nvim writes the final approved buffer state and returns the review summary to the provider as hook context, including approval comments, rejection reasons, and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
+The pair-mode native review works on the live file buffer. Pending changes are recomputed as the diff between the accepted base and the current buffer on every edit, so you can type anywhere — above, below, or inside a proposed change — without breaking the review. Visible in-buffer hints follow the change nearest the cursor: `.` approves that change and prompts for an approval comment, `,` rejects it with a reason (in visual mode both act on every change in the selection), `n` / `p` jump between pending changes, `ga` approves the rest with one approval-comment prompt, `gr` rejects the rest with a reason, `q` cancels, and `?` opens the key help. Changes that touch the agent's proposal stay reviewable even after you edit them (marked `agent + edited`); changes entirely outside it are marked `user edit` and accepted when the review finishes. If only your edits remain, `.` finishes. Approvals and rejections are native undo steps: `u` reopens a decision and `<C-r>` restores it, but undo cannot cross the previewed proposal. `:write` is blocked until the review finishes. The display wraps long before-lines into readable virtual lines and highlights changed characters in the change nearest the cursor when it fits the `edit.review.char_diff_*` budget. coact.nvim writes the final reviewed buffer state and returns the review summary to the provider as hook context, including approval comments, rejection reasons, auto-accepted user edits, and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
+
+Models can optionally explain individual changes. Claude's `mcp__coact__edit` accepts a `note` on each edit and `openDiff` accepts `hunk_notes`; Codex can call the `nvim.annotate_change` dynamic tool before `apply_patch`. Each note is anchored by an exact snippet of the proposed (or removed) text, follows its change through your edits, and is shown as a `✎` line above the change, in full in the hint of the change nearest the cursor.
 
 For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result. Targets accepted by `adapters.pi.edit_bridge.direct_write` run that patch session non-interactively and return the same full-approval result without disclosing the configured directories to Pi.
 
@@ -524,13 +527,13 @@ For the Pi provider, pair mode uses a process-local extension override instead o
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 
-- `.`: approve current changed block and prompt for a comment
-- `,`: reject current changed block and prompt for a reason
-- `ga`: approve all remaining changed blocks and prompt for one comment
-- `gr`: reject all remaining changed blocks and prompt for a reason
+- `.`: approve the change nearest the cursor and prompt for a comment
+- `,`: reject the change nearest the cursor and prompt for a reason
+- `ga`: approve all remaining changes and prompt for one comment
+- `gr`: reject all remaining changes and prompt for a reason
 - `gA`: use Neovim auto-apply for the session
 - `q`: cancel the review
-- `n` / `p`: jump between pending changed blocks
+- `n` / `p`: jump between pending changes
 - `?`: show review keys
 
 Approval comments, rejected changed-block reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to the provider as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
@@ -560,7 +563,8 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/coact/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
 - `lua/coact/ui/detail.lua`: scratch detail buffers for the block under cursor.
 - `lua/coact/patch_review.lua`: app-server patch proposal review UI.
-- `lua/coact/patch_session.lua`: in-buffer hunk review for `nvim.apply_patch`.
+- `lua/coact/patch_session.lua`: in-buffer hunk review session for `nvim.apply_patch` and the pair-mode bridges.
+- `lua/coact/review/model.lua`: pure review model (diffs, decisions, provenance, nearest change, note anchors).
 - `lua/coact/slash.lua`: CLI-style slash command catalog, declared return forms, local dispatch, result presenter, and settings pickers.
 - `lua/coact/completion/blink.lua`: `blink.cmp` source.
 - `lua/coact/dynamic_tools.lua`: Neovim-backed dynamic tools.

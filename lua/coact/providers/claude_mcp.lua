@@ -26,7 +26,7 @@ local tools = {
   },
   {
     name = "edit",
-    description = "Make precise text replacements, then review and write through Neovim. Each oldText must match exactly once in the ORIGINAL file; edits must not overlap. Send only changed snippets, not the whole file. Absolute and workspace-relative paths are supported.",
+    description = "Make precise text replacements, then review and write through Neovim. Each oldText must match exactly once in the ORIGINAL file; edits must not overlap. Send only changed snippets, not the whole file. Absolute and workspace-relative paths are supported. Optionally add a short note per edit explaining why; Neovim shows it beside that hunk during review.",
     inputSchema = {
       type = "object",
       properties = {
@@ -36,7 +36,11 @@ local tools = {
           minItems = 1,
           items = {
             type = "object",
-            properties = { oldText = { type = "string", minLength = 1 }, newText = { type = "string" } },
+            properties = {
+              oldText = { type = "string", minLength = 1 },
+              newText = { type = "string" },
+              note = { type = "string", description = "Optional one-line rationale shown beside this hunk." },
+            },
             required = { "oldText", "newText" },
             additionalProperties = false,
           },
@@ -56,6 +60,16 @@ local tools = {
         new_file_path = { type = "string" },
         new_file_contents = { type = "string" },
         tab_name = { type = "string" },
+        hunk_notes = {
+          type = "array",
+          description = "Optional rationales shown beside matching hunks during review. anchor is an exact snippet of the new (or removed) text.",
+          items = {
+            type = "object",
+            properties = { anchor = { type = "string" }, note = { type = "string" } },
+            required = { "anchor", "note" },
+            additionalProperties = false,
+          },
+        },
       },
       required = { "new_file_path", "new_file_contents" },
     },
@@ -68,6 +82,16 @@ local function source(client)
   local cursor = buf and vim.api.nvim_buf_is_valid(buf) and require("coact.context").cursor_for_buffer(buf, thread)
     or nil
   return { bufnr = buf, cursor = cursor }
+end
+
+local function review_notes(args)
+  local notes = {}
+  for _, item in ipairs(type(args._notes) == "table" and args._notes or object(args.hunk_notes)) do
+    if type(item) == "table" and type(item.note) == "string" and vim.trim(item.note) ~= "" then
+      table.insert(notes, { anchor = text(item.anchor), note = item.note })
+    end
+  end
+  return notes
 end
 
 local function open_diff(client, args, done)
@@ -174,7 +198,16 @@ local function open_diff(client, args, done)
   local session, err = require("coact.patch_session").open({
     thread_id = client.id,
     cwd = root,
-    changes = { { path = path, kind = stat and "update" or "add", diff = patch } },
+    changes = {
+      {
+        path = path,
+        kind = stat and "update" or "add",
+        diff = patch,
+        new_content = args.new_file_contents,
+        old_content = old,
+        notes = review_notes(args),
+      },
+    },
     interactive = true,
     on_complete = function(summary, success, result)
       client.review = nil
@@ -220,7 +253,7 @@ local function edit(client, args, done)
   end
   local old = file:read("*a")
   file:close()
-  local ranges = {}
+  local ranges, notes = {}, {}
   for _, replacement in ipairs(args.edits) do
     if type(replacement) ~= "table" or text(replacement.oldText) == "" or type(replacement.newText) ~= "string" then
       done(content("Every edit requires non-empty oldText and string newText", true))
@@ -232,6 +265,10 @@ local function edit(client, args, done)
       return
     end
     table.insert(ranges, { first = first, last = last, text = replacement.newText })
+    if type(replacement.note) == "string" and vim.trim(replacement.note) ~= "" then
+      local anchor = replacement.newText ~= "" and replacement.newText or replacement.oldText
+      table.insert(notes, { anchor = anchor, note = replacement.note })
+    end
   end
   table.sort(ranges, function(a, b)
     return a.first < b.first
@@ -247,7 +284,11 @@ local function edit(client, args, done)
     cursor = range.last + 1
   end
   table.insert(parts, old:sub(cursor))
-  open_diff(client, { new_file_path = path, new_file_contents = table.concat(parts), _expected_old = old }, done)
+  open_diff(
+    client,
+    { new_file_path = path, new_file_contents = table.concat(parts), _expected_old = old, _notes = notes },
+    done
+  )
 end
 
 function M.handle(client, message, done)
@@ -274,6 +315,7 @@ function M.handle(client, message, done)
     if params.name == "openDiff" then
       local args = vim.deepcopy(object(params.arguments))
       args._expected_old = nil
+      args._notes = nil
       open_diff(client, args, reply)
     elseif params.name == "edit" then
       edit(client, object(params.arguments), reply)
