@@ -1,4 +1,4 @@
--- Run only in the remote validation workspace. COACT_CLAUDE_LIVE selects a
+-- COACT_CLAUDE_LIVE selects a
 -- private launcher; its credentials never enter this file or test output.
 local live = vim.env.COACT_CLAUDE_LIVE
 local command = live and { live } or { "node", vim.fn.getcwd() .. "/scripts/claude-rpc-fixture.mjs" }

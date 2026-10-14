@@ -2,13 +2,18 @@
 
 ## Verification
 
-- Run all validation on the remote test host, including headless Neovim, formatting/syntax checks, DeepSeek integration, and native Claude Code integration. Do not run those tests on the development machine.
-- `scripts/test-claude-remote.sh` syncs source and runs the Claude checks remotely. Keep API credentials in private remote environment files or launchers, never in the repository. Claude tests use API authentication through Neovim, not Claude account login.
-
+- `scripts/check.sh` runs the full local validation suite; set `COACT_CLAUDE_LIVE` to a launcher path to add the live Claude tests.
+- Keep API credentials in private environment files or launchers, never in the repository. Claude tests use API authentication through Neovim, not Claude account login.
 - After behavior changes to coact.nvim Lua, docs, app-server/RPC handling, parser/completion, slash commands, patch review, dynamic tools, or TUI rendering, run the headless smoke script:
 
 ```sh
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
+```
+
+- After changes to patch review (`lua/coact/patch_session.lua`, `lua/coact/review/`, or review note plumbing), also run the review core test:
+
+```sh
+nvim --headless -u NONE -c 'set rtp+=.' -l scripts/review-test.lua
 ```
 
 - Pair the smoke script with focused checks for the files changed, such as `stylua` for touched Lua files and `git diff --check` for whitespace issues.

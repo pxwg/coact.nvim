@@ -1,4 +1,4 @@
--- Run phases 1/2/3 in separate remote Neovim processes (see remote runner).
+-- Run phases 1/2/3 in separate Neovim processes (see README).
 local root = assert(vim.env.COACT_HISTORY_ROOT, "COACT_HISTORY_ROOT required")
 local phase = tonumber(vim.env.COACT_HISTORY_PHASE or "1")
 local live = vim.env.COACT_CLAUDE_LIVE

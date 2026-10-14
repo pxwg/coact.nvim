@@ -1,4 +1,4 @@
--- Run remotely: deterministic Pi/Claude JSONL peers + native Codex lifecycle.
+-- Deterministic Pi/Claude JSONL peers + native Codex lifecycle.
 -- Codex is only started/read here; no model generation is requested.
 local coact = require("coact")
 local config = require("coact.config")

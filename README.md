@@ -348,21 +348,26 @@ Export the token in a separate shell assignment before referencing it; do not
 rely on another assignment inside the same `env` command. With that setup,
 Claude account login is unnecessary. Never put tokens in this repository.
 
-All Claude validation should run remotely, including formatter and smoke checks:
+`bash scripts/check.sh` runs the formatting, syntax, and headless Neovim checks
+in one pass. Fixture-only Claude checks can also run on their own:
 
 ```sh
-bash scripts/test-claude-remote.sh HOST REMOTE_DIR \
-  REMOTE_CLAUDE_LAUNCHER
+nvim --headless -u NONE -c 'set rtp+=.' -l scripts/claude-provider-test.lua
+root="$(mktemp -d)"
+for phase in 1 2 3; do
+  COACT_HISTORY_ROOT="$root/fixture" COACT_HISTORY_PHASE="$phase" \
+    nvim --headless --listen "$root/f$phase.sock" -u NONE -c 'set rtp+=.' -l scripts/claude-history-test.lua
+done
 ```
 
-The runner copies source, then runs checks on the SSH host. Omit the launcher
-argument for fixture-only tests. The live test uses headless Neovim to verify
+Set `COACT_CLAUDE_LIVE=/path/to/launcher` on the same commands to run the live
+tests against a real Claude CLI. The live test uses headless Neovim to verify
 DeepSeek responses, source-buffer MCP calls, Bash, model switching, skill invocation,
 compaction, cross-workspace incremental review, and interrupted review without login.
 Three separate Neovim processes also verify FIFO follow-ups/cancellation, native
 disk restore, shared tree keymaps, conversation-only rewind, pending-fork restart,
-and branch context selection (including across compaction). Supply the launcher and credentials privately on the host;
-the runner never transfers or prints credentials.
+and branch context selection (including across compaction). Supply the launcher and credentials privately;
+the tests never print credentials.
 
 ### Pi
 

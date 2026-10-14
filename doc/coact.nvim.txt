@@ -128,7 +128,7 @@ ancestor when available and otherwise rejects that checkpoint explicitly.
 
 Claude accepts text context only; images, immediate steering, a reasoning-level
 picker, and Codex-only slash commands are unsupported. See README for the
-remote-only validation runner, including three-process history/queue/tree tests.
+Claude validation commands, including three-process history/queue/tree tests.
 
 Minimal setup:
 >
