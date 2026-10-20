@@ -23,6 +23,8 @@ nvim --headless -u NONE -c 'set rtp+=.' \
   -c "lua local f = assert(io.open([[$pi_extension]], 'w')); f:write(require('coact.providers.pi_edit_bridge')._extension_source()); f:close()" \
   -c qa
 run node --check "$pi_extension"
+run node --check scripts/pi-side-rpc-fixture.mjs
+run node scripts/pi-side-extension-test.mjs
 
 run stylua --check --indent-type Spaces --indent-width 2 \
   lua/coact/providers/claude*.lua lua/coact/rpc.lua lua/coact/config.lua lua/coact/patch_session.lua \
@@ -31,13 +33,16 @@ run stylua --check --indent-type Spaces --indent-width 2 \
   lua/coact/runtime.lua lua/coact/pickers.lua lua/coact/integrations.lua lua/coact/health.lua \
   scripts/review-test.lua scripts/smoke.lua scripts/adapter-picker-test.lua scripts/claude-smoke.lua \
   scripts/claude-provider-test.lua scripts/claude-history-smoke.lua scripts/claude-history-test.lua \
-  scripts/integrations-test.lua
+  scripts/integrations-test.lua lua/coact/side.lua lua/coact/ui/side.lua lua/coact/ui/selection_hints.lua \
+  lua/coact/annotations.lua lua/coact/source_map.lua \
+  scripts/pi-side-test.lua
 run git diff --check
 
 nvim_test scripts/review-test.lua
 nvim_test scripts/smoke.lua
 nvim_test scripts/adapter-picker-test.lua
 nvim_test scripts/integrations-test.lua
+nvim_test scripts/pi-side-test.lua
 
 # Fixture runs ignore COACT_CLAUDE_LIVE; live runs follow when it is set.
 live="${COACT_CLAUDE_LIVE:-}"
