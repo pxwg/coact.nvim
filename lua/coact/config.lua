@@ -117,6 +117,9 @@ local defaults = {
       renderers = {},
     },
   },
+  selection = {
+    hints = true, -- list keys mapped to <Plug>(CoactSideAsk)/<Plug>(CoactAddSelection) beside Visual selections
+  },
   completion = {
     enabled = true,
     ttl_ms = 30000,

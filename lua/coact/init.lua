@@ -231,6 +231,7 @@ function M.setup(opts)
   require("coact.native_apply_patch_hook").setup()
   require("coact.providers.pi_edit_bridge").setup()
   require("coact.behavior").setup()
+  require("coact.ui.selection_hints").setup()
   setup_lifecycle()
   did_setup = true
 end
