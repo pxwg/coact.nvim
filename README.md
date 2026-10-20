@@ -462,6 +462,9 @@ The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `c
 :Coact attach [all]
 :Coact add-buffer
 :Coact add-selection
+:'<,'>Coact side
+:Coact side-annotate
+:Coact side-close
 :Coact[!] extension-install [integration]
 :Coact[!] extension-uninstall [integration]
 ```
@@ -479,6 +482,10 @@ One user run keeps a single Coact response frame even when a provider splits it 
 `:Coact attach` reruns the configured buffer attach hook for the current thread buffer. `:Coact attach all` reruns it for every loaded transcript or composer buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("coact").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after coact.nvim creates a chat buffer.
 
 `:Coact add-buffer` appends the current source buffer path to the active chat prompt using compact direct `@path` mention syntax. `:Coact add-selection` appends `@selection` when the source buffer has a remembered Visual selection.
+
+coact.nvim binds no global keys: map the Visual-mode targets `<Plug>(CoactSideAsk)` and `<Plug>(CoactAddSelection)` yourself, e.g. `vim.keymap.set("x", "<leader>as", "<Plug>(CoactSideAsk)")`. In Visual mode an avante.nvim-style hint beside the cursor line lists the keys mapped to them (`selection.hints = false` disables it).
+
+**Side discussions (Pi).** Select text in a Pi chat transcript or source buffer and use `<Plug>(CoactSideAsk)` (or `:'<,'>Coact side`). Chat selections must lie inside one assistant reply and are recorded as UTF-16 offsets into that Pi text block, which Pi verifies against the stored message. The side discussion is a branch in the same Pi session tree: it opens only after the main thread is idle, moves Pi's leaf to the end of the selected turn (the current leaf for source selections), and pins the selection above a floating side transcript and composer while the main chat stays visible. The main thread is locked meanwhile. `A` or `/annotate` has the model call `submit_annotation` (offered only then) and writes the question, answer and summary back to the main leaf as a Pi branch summary, shown as `Side note [n]` with an `[n]` marker at the anchored text; `Q` or `/close` returns without a note. The side branch remains in the session tree either way. `q` hides the side windows, `gQ`/`/quote` shows the full selection, and `:Coact side` reopens hidden side windows. Requires the coact.nvim Pi extension (pair edit mode); options live in `ui.side`.
 
 `:Coact resume <thread-id> [adapter]` resumes under the named adapter instead of the current one. Pi adapters also accept a session file path as the thread id.
 

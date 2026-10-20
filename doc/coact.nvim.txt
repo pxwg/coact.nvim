@@ -406,6 +406,9 @@ COMMANDS                                               *coact.nvim-commands*
   :Coact attach [all]
   :Coact add-buffer
   :Coact add-selection
+  :'<,'>Coact side
+  :Coact side-annotate
+  :Coact side-close
   :Coact[!] extension-install [integration]
   :Coact[!] extension-uninstall [integration]
 <
@@ -490,6 +493,63 @@ numbers, loaded thread ids for `open`/`resume`, and adapter names for
 `:Coact add-buffer` appends the current source buffer path to the active chat
 prompt using compact direct `@path` mention syntax. `:Coact add-selection`
 appends `@selection` when the source buffer has a remembered Visual selection.
+From a Visual range it captures that selection first and makes its buffer the
+thread's source buffer.
+
+SELECTION HINTS                                     *coact.nvim-selection-hints*
+
+coact.nvim binds no global keys. Selection actions are Visual-mode <Plug>
+targets that you map yourself:
+>
+  vim.keymap.set("x", "<leader>as", "<Plug>(CoactSideAsk)")
+  vim.keymap.set("x", "<leader>aa", "<Plug>(CoactAddSelection)")
+<
+In Visual mode a hint beside the cursor line lists the keys mapped to these
+targets, in the style of avante.nvim. Chat history buffers only offer side
+ask; @selection applies to source buffers. Unmapped targets are not shown.
+Disable hints with `selection = { hints = false }`. Highlights:
+`CoactSelectionHint` and `CoactSelectionHintKey`.
+
+==============================================================================
+SIDE DISCUSSIONS                                      *coact.nvim-side*
+
+Pi only; needs the coact.nvim Pi extension (pair edit mode). Select text in
+a Pi chat transcript or a source buffer and use <Plug>(CoactSideAsk) (or
+`:'<,'>Coact side`) to ask a side question without disturbing the main task.
+
+Chat selections must lie inside the text of one assistant reply. They are
+recorded as UTF-16 offsets into that Pi text block, and Pi rejects the
+discussion when the stored text differs from the selection.
+
+The side discussion is a branch in the same Pi session tree. It opens only
+after the main thread is idle: running turns, queued follow-ups, reviews and
+pending requests finish first. Pi then moves the leaf to the end of the
+selected turn (the current leaf for source-buffer selections), so the side
+sees the conversation up to that point. The main thread is locked while the
+side is open.
+
+Ending a discussion:
+  A, /annotate  the model calls submit_annotation (offered only now) with
+                your question, a brief answer, a summary and the full
+                explanation; Pi returns to the main leaf and records it there
+                as a branch summary. The main chat shows it as "Side note [n]"
+                and marks the anchored text with [n].
+  Q, /close     return to the main leaf without a note.
+Either way the side branch stays in the session tree, visible with `gt`.
+
+Floats stack the pinned selection, the side transcript, and an "Ask" composer
+over the main chat. The first prompt carries the selected passage as hidden
+reference context.
+
+Side windows:
+  q             hide the side windows; the discussion stays open
+  gq            focus the pinned selection
+  gQ, /quote    open the full selection
+  :Coact side   reopen hidden side windows
+
+Options (`ui.side`): `selection_height` (4), `border` ("rounded"),
+`width`/`height` (default to `ui.width`/`ui.height`), and
+`wait_timeout_ms` (0 waits indefinitely for the main thread).
 
 ==============================================================================
 HEALTH                                                   *coact.nvim-health*
@@ -891,6 +951,18 @@ add_current_buffer()~
 add_selection()~
     Append `@selection` to the active chat prompt when the source buffer has a
     remembered Visual selection.
+
+                                                        *coact.side_ask()*
+side_ask()~
+    Open a Pi side discussion about the current Visual selection.
+
+                                                        *coact.side_annotate()*
+side_annotate()~
+    Record the active side discussion as a note on the main branch.
+
+                                                        *coact.side_close()*
+side_close()~
+    Close the active side discussion and return to the main branch.
 
                                                         *coact.on()*
 on({event}, {callback})~
