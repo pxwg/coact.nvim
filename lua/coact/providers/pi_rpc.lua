@@ -9,6 +9,8 @@ local M = runtime_scope.state({
   starting = {},
   utility = nil,
   prewarm_generation = 0,
+  -- Side discussions borrow their main thread's execution unit: side id -> main id.
+  side_routes = {},
 })
 local next_client_id = 1
 
@@ -181,7 +183,7 @@ local function dispatch_decoded(client, entry)
   if not client.thread_id then
     return
   end
-  entry = force_thread_id(entry, client.thread_id)
+  entry = force_thread_id(entry, client.route_thread_id or client.thread_id)
   if type(entry) ~= "table" then
     return
   end
@@ -859,9 +861,73 @@ function M.start(callback)
   return utility
 end
 
+-- Session-level operations would act on the main thread's session.
+local side_blocked_methods = {
+  ["thread/start"] = true,
+  ["thread/read"] = true,
+  ["thread/resume"] = true,
+  ["thread/tree"] = true,
+  ["thread/treeSnapshot"] = true,
+  ["thread/compact/start"] = true,
+  ["thread/settings/update"] = true,
+}
+
+local function routed_client(side_id)
+  local main_id = side_id and M.side_routes[side_id]
+  local client = main_id and M.by_thread[main_id] or nil
+  if client and client.initialized and client:is_running() and client.route_thread_id == side_id then
+    return client, main_id
+  end
+  return nil, main_id
+end
+
+function M.route_side(side_id, main_id)
+  local client = M.by_thread[main_id]
+  if not (client and client.initialized and client:is_running()) then
+    return nil, "the main Pi execution unit is not running"
+  end
+  if client.route_thread_id and client.route_thread_id ~= side_id then
+    return nil, "another side discussion is already open on this thread"
+  end
+  client.route_thread_id = side_id
+  M.side_routes[side_id] = main_id
+  return client
+end
+
+function M.unroute_side(side_id)
+  local main_id = M.side_routes[side_id]
+  M.side_routes[side_id] = nil
+  local client = main_id and M.by_thread[main_id] or nil
+  if client and client.route_thread_id == side_id then
+    client.route_thread_id = nil
+  end
+end
+
+function M.side_route(side_id)
+  return M.side_routes[side_id]
+end
+
 function M.request(method, params, callback)
   callback = callback or function() end
   params = params or {}
+
+  local requested = target_thread_id(params)
+  if requested and M.side_routes[requested] then
+    if side_blocked_methods[method] then
+      callback({ message = method .. " is not available in a side discussion" }, nil)
+      return nil
+    end
+    local client, main_id = routed_client(requested)
+    if not client then
+      callback({ message = "the side discussion's main Pi execution unit is not running" }, nil)
+      return nil
+    end
+    local routed = vim.deepcopy(params)
+    routed.threadId = main_id
+    routed.thread_id = nil
+    routed.conversationId = nil
+    return request_on_client(client, method, routed, callback)
+  end
 
   if method == "thread/start" then
     local requested_session_id = util.value(params.sessionId or params.session_id)
@@ -1030,6 +1096,9 @@ function M.thread_id_for_client(client_id)
 end
 
 function M.is_running(thread_id)
+  if thread_id and M.side_routes[thread_id] then
+    return routed_client(thread_id) ~= nil
+  end
   if thread_id then
     local client = M.by_thread[thread_id]
     return client ~= nil and client:is_running()

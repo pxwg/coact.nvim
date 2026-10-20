@@ -1351,6 +1351,44 @@ local function tree_command_message(params)
   return "/coact-nvim-tree " .. (ok and encoded or tostring(initial))
 end
 
+local function side_command_message(params)
+  local payload = {
+    action = params.action,
+    entryId = util.value(params.entryId or params.entry_id),
+    originLeafId = util.value(params.originLeafId or params.origin_leaf_id),
+    anchor = type(params.anchor) == "table" and params.anchor or nil,
+    source = type(params.source) == "table" and params.source or nil,
+    quote = util.value(params.quote),
+    annotate = params.annotate == true or nil,
+  }
+  return "/coact-nvim-side " .. vim.json.encode(payload)
+end
+
+local function normalize_side_action(payload)
+  if type(payload) ~= "table" or payload.__coactNvimPiSide ~= true then
+    return nil
+  end
+  local action = util.value(payload.action)
+  if action ~= "opened" and action ~= "closed" and action ~= "armed" and action ~= "disarmed" and action ~= "error" then
+    return nil
+  end
+  local function id(value)
+    value = util.value(value)
+    return value ~= nil and tostring(value) or nil
+  end
+  return {
+    action = action,
+    message = util.value(payload.message),
+    originLeafId = id(payload.originLeafId),
+    branchPointId = id(payload.branchPointId),
+    leafId = id(payload.leafId),
+    sideLeafId = id(payload.sideLeafId),
+    prefix = util.value(payload.prefix),
+    suffix = util.value(payload.suffix),
+    annotationIndex = tonumber(util.value(payload.annotationIndex)),
+  }
+end
+
 local function sync_thread(params)
   local thread_id = util.value(params and (params.threadId or params.thread_id or params.conversationId))
   if not thread_id then
@@ -1530,6 +1568,47 @@ function M.custom_request(rpc, method, params, callback)
         return
       end
       read_current_thread(rpc, params, callback)
+    end)
+    return true
+  end
+
+  local side_actions = {
+    ["thread/side/open"] = "open",
+    ["thread/side/arm"] = "arm",
+    ["thread/side/disarm"] = "disarm",
+    ["thread/side/close"] = "close",
+  }
+  if side_actions[method] then
+    local ok, bridge = pcall(require, "coact.providers.pi_edit_bridge")
+    if not (ok and bridge.enabled and bridge.enabled()) then
+      -- Without the extension Pi would send the command text to the model.
+      callback({ message = "Side discussions need the coact.nvim Pi extension (pair edit mode)" }, nil)
+      return true
+    end
+    runtime.last_side_action = nil
+    local message = side_command_message({
+      action = side_actions[method],
+      entryId = params.entryId,
+      originLeafId = params.originLeafId,
+      anchor = params.anchor,
+      source = params.source,
+      quote = params.quote,
+      annotate = params.annotate,
+    })
+    rpc._request_message("prompt", { message = message }, function(err, result)
+      local action = runtime.last_side_action
+      runtime.last_side_action = nil
+      if err then
+        callback(err, nil)
+      elseif result and result.cancelled then
+        callback({ message = "Pi side command was cancelled" }, nil)
+      elseif not action then
+        callback({ message = "Pi side command returned no result" }, nil)
+      elseif action.action == "error" then
+        callback({ message = action.message or "Pi side command failed" }, nil)
+      else
+        callback(nil, action)
+      end
     end)
     return true
   end
@@ -2640,6 +2719,12 @@ function M.handle_raw_message(message, rpc)
       handle_branch_snapshot_request(message, rpc)
       return true
     end
+    local side_action = normalize_side_action(type(message.options) == "table" and message.options[1] or nil)
+    if side_action then
+      runtime.last_side_action = side_action
+      extension_response(rpc, message, { value = "ok" })
+      return true
+    end
     local ok, pi_tree = pcall(require, "coact.providers.pi_tree")
     if ok and pi_tree.is_request(message) then
       schedule_with_runtime(function()
@@ -2807,6 +2892,8 @@ M._normalize_model = normalize_model
 M._message_items = message_items
 M._tool_update_delta = tool_update_delta
 M._normalize_branch_snapshot = normalize_branch_snapshot
+M._normalize_side_action = normalize_side_action
+M._side_command_message = side_command_message
 M._refresh_current_thread = refresh_current_thread
 
 return M

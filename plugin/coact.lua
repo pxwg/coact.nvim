@@ -8,6 +8,7 @@ vim.api.nvim_create_user_command("Coact", function(opts)
 end, {
   nargs = "*",
   bang = true,
+  range = true,
   complete = function(arglead, line)
     return require("coact").complete_command(arglead, line)
   end,

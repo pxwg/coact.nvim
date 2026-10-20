@@ -461,7 +461,8 @@ local function placeholder_meta(block)
     if block.type == "CompactionSummaryBlock" and tonumber(block.tokens_before) then
       table.insert(meta, tostring(math.floor(tonumber(block.tokens_before) + 0.5)) .. " tokens before")
     end
-    local preview = summary_preview(events.block_text(block))
+    local note = block.type == "BranchSummaryBlock" and require("coact.annotations").parse(events.block_text(block))
+    local preview = summary_preview(note and note.body or events.block_text(block))
     if preview ~= "" then
       table.insert(meta, preview)
     end
@@ -511,7 +512,8 @@ local function placeholder_title(block)
     return "Thinking finished"
   end
   if block.type == "BranchSummaryBlock" then
-    return "Branch summary"
+    local note = require("coact.annotations").parse(events.block_text(block))
+    return note and ("Side note [" .. tostring(note.index or "?") .. "]") or "Branch summary"
   end
   if block.type == "CompactionSummaryBlock" then
     return "Context compacted"
@@ -539,7 +541,8 @@ local function placeholder_body_lines(block)
     return activity_summary.lines(block.children)
   end
   if block.type == "BranchSummaryBlock" then
-    return util.split_lines(events.block_text(block))
+    local note = require("coact.annotations").parse(events.block_text(block))
+    return util.split_lines(note and note.body or events.block_text(block))
   end
   if block.type == "CompactionSummaryBlock" then
     local lines = {}
@@ -1963,7 +1966,7 @@ render_block = function(thread, lines, block, opts)
     end
     text_start, text_finish, auto_closed_line = add_guarded_text(thread, lines, block.text)
   elseif summary_types[block.type] then
-    local title = block.type == "CompactionSummaryBlock" and "Context compacted" or "Branch summary"
+    local title = placeholder_title(block)
     local line = add(lines, "### " .. title)
     mark_header(thread, line, "section", title, {}, block)
     add(lines, "")
@@ -2115,6 +2118,7 @@ function M.render(thread)
 
   apply_window_views(thread, bufnr, snapshots)
   apply_manual_folds(thread, bufnr)
+  require("coact.annotations").apply(thread, bufnr)
   prune_view_states(thread, bufnr)
   local buffers = require("coact.buffers")
   buffers.refresh_composer(thread)

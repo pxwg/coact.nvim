@@ -110,7 +110,7 @@ local function reference_context_body_start(lines, index)
 end
 
 local function strip_reference_context_prefix(text)
-  text = tostring(text or "")
+  text = require("coact.side").strip_context(tostring(text or ""))
   while starts_with(text, reference_context_marker) do
     local lines = vim.split(text, "\n", { plain = true })
     local index = reference_context_body_start(lines, 2)

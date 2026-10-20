@@ -411,6 +411,19 @@ end
 
 function M.submit_text(text, thread_id, opts)
   opts = opts or {}
+  local side = require("coact.side")
+  local target = state.get_thread(thread_id or state.active_thread_id)
+  if side.dispatch_slash(target, text) then
+    return
+  end
+  local lock = side.lock_message(target)
+  if lock then
+    util.notify(lock, vim.log.levels.WARN)
+    if type(opts.on_error) == "function" then
+      opts.on_error({ message = lock })
+    end
+    return
+  end
   if
     require("coact.slash").dispatch(text, thread_id, {
       ensure_server = ensure_server,
@@ -431,6 +444,8 @@ function M.submit_text(text, thread_id, opts)
   if #input == 0 then
     return util.notify("prompt is empty", vim.log.levels.WARN)
   end
+  local side_context = side.is_side(thread) and not thread.side.context_sent
+  input = side.decorate_input(thread, input)
   if thread_id then
     require("coact.behavior").anchor(thread_id, { reason = "submit" })
   end
@@ -469,6 +484,9 @@ function M.submit_text(text, thread_id, opts)
     rpc.request("turn/start", params, function(err, result)
       if err then
         local failed_thread = state.get_thread(thread_id)
+        if side_context and side.is_side(failed_thread) then
+          failed_thread.side.context_sent = false
+        end
         if failed_thread then
           failed_thread.last_error = tostring(err.message or err)
           if pending_request then
@@ -757,6 +775,56 @@ function M.add_current_buffer()
   append_prompt_context("@" .. context.display_path(path))
 end
 
+-- Ask a side question about the Visual selection (chat message or source text).
+function M.side_ask()
+  setup_once()
+  return require("coact.side").ask_visual()
+end
+
+function M.side_close()
+  setup_once()
+  return require("coact.side").close()
+end
+
+function M.side_annotate()
+  setup_once()
+  return require("coact.side").annotate()
+end
+
+function M.side_reveal()
+  setup_once()
+  local side = require("coact.side")
+  local active = state.get_thread(state.active_thread_id)
+  local target = side.is_side(active) and active or side.for_main(active and active.id)
+  if not target then
+    return util.notify("no open side discussion; select text and use :Coact side", vim.log.levels.WARN)
+  end
+  side.reveal(target)
+end
+
+-- Visual-mode variant of add_selection: capture the live selection first.
+function M.add_selection_visual()
+  setup_once()
+  local mode = vim.fn.mode()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local winid = vim.api.nvim_get_current_win()
+  if mode:match("^[vV\22]") then
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  end
+  if context.is_coact_buffer(bufnr) then
+    return util.notify("@selection attaches source-buffer text; use side ask for chat text", vim.log.levels.WARN)
+  end
+  if not context._capture_selection(bufnr, mode:sub(1, 1), winid) then
+    return util.notify("no Visual selection found", vim.log.levels.WARN)
+  end
+  local thread = active_or_current_thread()
+  if thread then
+    -- @selection resolves against the thread's source buffer.
+    context.capture_thread_buffer(thread, bufnr, winid)
+  end
+  append_prompt_context("@selection")
+end
+
 function M.add_selection()
   setup_once()
   local thread = active_or_current_thread()
@@ -831,8 +899,25 @@ local commands = {
   ["add-buffer"] = function()
     M.add_current_buffer()
   end,
-  ["add-selection"] = function()
+  ["add-selection"] = function(_, opts)
+    if opts and opts.range and opts.range > 0 then
+      vim.cmd("normal! gv")
+      return M.add_selection_visual()
+    end
     M.add_selection()
+  end,
+  side = function(_, opts)
+    if opts and opts.range and opts.range > 0 then
+      vim.cmd("normal! gv")
+      return M.side_ask()
+    end
+    M.side_reveal()
+  end,
+  ["side-close"] = function()
+    M.side_close()
+  end,
+  ["side-annotate"] = function()
+    M.side_annotate()
   end,
   ["extension-install"] = function(args, opts)
     require("coact.integrations").install(args, { force = opts.bang })

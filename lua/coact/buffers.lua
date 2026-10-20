@@ -1395,6 +1395,8 @@ function M.try_stream_delta(thread_id, item_id, delta)
   return render.try_stream_delta(thread, item_id, delta)
 end
 
+M.block_tree_entry_id = block_tree_entry_id
+
 function M.try_stream_placeholder_delta(thread_id, item_id)
   local thread = state.get_thread(thread_id)
   return render.try_stream_placeholder_delta(thread, item_id)

@@ -85,6 +85,13 @@ local defaults = {
     sidebar_width = 0.42,
     render_delay_ms = 35,
     auto_scroll = false,
+    side = {
+      selection_height = 4, -- pinned selection pane height
+      border = "rounded",
+      width = nil, -- defaults to ui.width
+      height = nil, -- defaults to ui.height
+      wait_timeout_ms = 0, -- 0 waits for the main thread indefinitely
+    },
     composer = {
       min_height = 2,
       max_height = 0.33,

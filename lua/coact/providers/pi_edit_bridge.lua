@@ -723,7 +723,266 @@ async function handleTreeCommand(args, ctx) {
   return treeAction("navigateTree", target.id);
 }
 
+function sideAction(action, extra = {}) {
+  return { __coactNvimPiSide: true, action, ...extra };
+}
+
+async function reportSide(ctx, payload) {
+  await ctx.ui.select("Coact Pi side", [payload]);
+  return payload;
+}
+
+function isPromptEntry(entry) {
+  return (entry?.type === "message" && entry.message?.role === "user") || entry?.type === "custom_message";
+}
+
+// Branch at the end of the selected turn: branching inside a turn would leave
+// tool calls without their results in the side context.
+function sideBranchPoint(branch, leafId, requestedId) {
+  if (requestedId === undefined || requestedId === null || requestedId === "") {
+    return { id: leafId };
+  }
+  const index = branch.findIndex((entry) => String(entry.id) === String(requestedId));
+  if (index < 0) {
+    return { error: "The selected message is not on the active branch." };
+  }
+  let end = index;
+  for (let i = index + 1; i < branch.length; i++) {
+    if (isPromptEntry(branch[i])) break;
+    end = i;
+  }
+  return { id: String(branch[end].id) };
+}
+
+const anchorContextChars = 32;
+
+// Anchors use JavaScript string offsets (UTF-16 code units) into one text block.
+function resolveSideAnchor(ctx, anchor) {
+  if (!anchor) return { anchor: undefined };
+  const entry = ctx.sessionManager.getEntry(String(anchor.entryId));
+  if (entry?.type !== "message" || entry.message?.role !== "assistant") {
+    return { error: "Side anchors must point into an assistant message." };
+  }
+  const block = Array.isArray(entry.message.content) ? entry.message.content[anchor.block] : undefined;
+  if (block?.type !== "text" || typeof block.text !== "string") {
+    return { error: "Side anchors must point into a text block." };
+  }
+  const { start, end } = anchor;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > block.text.length) {
+    return { error: "The side anchor range is outside the text block." };
+  }
+  const quote = block.text.slice(start, end);
+  if (quote !== anchor.quote) {
+    return { error: "The selected text does not match the stored message." };
+  }
+  return {
+    anchor: {
+      entryId: String(anchor.entryId),
+      block: anchor.block,
+      start,
+      end,
+      quote,
+      prefix: block.text.slice(Math.max(0, start - anchorContextChars), start),
+      suffix: block.text.slice(end, end + anchorContextChars),
+    },
+  };
+}
+
+// One side discussion per Pi process: the main thread is locked meanwhile.
+let sideState;
+const submitAnnotationTool = "submit_annotation";
+
+function annotationIndex(ctx, leafId) {
+  let count = 0;
+  for (let entry = ctx.sessionManager.getEntry(leafId); entry; entry = entry.parentId ? ctx.sessionManager.getEntry(entry.parentId) : undefined) {
+    if (entry.type === "branch_summary" && entry.details?.coactAnnotation) count++;
+  }
+  return count + 1;
+}
+
+function indent(text) {
+  return String(text || "").split("\n").map((line) => "    " + line);
+}
+
+// Markdown is authoritative; details only mirror it for tooling.
+function annotationText(note) {
+  const marker = "[^coact-" + note.index + "]";
+  const quote = String(note.anchor?.quote || note.source?.quote || "").split("\n").map((line) => "> " + line);
+  quote[quote.length - 1] += marker;
+  return [
+    "<!-- coact-anchor " + JSON.stringify({ index: note.index, ...(note.anchor ? {
+      entryId: note.anchor.entryId, block: note.anchor.block, start: note.anchor.start, end: note.anchor.end,
+    } : { file: note.source?.file, startLine: note.source?.startLine, endLine: note.source?.endLine }) }) + " -->",
+    ...quote,
+    "",
+    marker + ": " + String(note.summary || "").split("\n").join("\n    "),
+    "",
+    "    ## Question",
+    ...indent(note.question),
+    "",
+    "    ## Brief answer",
+    ...indent(note.answerBrief),
+    "",
+    "    ## Detailed answer",
+    ...indent(note.answerDetail),
+  ].join("\n");
+}
+
+function restoreSideTools(pi) {
+  if (sideState?.toolsBefore) {
+    pi.setActiveTools(sideState.toolsBefore);
+    sideState.toolsBefore = undefined;
+  }
+  if (sideState) sideState.armed = false;
+}
+
+async function handleSideCommand(args, ctx, pi) {
+  await ctx.waitForIdle();
+  const parsed = parseTreeArgs(args);
+  const action = parsed.action || "open";
+  if (action === "open") {
+    const branch = ctx.sessionManager.getBranch() || [];
+    const originLeafId = ctx.sessionManager.getLeafId();
+    const leaf = branch[branch.length - 1];
+    if (!originLeafId || !leaf) {
+      return reportSide(ctx, sideAction("error", { message: "The session has no messages to discuss yet." }));
+    }
+    if (isPromptEntry(leaf)) {
+      return reportSide(ctx, sideAction("error", {
+        message: "The main branch ends with an unanswered prompt; resolve it before opening a side discussion.",
+      }));
+    }
+    const resolved = resolveSideAnchor(ctx, parsed.anchor);
+    if (resolved.error) {
+      return reportSide(ctx, sideAction("error", { message: resolved.error }));
+    }
+    const point = sideBranchPoint(branch, originLeafId, resolved.anchor?.entryId ?? parsed.entryId);
+    if (point.error) {
+      return reportSide(ctx, sideAction("error", { message: point.error }));
+    }
+    if (point.id !== originLeafId) {
+      const result = await ctx.navigateTree(point.id, { summarize: false });
+      if (result?.cancelled) {
+        return reportSide(ctx, sideAction("error", { message: "Pi cancelled the side branch navigation." }));
+      }
+    }
+    sideState = { originLeafId: String(originLeafId), anchor: resolved.anchor, source: parsed.source };
+    return reportSide(ctx, sideAction("opened", {
+      originLeafId: String(originLeafId),
+      branchPointId: String(point.id),
+      leafId: ctx.sessionManager.getLeafId(),
+      prefix: resolved.anchor?.prefix,
+      suffix: resolved.anchor?.suffix,
+    }));
+  }
+  if (action === "arm") {
+    if (!sideState) {
+      return reportSide(ctx, sideAction("error", { message: "No side discussion is open." }));
+    }
+    if (!sideState.toolsBefore) {
+      sideState.toolsBefore = pi.getActiveTools();
+      pi.setActiveTools([...sideState.toolsBefore.filter((name) => name !== submitAnnotationTool), submitAnnotationTool]);
+    }
+    sideState.armed = true;
+    sideState.submission = undefined;
+    return reportSide(ctx, sideAction("armed"));
+  }
+  if (action === "disarm") {
+    restoreSideTools(pi);
+    return reportSide(ctx, sideAction("disarmed"));
+  }
+  if (action === "close") {
+    const target = parsed.originLeafId ? String(parsed.originLeafId) : sideState?.originLeafId;
+    const sideLeafId = ctx.sessionManager.getLeafId();
+    if (target && !ctx.sessionManager.getEntry(target)) {
+      return reportSide(ctx, sideAction("error", { message: "The main branch leaf " + target + " no longer exists." }));
+    }
+    let note;
+    if (parsed.annotate) {
+      if (!sideState?.submission) {
+        return reportSide(ctx, sideAction("error", { message: "The model did not submit an annotation." }));
+      }
+      note = {
+        index: annotationIndex(ctx, target),
+        anchor: sideState.anchor,
+        source: sideState.source,
+        question: sideState.submission.question,
+        answerBrief: sideState.submission.answer_brief,
+        summary: sideState.submission.summary,
+        answerDetail: sideState.submission.answer_detail,
+        sideLeafId: sideLeafId ? String(sideLeafId) : undefined,
+      };
+    }
+    restoreSideTools(pi);
+    if (target && (target !== sideLeafId || note)) {
+      if (note) {
+        sideState.pendingSummary = { summary: annotationText(note), details: { coactAnnotation: note } };
+      }
+      let result;
+      try {
+        result = await ctx.navigateTree(target, { summarize: Boolean(note) });
+      } finally {
+        if (sideState) sideState.pendingSummary = undefined;
+      }
+      if (result?.cancelled) {
+        return reportSide(ctx, sideAction("error", { message: "Pi cancelled the return to the main branch." }));
+      }
+    }
+    sideState = undefined;
+    return reportSide(ctx, sideAction("closed", {
+      leafId: ctx.sessionManager.getLeafId(),
+      sideLeafId: sideLeafId ? String(sideLeafId) : undefined,
+      annotationIndex: note?.index,
+    }));
+  }
+  return reportSide(ctx, sideAction("error", { message: "Unknown side action: " + action }));
+}
+
+const submitAnnotationSchema = Type.Object({
+  question: Type.String({ description: "The user's question(s) about the passage, in their words." }),
+  answer_brief: Type.String({ description: "The answer in one or two sentences." }),
+  summary: Type.String({ description: "What the user learned, as a short note they can scan later." }),
+  answer_detail: Type.String({ description: "The complete final explanation the user was satisfied with." }),
+}, { additionalProperties: false });
+
+async function executeSubmitAnnotation(params) {
+  if (!sideState?.armed) {
+    throw new Error("submit_annotation is only available after the user confirms a coact.nvim side discussion.");
+  }
+  sideState.submission = { ...params };
+  return {
+    content: [{ type: "text", text: "Annotation recorded. coact.nvim will attach it to the main conversation and close this side discussion; do not reply further." }],
+    details: { submitted: true },
+    terminate: true,
+  };
+}
+
 export default function (pi) {
+  pi.registerCommand("coact-nvim-side", {
+    description: "Open, annotate or close a coact.nvim side discussion branch in the session tree",
+    handler: async (args, ctx) => {
+      return await handleSideCommand(args, ctx, pi);
+    },
+  });
+
+  pi.on("session_before_tree", async () => {
+    return sideState?.pendingSummary ? { summary: sideState.pendingSummary } : undefined;
+  });
+
+  pi.registerTool({
+    name: submitAnnotationTool,
+    label: submitAnnotationTool,
+    description:
+      "Submit the side question and its answer as an annotation on the selected passage of the main conversation, then end this side discussion. Call it once, only when coact.nvim asks for it after the user is satisfied.",
+    promptSnippet: "Record a coact.nvim side discussion as an annotation on the main conversation",
+    parameters: submitAnnotationSchema,
+    defaultActive: false,
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      return await executeSubmitAnnotation(params);
+    },
+  });
+
   pi.registerCommand("coact-nvim-tree", {
     description: "Navigate the current session tree from coact.nvim",
     handler: async (args, ctx) => {

@@ -1,5 +1,6 @@
 local config = require("coact.config")
 local statusline = require("coact.ui.statusline")
+local side = require("coact.ui.side")
 
 local M = {}
 
@@ -88,6 +89,9 @@ local function open_float(bufnr, enter, win_config)
 end
 
 function M.apply_history_layout(history_winid, thread)
+  if side.is(thread) then
+    return side.layout(thread, nil)
+  end
   if not history_winid or not vim.api.nvim_win_is_valid(history_winid) then
     return
   end
@@ -115,6 +119,9 @@ function M.apply_history_layout(history_winid, thread)
 end
 
 function M.apply_thread_layout(history_winid, prompt_winid, prompt_height, thread)
+  if side.is(thread) then
+    return side.layout(thread, prompt_height)
+  end
   if not prompt_winid or not vim.api.nvim_win_is_valid(prompt_winid) then
     return
   end
@@ -160,6 +167,9 @@ function M.apply_thread_layout(history_winid, prompt_winid, prompt_height, threa
 end
 
 function M.open_history(history_bufnr, thread)
+  if side.is(thread) then
+    return side.open_history(history_bufnr, thread)
+  end
   local opts = config.get().ui
   if opts.layout == "sidebar" then
     vim.cmd("botright vertical new")
@@ -189,6 +199,9 @@ function M.open_history(history_bufnr, thread)
 end
 
 function M.open_composer(history_winid, prompt_bufnr, prompt_height, thread)
+  if side.is(thread) then
+    return side.open_composer(history_winid, prompt_bufnr, composer_height(prompt_height), thread)
+  end
   prompt_height = composer_height(prompt_height)
   local opts = config.get().ui
   if opts.layout == "sidebar" then
@@ -241,6 +254,9 @@ function M.open_composer(history_winid, prompt_bufnr, prompt_height, thread)
 end
 
 function M.apply_status_chrome(history_winid, prompt_winid, thread)
+  if side.is(thread) then
+    return side.refresh(thread)
+  end
   if config.get().ui.layout == "sidebar" then
     return
   end
