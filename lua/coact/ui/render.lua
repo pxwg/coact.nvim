@@ -3,6 +3,7 @@ local events = require("coact.events")
 local activity_summary = require("coact.ui.activity_summary")
 local metadata = require("coact.ui.metadata")
 local providers = require("coact.providers")
+local stream_frames = require("coact.ui.stream_frames")
 local tool_renderers = require("coact.ui.tool_renderers")
 local util = require("coact.util")
 
@@ -13,11 +14,9 @@ local render_atom_ns = vim.api.nvim_create_namespace("coact.nvim.render_atoms")
 local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
-local pending_stream_flush_timers = {}
 local pending_stream_flushes = {}
 local highlights_ready = false
 local highlights_autocmd_ready = false
-local stream_delta_flush_ms = 16
 
 local foldable_types = {
   UserBlock = true,
@@ -226,15 +225,18 @@ local function truncate_display(value, limit)
   end
   local suffix = "..."
   local target_width = math.max(0, limit - vim.fn.strdisplaywidth(suffix))
-  local out = ""
-  for index = 1, vim.fn.strchars(value) do
-    local candidate = vim.fn.strcharpart(value, 0, index)
-    if vim.fn.strdisplaywidth(candidate) > target_width then
-      break
+  -- Display width grows monotonically with the prefix length, so binary
+  -- search the longest fitting prefix instead of probing every character.
+  local low, high = 0, vim.fn.strchars(value)
+  while low < high do
+    local mid = math.floor((low + high + 1) / 2)
+    if vim.fn.strdisplaywidth(vim.fn.strcharpart(value, 0, mid)) > target_width then
+      high = mid - 1
+    else
+      low = mid
     end
-    out = candidate
   end
-  return out .. suffix
+  return vim.fn.strcharpart(value, 0, low) .. suffix
 end
 
 local function line_count(value)
@@ -1596,20 +1598,48 @@ local function resolve_render_atom(bufnr, atom)
   return true
 end
 
-local function refresh_render_atom_indexes(thread)
+-- Re-resolve line indexes from extmarks. With `from_line`, only anchors at or
+-- after that (pre-edit) line are resolved: earlier lines cannot have moved, so
+-- a tail stream edit costs O(tail) instead of O(transcript).
+local function refresh_render_atom_indexes(thread, from_line, old_line_count)
   local bufnr = thread and thread.bufnr
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
-  thread.render_index = {}
-  thread.placeholder_index = {}
-  thread.placeholder_by_item_id = {}
-  thread.stream_atoms_by_item_id = {}
-  thread.auto_closed_fence_lines = {}
+  from_line = tonumber(from_line) or 1
+  local full = from_line <= 1
+    or not thread.render_index
+    or not thread.placeholder_index
+    or not thread.placeholder_by_item_id
+    or not thread.stream_atoms_by_item_id
+    or not thread.auto_closed_fence_lines
+  if full then
+    from_line = 1
+    thread.render_index = {}
+    thread.placeholder_index = {}
+    thread.placeholder_by_item_id = {}
+    thread.stream_atoms_by_item_id = {}
+    thread.auto_closed_fence_lines = {}
+  else
+    local upper = math.max(tonumber(old_line_count) or 0, vim.api.nvim_buf_line_count(bufnr)) + 1
+    for lnum = from_line, upper do
+      thread.render_index[lnum] = nil
+      thread.placeholder_index[lnum] = nil
+    end
+    local kept = {}
+    for _, line in ipairs(thread.auto_closed_fence_lines) do
+      if line < from_line then
+        table.insert(kept, line)
+      end
+    end
+    thread.auto_closed_fence_lines = kept
+  end
 
   for _, atom in ipairs(thread.render_atoms or {}) do
-    if resolve_render_atom(bufnr, atom) then
+    if not full and (tonumber(atom.finish) or from_line) < from_line then
+      -- Entirely before the first edit: indexes are unchanged.
+    elseif resolve_render_atom(bufnr, atom) then
       for lnum = atom.start, atom.finish do
         thread.render_index[lnum] = atom.block
       end
@@ -1623,22 +1653,31 @@ local function refresh_render_atom_indexes(thread)
         atom.fold.start = atom.start
         atom.fold.finish = atom.finish
       end
+    elseif atom.item_id and thread.stream_atoms_by_item_id[atom.item_id] == atom then
+      thread.stream_atoms_by_item_id[atom.item_id] = nil
     end
   end
 
+  local function stale(mark)
+    return full or (tonumber(mark.line) or from_line) >= from_line
+  end
   for _, mark in ipairs(thread.header_marks or {}) do
-    resolve_mark_line(bufnr, ns, mark)
-    if mark.block and mark.line then
-      thread.render_index[mark.line] = mark.block
+    if stale(mark) then
+      resolve_mark_line(bufnr, ns, mark)
+      if mark.block and mark.line then
+        thread.render_index[mark.line] = mark.block
+      end
     end
   end
   for _, mark in ipairs(thread.placeholder_marks or {}) do
-    resolve_mark_line(bufnr, ns, mark)
-    if mark.line then
-      thread.placeholder_index[mark.line] = mark
-      thread.render_index[mark.line] = mark.block
+    if stale(mark) then
+      resolve_mark_line(bufnr, ns, mark)
+      if mark.line then
+        thread.placeholder_index[mark.line] = mark
+        thread.render_index[mark.line] = mark.block
+      end
     end
-    if mark.block and mark.block.item_id then
+    if full and mark.block and mark.block.item_id then
       thread.placeholder_by_item_id[tostring(mark.block.item_id)] = mark
     end
   end
@@ -2128,43 +2167,61 @@ function M.render(thread)
   end
 end
 
-local function replace_stream_atom_text(thread, atom, value)
+local function lines_have_fence(lines)
+  for _, line in ipairs(lines) do
+    if fence_match(line) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Rewrite only the lines that differ from the buffer. Streams append at the
+-- tail, so this is usually the last line plus an auto-closed fence, which
+-- keeps treesitter edits and on_lines ranges small instead of re-sending the
+-- whole message on every frame.
+local function write_stream_atom_text(thread, atom, value)
   local bufnr = thread.bufnr
   local lines, auto_closed_index = guarded_text_lines(value)
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, atom.text_start - 1, atom.text_finish)
-  set_modifiable_text(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, atom.text_start - 1, atom.text_finish, false, lines)
-  end)
+  local first = atom.text_start - 1
+  local current = vim.api.nvim_buf_get_lines(bufnr, first, atom.text_finish, false)
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, first, atom.text_finish)
+  local prefix, current_end, replacement = changed_line_range(current, lines)
+  if prefix then
+    vim.api.nvim_buf_set_lines(bufnr, first + prefix, first + current_end, false, replacement)
+  end
+  -- A provider fence can land exactly on the render-only closing line: the
+  -- text is unchanged but the auto-close index must still be rebuilt.
+  local guard_changed = atom.has_auto_closed_fence ~= (auto_closed_index ~= nil)
   atom.has_auto_closed_fence = auto_closed_index ~= nil
-  atom.has_fence = text_has_fence(value)
+  atom.has_fence = lines_have_fence(lines)
   if atom.has_auto_closed_fence then
-    local line = atom.text_start + auto_closed_index - 1
-    vim.api.nvim_buf_set_extmark(bufnr, ns, line - 1, 0, {
-      end_col = buffer_line_length(bufnr, line),
+    vim.api.nvim_buf_set_extmark(bufnr, ns, first + auto_closed_index - 1, 0, {
+      end_col = #lines[auto_closed_index],
       hl_group = "Comment",
       priority = 1200,
       strict = false,
     })
   end
+  return guard_changed
 end
 
 local function append_stream_atom_delta(thread, atom, delta)
   local bufnr = thread.bufnr
   local current_line = vim.api.nvim_buf_get_lines(bufnr, atom.text_finish - 1, atom.text_finish, false)[1] or ""
   local parts = vim.split(delta, "\n", { plain = true })
-  set_modifiable_text(bufnr, function()
-    vim.api.nvim_buf_set_text(bufnr, atom.text_finish - 1, #current_line, atom.text_finish - 1, #current_line, parts)
-  end)
+  vim.api.nvim_buf_set_text(bufnr, atom.text_finish - 1, #current_line, atom.text_finish - 1, #current_line, parts)
 end
 
 local function stream_flush_key(thread)
   return tostring(thread.id or "")
 end
 
+local refresh_placeholder_block
+
 local function flush_stream_atoms(key)
   local pending = pending_stream_flushes[key]
   pending_stream_flushes[key] = nil
-  pending_stream_flush_timers[key] = nil
   if not pending then
     return
   end
@@ -2192,28 +2249,50 @@ local function flush_stream_atoms(key)
   end)
 
   local follows = capture_follow_windows(thread, bufnr)
+  local line_total = vim.api.nvim_buf_line_count(bufnr)
+  local first_edit_line = nil
+  local guard_changed = false
   for _, edit in ipairs(edits) do
-    local atom = edit.atom
-    local item = edit.item
-    local desired = tostring(item.text or "")
-    local rendered = tostring(atom.block.text or "")
-    if desired ~= rendered and resolve_render_atom(bufnr, atom) then
-      local can_append = not atom.has_auto_closed_fence
-        and not atom.has_fence
-        and not edit.pending.has_fence
-        and desired == rendered .. edit.pending.delta
-      if can_append then
-        append_stream_atom_delta(thread, atom, edit.pending.delta)
-      else
-        replace_stream_atom_text(thread, atom, desired)
+    first_edit_line = math.min(first_edit_line or edit.atom.start, edit.atom.start)
+  end
+  if #edits > 0 then
+    -- One modifiable/undolevels toggle per frame, not per edit: each option
+    -- write fires OptionSet for every listener.
+    set_modifiable_text(bufnr, function()
+      for _, edit in ipairs(edits) do
+        local atom = edit.atom
+        local item = edit.item
+        local desired = tostring(item.text or "")
+        local rendered = tostring(atom.block.text or "")
+        if desired ~= rendered and resolve_render_atom(bufnr, atom) then
+          local can_append = not atom.has_auto_closed_fence
+            and not atom.has_fence
+            and not edit.pending.has_fence
+            and desired == rendered .. edit.pending.delta
+          if can_append then
+            append_stream_atom_delta(thread, atom, edit.pending.delta)
+          else
+            guard_changed = write_stream_atom_text(thread, atom, desired) or guard_changed
+          end
+        end
+        atom.block.text = desired
+        atom.block.raw = item
+        atom.block.state = item.status or item.phase or item.state or atom.block.state
       end
-    end
-    atom.block.text = desired
-    atom.block.raw = item
-    atom.block.state = item.status or item.phase or item.state or atom.block.state
+    end)
   end
 
-  refresh_render_atom_indexes(thread)
+  -- Line indexes only shift when an edit changed the line count.
+  if guard_changed or vim.api.nvim_buf_line_count(bufnr) ~= line_total then
+    refresh_render_atom_indexes(thread, first_edit_line, line_total)
+  end
+  for item_id in pairs(pending.placeholders) do
+    local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id[item_id]
+    if mark then
+      refresh_placeholder_block(thread, mark, item_id)
+      apply_placeholder_mark(thread, bufnr, mark)
+    end
+  end
   if thread_busy(thread) and thread.spinner_mark then
     apply_spinner_mark(thread, bufnr, thread.spinner_mark)
     schedule_spinner_tick(thread)
@@ -2221,17 +2300,29 @@ local function flush_stream_atoms(key)
   apply_follow_windows(thread, follows)
 end
 
-local function queue_stream_delta(thread, item_id, delta)
+local function stream_pending(thread)
   local key = stream_flush_key(thread)
   local pending = pending_stream_flushes[key]
   if not pending then
     pending = {
       thread = thread,
       items = {},
+      placeholders = {},
     }
     pending_stream_flushes[key] = pending
   end
+  pending.thread = thread
+  return key, pending
+end
 
+local function request_stream_flush(key)
+  stream_frames.request(key, function()
+    flush_stream_atoms(key)
+  end)
+end
+
+local function queue_stream_delta(thread, item_id, delta)
+  local key, pending = stream_pending(thread)
   item_id = tostring(item_id)
   local item_pending = pending.items[item_id]
   if not item_pending then
@@ -2247,11 +2338,7 @@ local function queue_stream_delta(thread, item_id, delta)
     or delta:find("```", 1, true) ~= nil
     or delta:find("~~~", 1, true) ~= nil
 
-  if not pending_stream_flush_timers[key] then
-    pending_stream_flush_timers[key] = vim.defer_fn(function()
-      flush_stream_atoms(key)
-    end, stream_delta_flush_ms)
-  end
+  request_stream_flush(key)
 end
 
 function M.try_stream_delta(thread, item_id, delta)
@@ -2276,7 +2363,7 @@ function M.try_stream_delta(thread, item_id, delta)
   return true
 end
 
-local function refresh_placeholder_block(thread, mark, item_id)
+refresh_placeholder_block = function(thread, mark, item_id)
   resolve_mark_line(thread.bufnr, ns, mark)
   local item = thread.items and thread.items[tostring(item_id)]
   if item then
@@ -2297,16 +2384,16 @@ function M.try_stream_placeholder_delta(thread, item_id)
   if not thread or not item_id or not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) then
     return false
   end
-  local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id[tostring(item_id)]
+  item_id = tostring(item_id)
+  local mark = thread.placeholder_by_item_id and thread.placeholder_by_item_id[item_id]
   if not mark then
     return false
   end
-  refresh_placeholder_block(thread, mark, item_id)
-  apply_placeholder_mark(thread, thread.bufnr, mark)
-  if thread_busy(thread) and thread.spinner_mark then
-    apply_spinner_mark(thread, thread.bufnr, thread.spinner_mark)
-    schedule_spinner_tick(thread)
-  end
+  -- Placeholder refreshes rebuild the block and its virtual lines; coalesce
+  -- them into the stream frame instead of repeating that work per delta.
+  local key, pending = stream_pending(thread)
+  pending.placeholders[item_id] = true
+  request_stream_flush(key)
   return true
 end
 

@@ -202,6 +202,8 @@ Default options:
       height = 0.82,
       sidebar_width = 0.42,
       render_delay_ms = 35,
+      stream_flush_ms = 16,
+      stream_flush_max_ms = 200,
       auto_scroll = false,
       composer = {
         min_height = 2,
@@ -798,9 +800,16 @@ the current generation state: thinking, reasoning, streaming, summarizing,
 tooling, patch review, syncing, or stopping.
 
 Assistant text blocks are tracked as extmark-anchored render atoms. Provider
-deltas for multiple visible blocks are coalesced into one per-buffer flush and
-update those anchored ranges directly; structural block changes still use a
-full render. The composer remains a separate `coact-input` buffer.
+deltas for multiple visible blocks, together with reasoning/tool placeholder
+updates, are coalesced into one per-buffer flush that rewrites only the changed
+lines of those anchored ranges; structural block changes still use a full
+render. The composer remains a separate `coact-input` buffer.
+
+Stream flushes are throttled per thread: the first delta after a pause flushes
+on the next loop iteration, later ones at most every `ui.stream_flush_ms`.
+The interval adapts to main-loop utilisation, which includes the treesitter
+reparses, redraws, and buffer listeners triggered by each flush, and backs off
+up to `ui.stream_flush_max_ms` on long transcripts.
 
 The renderer preserves each transcript window's cursor and view while the active
 provider streams. Set `ui.auto_scroll = true` to opt into per-window following

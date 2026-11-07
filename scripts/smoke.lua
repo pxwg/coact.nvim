@@ -6591,6 +6591,148 @@ end)();
     )
   end
 end)();
+(function()
+  local stream_thread = state.ensure_thread("smoke-stream-frames", {
+    title = "Smoke stream frames",
+    cwd = vim.fn.getcwd(),
+    generation = "streaming",
+  })
+  state.upsert_item("smoke-stream-frames", "turn-frames", {
+    id = "frames-user",
+    type = "userMessage",
+    content = { { type = "text", text = "show code" } },
+    status = "completed",
+  })
+  state.upsert_item("smoke-stream-frames", "turn-frames", {
+    id = "frames-assistant",
+    type = "agentMessage",
+    text = "Intro\n```lua\nlocal a = 1",
+    status = "inProgress",
+  })
+  state.upsert_item("smoke-stream-frames", "turn-frames", {
+    id = "frames-reasoning",
+    type = "reasoning",
+    content = { "start" },
+    status = "inProgress",
+  })
+  local stream_buf = buffers.ensure("smoke-stream-frames")
+  assert(
+    stream_thread.placeholder_by_item_id["frames-reasoning"],
+    "trailing reasoning fixture should render as its own placeholder"
+  )
+  local atom = stream_thread.stream_atoms_by_item_id["frames-assistant"]
+  assert(atom and atom.has_auto_closed_fence, "fenced stream fixture should start with a render-only fence")
+  local unchanged_prefix = atom.text_start + 1
+
+  local changed_rows = {}
+  vim.api.nvim_buf_attach(stream_buf, false, {
+    on_lines = function(_, _, _, first)
+      table.insert(changed_rows, first)
+    end,
+  })
+  local events_module = require("coact.events")
+  local original_block_for_item = events_module.block_for_item
+  local reasoning_refreshes = 0
+  events_module.block_for_item = function(item, ...)
+    if item and item.id == "frames-reasoning" then
+      reasoning_refreshes = reasoning_refreshes + 1
+    end
+    return original_block_for_item(item, ...)
+  end
+  local original_render = render.render
+  local render_count = 0
+  render.render = function(render_thread)
+    if render_thread == stream_thread then
+      render_count = render_count + 1
+    end
+    return original_render(render_thread)
+  end
+  local ok, err = pcall(function()
+    for index = 1, 20 do
+      assert_handles_notification({
+        method = "item/reasoning/textDelta",
+        params = {
+          threadId = "smoke-stream-frames",
+          turnId = "turn-frames",
+          itemId = "frames-reasoning",
+          contentIndex = 0,
+          delta = " step" .. index,
+        },
+      }, "reasoning delta should use the placeholder fast path")
+    end
+    assert(reasoning_refreshes == 0, "placeholder refreshes should wait for the stream frame")
+    assert_handles_notification({
+      method = "item/agentMessage/delta",
+      params = {
+        threadId = "smoke-stream-frames",
+        turnId = "turn-frames",
+        itemId = "frames-assistant",
+        delta = "\nlocal b = 2",
+      },
+    }, "fenced assistant delta should use the stream fast path")
+    assert(
+      vim.wait(1000, function()
+        local text = table.concat(vim.api.nvim_buf_get_lines(stream_buf, 0, -1, false), "\n")
+        return text:find("local a = 1\nlocal b = 2\n```", 1, true) ~= nil
+      end, 5),
+      "fenced streaming should keep the render-only fence after appended code"
+    )
+    assert(
+      reasoning_refreshes >= 1 and reasoning_refreshes <= 2,
+      "one frame should coalesce many placeholder deltas, got " .. reasoning_refreshes
+    )
+    for _, row in ipairs(changed_rows) do
+      assert(row >= unchanged_prefix, "fenced stream frames should only rewrite changed tail lines")
+    end
+    assert(
+      #stream_thread.auto_closed_fence_lines == 1
+        and vim.api.nvim_buf_get_lines(
+            stream_buf,
+            stream_thread.auto_closed_fence_lines[1] - 1,
+            stream_thread.auto_closed_fence_lines[1],
+            false
+          )[1]
+          == "```",
+      "the auto-closed fence index should follow incremental fenced writes"
+    )
+    vim.wait(require("coact.config").get().ui.render_delay_ms + 25, function()
+      return false
+    end, 5)
+    assert(render_count == 0, "coalesced stream frames should not schedule a full render")
+  end)
+  events_module.block_for_item = original_block_for_item
+  render.render = original_render
+  assert(ok, err)
+end)();
+
+(function()
+  local stream_frames = require("coact.ui.stream_frames")
+  local key = "smoke-stream-frames-budget"
+  local calls = 0
+  local function busy_frame()
+    calls = calls + 1
+    local started = vim.uv.hrtime()
+    while vim.uv.hrtime() - started < 30e6 do
+    end
+  end
+  for _ = 1, 4 do
+    local before = calls
+    stream_frames.request(key, busy_frame)
+    stream_frames.request(key, busy_frame)
+    assert(
+      vim.wait(1000, function()
+        return calls > before
+      end, 1),
+      "stream frames should fire coalesced requests"
+    )
+    assert(calls == before + 1, "requests before a frame should coalesce into one callback")
+  end
+  local stats = stream_frames.stats(key)
+  local min_ms = require("coact.config").get().ui.stream_flush_ms
+  assert(stats and stats.interval > min_ms, "a saturated main loop should lengthen the stream frame interval")
+  stream_frames.cancel(key)
+  assert(stream_frames.stats(key) == nil, "cancel should release stream frame state")
+end)();
 
 (function()
   local pi_stream = require("coact.providers.pi_stream")

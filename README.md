@@ -193,6 +193,8 @@ require("coact").setup({
     height = 0.82,
     sidebar_width = 0.42,
     render_delay_ms = 35,
+    stream_flush_ms = 16,
+    stream_flush_max_ms = 200,
     auto_scroll = false,
     composer = {
       min_height = 2,

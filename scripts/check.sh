@@ -34,7 +34,7 @@ run stylua --check --indent-type Spaces --indent-width 2 \
   scripts/review-test.lua scripts/smoke.lua scripts/adapter-picker-test.lua scripts/claude-smoke.lua \
   scripts/claude-provider-test.lua scripts/claude-history-smoke.lua scripts/claude-history-test.lua \
   scripts/integrations-test.lua lua/coact/side.lua lua/coact/ui/side.lua lua/coact/ui/selection_hints.lua \
-  lua/coact/annotations.lua lua/coact/source_map.lua \
+  lua/coact/annotations.lua lua/coact/source_map.lua lua/coact/ui/stream_frames.lua \
   scripts/pi-side-test.lua
 run git diff --check
 
