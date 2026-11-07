@@ -6590,6 +6590,31 @@ end)();
       "history buffers should parse markdown without full-document combined injections"
     )
   end
+end)();
+
+(function()
+  local pi_stream = require("coact.providers.pi_stream")
+  local stream = pi_stream.new()
+  pi_stream.update(stream, { type = "toolcall_start", contentIndex = 0, id = "call-1", toolName = "write" })
+  local original_decode = vim.json.decode
+  local decodes = 0
+  vim.json.decode = function(...)
+    decodes = decodes + 1
+    return original_decode(...)
+  end
+  local ok, err = pcall(function()
+    local slot
+    for _, delta in ipairs({ '{"path":"a.lua",', '"content":"x = {', "1, 2 } y", '\\n"', "}" }) do
+      slot = pi_stream.update(stream, { type = "toolcall_delta", contentIndex = 0, delta = delta })
+    end
+    assert(decodes == 1, "partial tool JSON should decode only once it can be complete, got " .. decodes)
+    assert(
+      slot.arguments.path == "a.lua" and slot.arguments.content == "x = {1, 2 } y\n",
+      "completed tool JSON should populate arguments"
+    )
+  end)
+  vim.json.decode = original_decode
+  assert(ok, err)
 end)()
 
 local command_before = thread.items["tool-1"].aggregatedOutput

@@ -3,6 +3,21 @@
 local util = require("coact.util")
 local M = {}
 
+-- Whether the last non-whitespace byte closes an object or array. Scans from
+-- the end; a `$`-anchored Lua pattern would rescan the whole buffer.
+local function closes_json(text)
+  for index = #text, 1, -1 do
+    local byte = text:byte(index)
+    if byte == 125 or byte == 93 then
+      return true
+    end
+    if byte ~= 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then
+      return false
+    end
+  end
+  return false
+end
+
 function M.new()
   return { sequence = 0, slots = {} }
 end
@@ -31,9 +46,13 @@ function M.update(stream, event)
     slot = { type = "toolCall", id = util.value(event.id), name = util.value(event.toolName), arguments = {} }
   elseif event.type == "toolcall_delta" and slot then
     slot.partialJson = (util.value(slot.partialJson) or "") .. tostring(util.value(event.delta) or "")
-    local ok, args = pcall(vim.json.decode, slot.partialJson)
-    if ok and type(args) == "table" then
-      slot.arguments = args
+    -- Decoding the accumulated buffer on every delta is quadratic in the
+    -- argument size; only a buffer ending in a closing bracket can decode.
+    if closes_json(slot.partialJson) then
+      local ok, args = pcall(vim.json.decode, slot.partialJson)
+      if ok and type(args) == "table" then
+        slot.arguments = args
+      end
     end
   end
   if slot then

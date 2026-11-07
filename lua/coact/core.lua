@@ -586,9 +586,14 @@ handlers["rawResponseItem/completed"] = function(params)
   append_raw_event("rawResponseItem/completed", params)
 end
 
+local function pi_placement_changed(item, params)
+  return params.piMessageId ~= nil
+    and (item.piMessageId ~= params.piMessageId or item.piContentIndex ~= params.piContentIndex)
+end
+
 handlers["item/agentMessage/delta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "agentMessage")
-  if params.piMessageId then
+  if pi_placement_changed(item, params) then
     state.upsert_item(
       params.threadId,
       params.turnId,
@@ -607,7 +612,7 @@ handlers["item/reasoning/textDelta"] = function(params)
     return
   end
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
-  if params.piMessageId then
+  if pi_placement_changed(item, params) then
     state.upsert_item(
       params.threadId,
       params.turnId,
