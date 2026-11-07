@@ -973,7 +973,42 @@ local function find_history_buffer(thread_id)
   return nil
 end
 
+-- Neovim's markdown injection queries mark HTML blocks/tags as
+-- `injection.combined`, which makes every reparse rescan the whole document
+-- for injections, so each streamed frame costs O(transcript). History buffers
+-- parse with a copy of those queries minus the directive; injections are then
+-- collected for the visible range only. Global markdown queries are untouched.
+local history_injections_cache = nil
+
+local function history_injections()
+  if history_injections_cache == nil then
+    local injections = {}
+    for _, lang in ipairs({ "markdown", "markdown_inline" }) do
+      local ok, files = pcall(vim.treesitter.query.get_files, lang, "injections")
+      local parts = {}
+      for _, file in ipairs(ok and files or {}) do
+        local handle = io.open(file, "r")
+        if handle then
+          table.insert(parts, handle:read("*a"))
+          handle:close()
+        end
+      end
+      local text, count = table.concat(parts, "\n"):gsub("%(#set!%s+injection%.combined%s*%)", "")
+      if count > 0 and pcall(vim.treesitter.query.parse, lang, text) then
+        injections[lang] = text
+      end
+    end
+    history_injections_cache = next(injections) and injections or false
+  end
+  return history_injections_cache or nil
+end
+
 local function start_history_treesitter(bufnr)
+  local injections = history_injections()
+  if injections then
+    -- Must run before vim.treesitter.start: the parser is cached per buffer.
+    pcall(vim.treesitter.get_parser, bufnr, "markdown", { injections = injections })
+  end
   if pcall(vim.treesitter.start, bufnr, "markdown") then
     vim.bo[bufnr].syntax = ""
     vim.b[bufnr].current_syntax = nil

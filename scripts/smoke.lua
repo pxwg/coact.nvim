@@ -6579,6 +6579,17 @@ end
   end)
   render.render = original_render
   assert(ok, err)
+end)();
+(function()
+  state.ensure_thread("smoke-history-injections", { cwd = vim.fn.getcwd() })
+  local history_buf = buffers.ensure("smoke-history-injections")
+  local history_parser = vim.treesitter.get_parser(history_buf, "markdown", { error = false })
+  if history_parser and history_parser._injection_query then
+    assert(
+      history_parser._injection_query.has_combined_injections ~= true,
+      "history buffers should parse markdown without full-document combined injections"
+    )
+  end
 end)()
 
 local command_before = thread.items["tool-1"].aggregatedOutput
