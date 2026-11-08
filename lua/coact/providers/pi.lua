@@ -2293,6 +2293,15 @@ function M.decode_notification(message)
   if type(message) ~= "table" or message.type == "response" then
     return nil
   end
+  -- Pi emits system context before the first user message. Its lifecycle is
+  -- not a conversation turn and must not consume the reserved prompt's turn.
+  if
+    (message.type == "message_start" or message.type == "message_end")
+    and type(message.message) == "table"
+    and message.message.role == "system"
+  then
+    return nil
+  end
   local thread_id = current_thread_id()
   if
     turn_scoped_events[message.type]

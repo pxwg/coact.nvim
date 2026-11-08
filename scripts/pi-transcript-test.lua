@@ -5,6 +5,66 @@ function M.run()
   local pi = require("coact.providers.pi")
   local state = require("coact.state")
   local render = require("coact.ui.render")
+  -- The first prompt can be preceded by system-message lifecycle events.
+  -- Neither event may claim a turn before the reserved user turn starts.
+  for _, response_first in ipairs({ true, false }) do
+    local system_runtime = pi.new_runtime()
+    local system_id = "pi:system-before-user-" .. tostring(response_first)
+    system_runtime.bound_thread_id = system_id
+    local system_thread = state.update_thread_from_payload({ id = system_id, replaceTurns = true })
+    local pending = { prompt = "Hello", input = { { type = "text", text = "Hello" } } }
+    state.add_thread_pending_request(system_thread, pending)
+    pi.with_runtime(system_runtime, function()
+      local acknowledge
+      pi.custom_request(
+        {
+          _request_message = function(method, _, callback)
+            assert(method == "prompt")
+            acknowledge = function()
+              callback(nil, {})
+            end
+          end,
+        },
+        "turn/start",
+        { threadId = system_id, input = pending.input },
+        function(err, result)
+          assert(not err)
+          state.add_turn(system_id, result.turn)
+          if state.has_thread_pending_request(system_thread, pending) then
+            pending.turn_id = result.turn.id
+          end
+        end
+      )
+      local reserved_id = system_runtime.reserved_turn.id
+      if response_first then
+        acknowledge()
+      end
+      local function system_send(event)
+        local decoded = pi.decode_notification(event)
+        for _, entry in ipairs(decoded and (decoded.kind and { decoded } or decoded) or {}) do
+          require("coact.core").handle_notification(entry.message)
+        end
+      end
+      system_send({ type = "agent_start" })
+      system_send({ type = "turn_start" })
+      for _, event_type in ipairs({ "message_start", "message_end" }) do
+        system_send({ type = event_type, message = { role = "system", content = "System context" } })
+        assert(system_runtime.active_turn_id == nil, "system events must not start a turn")
+        assert(system_runtime.reserved_turn.id == reserved_id, "system events must preserve the reserved turn")
+      end
+      system_send({ type = "message_start", message = { role = "user", content = "Hello" } })
+      system_send({ type = "message_end", message = { role = "user", content = "Hello" } })
+      if not response_first then
+        acknowledge()
+      end
+      assert(system_runtime.active_turn_id == reserved_id, "the user echo must use the reserved turn")
+      assert(#system_thread.item_order == 1, "the prompt acknowledgement and echo must merge")
+      assert(#state.get_thread_pending_requests(system_thread) == 0, "the user echo must clear the pending prompt")
+      local user_blocks = render.select_render_tree(system_thread)
+      assert(#user_blocks == 1 and user_blocks[1].text == "Hello", "the first prompt must render exactly once")
+    end)
+  end
+
   local runtime = pi.new_runtime()
   local id = "pi:transcript-regression"
   runtime.bound_thread_id = id
