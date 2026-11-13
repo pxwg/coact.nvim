@@ -548,10 +548,13 @@ let new_card params =
         let a = offset text (member "start" r) and b = offset text (member "end" r) in
         if b > a then Some (a, b) else None
   in
-  let edits, id =
-    ok_or (Plan.new_card (analysis ()) ~path ~selection ~title:(str (member "title" params)) (labels params) ~now:(now ()))
+  let into = if bool (member "newFile" params) = Some true then Some !root else None in
+  let edits, id, target =
+    ok_or
+      (Plan.new_card (analysis ()) ~path ?into ~selection ~title:(str (member "title" params)) (labels params)
+         ~now:(now ()))
   in
-  `Assoc [ ("edits", edits_json edits); ("id", `String id) ]
+  `Assoc [ ("edits", edits_json edits); ("id", `String id); ("uri", `String (uri_of_path target)) ]
 
 let main_param params = match str (member "main" params) with Some m -> m | None -> fail "missing main card"
 

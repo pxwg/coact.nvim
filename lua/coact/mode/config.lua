@@ -51,6 +51,11 @@ local defaults = {
     compact = "<localleader>cc",
     trace = "<localleader>ct",
   },
+  ask = {
+    -- How :CoactMode ask opens the new card's file: an Ex command taking the
+    -- path ("vsplit", "split", "tabedit", "edit") or a function(path).
+    open = "vsplit",
+  },
   compact = {
     -- Recent context kept verbatim when compacting (Pi's keepRecentTokens);
     -- nil uses Pi's default.

@@ -29,11 +29,12 @@ val pin :
 (** Unpin the card at [offset] (or the pinned card); [THREAD_ID] stays. *)
 val unpin : Workspace.t -> path:string -> offset:int -> (edit list * string, string) result
 
-(** A new top-level card at the end of the file. With a selection, the
-    card quotes it and the selection links to the card. *)
+(** A new top-level card: at the end of the file, or, with [into], alone
+    in a new file [into/<id>.org]. With a selection, the card quotes it and
+    the selection links to the card. Returns the card and its file. *)
 val new_card :
-  Workspace.t -> path:string -> selection:(int * int) option -> title:string option ->
-  labels -> now:float -> (edit list * string, string) result
+  Workspace.t -> path:string -> ?into:string -> selection:(int * int) option ->
+  title:string option -> labels -> now:float -> (edit list * string * string, string) result
 
 type submit =
   | Ready of { edits : edit list; question : string; answer : string }

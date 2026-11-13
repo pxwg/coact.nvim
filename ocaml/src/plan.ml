@@ -157,7 +157,7 @@ let unpin ws ~path ~offset =
               let* edits = set_card_properties f c [ (Model.pin_property, "false") ] in
               Ok (edits, id)))
 
-let new_card ws ~path ~selection ~title labels ~now =
+let new_card ws ~path ?into ~selection ~title labels ~now =
   match Workspace.file ws path with
   | None -> Error "This file is not part of the chat workspace"
   | Some file ->
@@ -187,9 +187,16 @@ let new_card ws ~path ~selection ~title labels ~now =
       in
       (* An empty last line to write in. *)
       let body = body ^ "\n" in
-      let at = String.length text in
       let card = card_text ~level:1 ~title ~properties:[ ("ID", id) ] ~body in
-      let append = { path; start = at; stop = at; text = prefix_for text at ^ "\n" ^ card } in
+      let target, place =
+        match into with
+        | Some dir ->
+            let target = Filename.concat dir (id ^ ".org") in
+            (target, { path = target; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card })
+        | None ->
+            let at = String.length text in
+            (path, { path; start = at; stop = at; text = prefix_for text at ^ "\n" ^ card })
+      in
       let link =
         match (selection, selected) with
         | Some (a, b), Some s when not (String.contains s '\n' || String.contains s ']' || String.contains s '[') ->
@@ -199,7 +206,7 @@ let new_card ws ~path ~selection ~title labels ~now =
             [ { path; start = at; stop = at; text = prefix_for text at ^ Printf.sprintf "[[id:%s][%s]]\n" id (label title) } ]
         | _ -> []
       in
-      Ok (link @ [ append ], id)
+      Ok (link @ [ place ], id, target)
 
 type submit =
   | Ready of { edits : edit list; question : string; answer : string }

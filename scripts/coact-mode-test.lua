@@ -374,6 +374,41 @@ check(
 local sessions = vim.fn.glob(root .. "/.coact/sessions/*.jsonl", false, true)
 check(#sessions == 1, "one Pi session file holds the thread")
 
+-- 9. ask about a selection: a new pinned card in its own file, in a split
+vim.api.nvim_set_current_buf(buf)
+local wins = #vim.api.nvim_list_wins()
+local row = find_line("^Echo: After the restart%?$")
+mode.ask({ range = { { row, 6 }, { row, 10 } } })
+local side
+wait(10000, function()
+  side = vim.api.nvim_get_current_buf()
+  return side ~= buf
+    and table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n"):find(":PIN: true", 1, true) ~= nil
+end, "ask")
+local side_text = table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n")
+check(#vim.api.nvim_list_wins() == wins + 1, "ask opens the new card in a split")
+check(
+  vim.fs.dirname(vim.api.nvim_buf_get_name(side)) == vim.fs.normalize(vim.uv.fs_realpath(root) or root)
+    or vim.api.nvim_buf_get_name(side):find("/ws/", 1, true) ~= nil,
+  "the new card has its own file in the workspace"
+)
+check(side_text:find("#+begin_quote\nAfter\n#+end_quote", 1, true) ~= nil, "the card quotes the selection")
+check(
+  text():find("Echo: [[id:", 1, true) ~= nil and text():find(":PIN: false", 1, true) ~= nil,
+  "the selection links to it and the old card is unpinned"
+)
+vim.api.nvim_buf_set_lines(side, -1, -1, false, { "What does after mean here?" })
+mode.submit()
+wait(5000, function()
+  return run.busy()
+end, "side submission")
+settle("side turn")
+side_text = table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n")
+check(
+  side_text:find("Echo: What does after mean here?", 1, true) ~= nil,
+  "the side discussion is answered in its own file"
+)
+
 run.shutdown()
 server:kill("sigterm")
 print("coact-mode end-to-end: all checks passed")

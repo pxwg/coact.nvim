@@ -64,7 +64,8 @@ trace, followed by an empty question card for the next turn. Edit anything,
 write the next question there, and submit again.
 
 To ask about a passage, select it and use `:'<,'>CoactMode ask`: a new card
-quotes the selection, the selection links to it, and the card is pinned.
+in its own file quotes the selection, the selection links to it, and the
+card opens in a vertical split, pinned. Write the question below the quote.
 
 `setup()` is optional:
 >lua
@@ -193,7 +194,8 @@ the file again. Pi's bash tool is not sandboxed.
 :CoactMode new [title]          A new card at the end of the file. With a
 :'<,'>CoactMode new             range, the card quotes the selection and the
                                 selection links to it. Not pinned.
-:CoactMode ask                  New card (from the selection) and pin it.
+:CoactMode ask                  New card (from the selection) in its own
+                                file, opened per `ask.open` and pinned.
 :CoactMode pin                  Pin the card at the cursor; a plain heading
                                 becomes a card. Binds a thread on first pin.
 :CoactMode unpin                Unpin; the thread is kept.
@@ -240,6 +242,7 @@ Defaults:
     },
     icons = { ... },
     keymaps = { submit = "<localleader>cs", ... },  -- false disables
+    ask = { open = "vsplit" },  -- Ex command or function(path)
     compact = { keep_recent_tokens = nil },  -- nil: Pi's default
     stream = { max_lines = 12 },
   })

@@ -66,18 +66,13 @@ local function selection_range(bufnr, range)
   return lsp.range(bufnr, range[1], range[2])
 end
 
---- A new card at the end of the file; a selection is quoted and linked.
---- callback(id) runs after the card exists.
-function M.new(opts, callback)
-  opts = opts or {}
-  local bufnr = current()
-  if not in_workspace(bufnr) then
-    return
-  end
+-- Create a card from the selection: callback(result) after it exists.
+local function create(bufnr, opts, new_file, callback)
   local params = {
     textDocument = { uri = vim.uri_from_bufnr(bufnr) },
     range = selection_range(bufnr, opts.range),
     title = opts.title,
+    newFile = new_file,
     labels = config.get().labels,
   }
   lsp.request(bufnr, "coact/new", params, function(err, result)
@@ -85,13 +80,20 @@ function M.new(opts, callback)
       return notify(err, vim.log.levels.ERROR)
     end
     if apply(result) then
-      if callback then
-        callback(result.id)
-      else
-        card_body(bufnr, result.id)
-      end
+      callback(result)
     end
   end)
+end
+
+--- A new card at the end of the file; a selection is quoted and linked.
+function M.new(opts)
+  opts = opts or {}
+  local bufnr = current()
+  if in_workspace(bufnr) then
+    create(bufnr, opts, false, function(result)
+      card_body(bufnr, result.id)
+    end)
+  end
 end
 
 --- Pin the card at the cursor (or at pos) as the chat entry.
@@ -132,18 +134,36 @@ function M.unpin()
 end
 
 --- New card (from the selection) and pin it: a side discussion entry.
+local function open(path)
+  local how = config.get().ask.open
+  if type(how) == "function" then
+    how(path)
+  else
+    vim.cmd(how .. " " .. vim.fn.fnameescape(path))
+  end
+end
+
+--- A side discussion: a new card in its own file, quoting the selection,
+--- opened per ask.open (default: a vertical split) and pinned.
 function M.ask(opts)
-  M.new(opts, function(id)
-    local bufnr = current()
-    lsp.locate(bufnr, id, function(err, target, row)
+  opts = opts or {}
+  local bufnr = current()
+  if not in_workspace(bufnr) then
+    return
+  end
+  if run.busy() then
+    return notify("wait for the running call, or stop it first", vim.log.levels.WARN)
+  end
+  create(bufnr, opts, true, function(result)
+    open(vim.uri_to_fname(result.uri))
+    local target = current()
+    M.attach(target)
+    lsp.locate(target, result.id, function(err, _, row)
       if err then
         return notify(err, vim.log.levels.ERROR)
       end
-      vim.api.nvim_set_current_buf(target)
       M.pin({ row, 0 }, function()
-        -- Below the heading and its drawer: ID, THREAD_ID and PIN.
-        local last = vim.api.nvim_buf_line_count(target)
-        vim.api.nvim_win_set_cursor(0, { last, 0 })
+        vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(target), 0 })
         notify("write your question in this card, then submit")
       end)
     end)
