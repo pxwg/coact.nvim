@@ -10,7 +10,7 @@ CONTENTS                                                        *coact-mode*
 5. A turn                                          |coact-mode-turn|
 6. Traces                                          |coact-mode-trace|
 7. Compaction                                      |coact-mode-compact|
-8. Agent file changes                              |coact-mode-review|
+8. Agent tools and changes                          |coact-mode-review|
 9. Commands                                        |coact-mode-commands|
 10. Mappings                                       |coact-mode-mappings|
 11. Configuration                                  |coact-mode-config|
@@ -168,12 +168,15 @@ Compaction turns the earlier part of a thread into a synthesis card:
    is rounded down to whole cards, and the current question is always kept.
 2. One model call rewrites the earlier cards as knowledge, keeping open
    questions, conflicts and unaccepted interpretations marked as such.
-3. A float shows the summary for review. Edit it if you like, then
-   CTRL-S accepts, `gr` asks for another summary with your instructions, and
-   `q` cancels.
-4. On acceptance a synthesis card linking its sources replaces the
-   summarized cards in the main card; those cards move after the main card,
-   unchanged. Nothing is deleted. The thread, its ID and its pin stay.
+3. The result is reviewed as hunks, like any agent change
+   (|coact-mode-review|): a synthesis card in its own file, transcluded into
+   the main card in place of the summarized cards, which move after the
+   main card, unchanged. Edit the proposal in place if you like; `ga`
+   accepts, `gr` with a reason asks for another summary following it, and
+   `q` or `gr` without a reason cancels.
+4. Nothing is deleted. The thread, its ID and its pin stay. What you accept
+   is what the thread becomes; a partly accepted change is checked by the
+   server like any edit.
 
 `:CoactMode compact [instructions]` compacts between turns. During a run it
 happens when a request fills the model's context window, or when the
@@ -181,13 +184,33 @@ provider reports an overflow, in which case the request is retried after you
 accept. A cancelled or failed compaction changes nothing.
 
 ==============================================================================
-8. AGENT FILE CHANGES                                    *coact-mode-review*
+8. AGENT TOOLS AND CHANGES                               *coact-mode-review*
 
-The agent's `edit` and `write` tools are Pi's own, with one difference: a new
-file inside the chat workspace is written directly, and every other change
-opens coact.nvim's hunk review (|coact.nvim-patch-review|) before anything
-is written. A partially accepted change is reported to the agent so it reads
-the file again. Pi's bash tool is not sandboxed.
+The agent works on cards by ID with six tools; their own descriptions tell
+it how:
+
+  thread_view     outline of a thread: card IDs, kinds, titles, sizes; no
+                  text (default: the current thread)
+  card_read       one card's text, nested cards, links and backlinks
+  card_search     cards containing every word of a query
+  card_create     a new card in its own file, written directly
+  card_edit       exact replacements in one card's own text
+  thread_arrange  a thread's items as an ordered list of card IDs; cards
+                  left out stay in the workspace, after the main card
+
+`card_edit` and `thread_arrange` open coact.nvim's hunk review
+(|coact.nvim-patch-review|) in the cards' buffers, with notes on moved
+cards. You can accept part of a change or rewrite it in place; the agent is
+told what was accepted, why the rest was rejected, and any errors the cards
+have afterwards.
+
+Pi's own `edit` and `write` tools refuse the workspace's Org files. Other
+new files in the workspace are written directly; every other change to a
+file opens the same hunk review. A partially accepted change is reported to
+the agent so it reads the file again. Pi's bash tool is not sandboxed.
+
+The model is told only a few facts about Coact mode (see `prompt` in
+|coact-mode-config|); the tools describe the rest.
 
 ==============================================================================
 9. COMMANDS                                            *coact-mode-commands*
@@ -210,8 +233,10 @@ the file again. Pi's bash tool is not sandboxed.
 :CoactMode open                 Pick a thread from any workspace and open
                                 it; the pinned thread first, then by last
                                 activity, with its latest question.
-:CoactMode search               Pick any card of any workspace by title or
-                                text (trace records are left out).
+:CoactMode search               Pick a top-level thread, note or synthesis
+                                card of any workspace by any text of its
+                                subtree; nested and conversation cards are
+                                not listed.
                                 Uses snacks.picker when installed, else
                                 |vim.ui.select()|.
 :CoactMode build                Build the language server with dune.
@@ -245,6 +270,7 @@ Open and search work from any buffer; map them globally, e.g.:
 Defaults:
 >lua
   require("coact.mode").setup({
+    prompt = nil,         -- system prompt section; see below
     workspace_root = vim.fn.stdpath("data") .. "/coact-mode",
     lsp = { cmd = nil },  -- default: the built server, else coact-zk-lsp
     pi = {
@@ -265,6 +291,16 @@ Defaults:
     stream = { max_lines = 12 },
   })
 <
+`prompt` is the section Coact mode adds to the model's system prompt. Leave
+it nil for the default (`require("coact.mode.config").default_prompt`), give
+a string to replace it, `false` for none, or a function to change it:
+>lua
+  prompt = function(default)
+    return default .. " Write math in Typst inside Org source blocks."
+  end,
+<
+It is read when Pi starts, so it stays the same for a whole thread.
+
 Other Pi extensions that rewrite the context run after Coact mode's and can
 change what is sent; add `--no-extensions` to `pi.args` to exclude them.
 
