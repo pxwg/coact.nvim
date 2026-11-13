@@ -1,0 +1,10 @@
+opam-version: "2.0"
+synopsis: "Chat-workspace language server for coact.nvim Coact mode"
+license: "MIT"
+depends: [
+  "ocaml" {>= "5.1"}
+  "dune" {>= "3.5"}
+  "yojson" {>= "2.0"}
+  "ppx_expect" {with-test}
+]
+build: [["dune" "build" "-p" name "-j" jobs]]

@@ -1,0 +1,3 @@
+[submodule "ocaml/vendor/ospero"]
+	path = ocaml/vendor/ospero
+	url = https://github.com/pxwg/ospero.git

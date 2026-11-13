@@ -1,0 +1,5 @@
+(executable
+ (name coact_zk_lsp)
+ (public_name coact-zk-lsp)
+ (package coact-zk)
+ (libraries coact_zk yojson unix))

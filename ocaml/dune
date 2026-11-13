@@ -1,0 +1,3 @@
+; ospero-core is a git submodule; build it as part of this workspace.
+
+(vendored_dirs vendor)

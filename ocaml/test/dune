@@ -1,0 +1,6 @@
+(library
+ (name coact_zk_test)
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect))
+ (libraries coact_zk yojson))

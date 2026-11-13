@@ -1,0 +1,6 @@
+(lang dune 3.5)
+
+(name coact-zk)
+
+(package
+ (name coact-zk))

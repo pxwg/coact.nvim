@@ -1,0 +1,3 @@
+(library
+ (name coact_zk)
+ (libraries ospero-core yojson unix))
