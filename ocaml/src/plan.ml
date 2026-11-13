@@ -356,47 +356,217 @@ let archived (file : Org.file) (card : Org.card) ~level =
     in
     ensure_newline (String.concat "\n" (List.map relevel lines))
 
-let compact ws ~main ~count ~summary labels ~now =
+type note = { path : string; anchor : string; note : string }
+
+let one_line s = String.map (function '\n' | '\r' | '\t' -> ' ' | c -> c) (String.trim s)
+
+let create ws ~dir ~title ~kind ~body ~now =
+  let title = one_line title in
+  if title = "" then Error "A card needs a title"
+  else
+    let id = Ids.fresh ~now ~taken:(taken ws) in
+    let path = Filename.concat dir (id ^ ".org") in
+    let properties = ("ID", id) :: (match kind with Some k -> [ kind_property k ] | None -> []) in
+    let card = card_text ~level:1 ~title ~properties ~body:(Org_text.of_markdown body) in
+    Ok ({ path; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card }, id, path)
+
+(* Offsets of [sub] in [text] within [start, stop). *)
+let occurrences text sub start stop =
+  let n = String.length sub in
+  let rec go i acc =
+    if i + n > stop then List.rev acc
+    else if String.sub text i n = sub then go (i + 1) (i :: acc)
+    else go (i + 1) acc
+  in
+  go start []
+
+let structural line =
+  let t = String.trim line in
+  let n = String.length line in
+  let rec stars i = if i < n && line.[i] = '*' then stars (i + 1) else i in
+  let s = stars 0 in
+  (s > 0 && (s = n || line.[s] = ' ' || line.[s] = '\t'))
+  || String.uppercase_ascii t = ":PROPERTIES:"
+  || String.uppercase_ascii t = ":END:"
+
+(* The card's own text: between its drawer and its end, around nested cards. *)
+let own_segments (file : Org.file) (card : Org.card) =
+  let own_stop = if card.block then line_start file.text (max card.content_start (card.stop - 1)) else card.stop in
+  let children = List.filter_map (function Org.Card c -> Some c | _ -> None) card.items in
+  let rec segments cursor = function
+    | [] -> [ (cursor, own_stop) ]
+    | (c : Org.card) :: tl -> (cursor, c.start) :: segments c.stop tl
+  in
+  List.filter (fun (a, b) -> b > a) (segments card.content_start children)
+
+let edit ws ~id replacements =
+  match Workspace.find ws id with
+  | None -> Error ("Unknown card " ^ id)
+  | Some (file, card) ->
+      let segments = own_segments file card in
+      let blank = List.for_all (fun (a, b) -> String.trim (Org.sub file.text a b) = "") segments in
+      let one (old, rep) =
+        if List.exists structural (Line_diff.lines rep) then
+          Error "A replacement may not contain a heading or a property drawer; create a new card instead"
+        else if old = "" then
+          if blank then Ok { path = file.path; start = card.content_start; stop = card.content_start; text = ensure_newline rep }
+          else Error "An empty old text only fills a blank card"
+        else
+          match List.concat_map (fun (a, b) -> occurrences file.text old a b) segments with
+          | [ at ] -> Ok { path = file.path; start = at; stop = at + String.length old; text = rep }
+          | [] -> Error (Printf.sprintf "Card %s has no text %S" id old)
+          | _ -> Error (Printf.sprintf "Text %S occurs more than once in card %s; include more context" old id)
+      in
+      let rec all acc = function
+        | [] -> Ok (List.rev acc)
+        | r :: tl -> ( match one r with Ok e -> all (e :: acc) tl | Error e -> Error e)
+      in
+      if replacements = [] then Error "No edits given"
+      else
+        match all [] replacements with
+        | Error e -> Error e
+        | Ok edits ->
+            let sorted = List.sort (fun a b -> compare a.start b.start) edits in
+            let rec overlap = function
+              | a :: (b :: _ as tl) -> a.stop > b.start || (a.start = b.start && a.stop = a.start && b.stop = b.start) || overlap tl
+              | _ -> false
+            in
+            if overlap sorted then Error "Edits overlap" else Ok edits
+
+(* ---- rearranging a thread ---- *)
+
+type slot = Keep of conv | Add of string
+
+let conv_id = function Child c -> c.Org.id | Included k -> k.target
+let same a b = item_start a = item_start b
+
+let first_line s = match Line_diff.lines s with l :: _ -> l | [] -> ""
+
+let rearrange ws (file : Org.file) (main : Org.card) slots =
+  let text = file.text in
+  let items = conversation_items main in
+  let kept = List.filter_map (function Keep c -> Some c | Add _ -> None) slots in
+  let removed = List.filter (fun c -> not (List.exists (same c) kept)) items in
+  (* Own text before the first item, between items, and after the last. *)
+  let prefix, middle, trailing =
+    match items with
+    | [] -> (Org.sub text main.content_start main.stop, [], "")
+    | first :: _ ->
+        let rec gaps = function
+          | a :: (b :: _ as tl) -> Org.sub text (item_stop a) (item_start b) :: gaps tl
+          | _ -> []
+        in
+        let trailing =
+          match List.rev items with Included k :: _ -> Org.sub text k.span.stop main.stop | _ -> ""
+        in
+        (Org.sub text main.content_start (item_start first), gaps items, trailing)
+  in
+  let middle = List.filter (fun s -> String.trim s <> "") middle in
+  let last_included =
+    List.fold_left max (-1)
+      (List.mapi (fun i s -> match s with Add _ | Keep (Included _) -> i | Keep (Child _) -> -1) slots)
+  in
+  let level = main.level in
+  let notes = ref [] in
+  let note anchor n = if anchor <> "" then notes := { path = file.path; anchor; note = n } :: !notes in
+  let includes = Buffer.create 128 and nested = Buffer.create 1024 and moved = Buffer.create 1024 in
+  let move_out (c : Org.card) message =
+    let card = archived file c ~level in
+    note (first_line card) message;
+    Buffer.add_string moved card
+  in
+  List.iteri
+    (fun i slot ->
+      let id = match slot with Add id -> id | Keep c -> conv_id c in
+      if i <= last_included then (
+        let line = Printf.sprintf "#+zk_include: :target %s" id in
+        Buffer.add_string includes (line ^ "\n");
+        match slot with
+        | Add _ -> note line ("Transcluded into the thread: " ^ Workspace.title ws id)
+        | Keep (Child c) ->
+            note line ("Now transcluded: " ^ c.title);
+            move_out c "Defined here, after the thread, and transcluded into it"
+        | Keep (Included _) -> ())
+      else match slot with Keep (Child c) -> Buffer.add_string nested (archived file c ~level:(level + 1)) | _ -> ())
+    slots;
+  List.iter
+    (function
+      | Child c -> move_out c "Left the thread; the card is kept here"
+      | Included k -> ignore k)
+    removed;
+  if String.trim trailing <> "" && Buffer.length nested > 0 then
+    Error "The main card has unsent text after its cards; submit or clear it first"
+  else
+    let own = ensure_newline prefix ^ String.concat "" (List.map ensure_newline middle) in
+    let body =
+      own ^ Buffer.contents includes
+      ^ (if Buffer.length nested = 0 then trailing else "")
+      ^ Buffer.contents nested
+    in
+    let body = if Buffer.length moved > 0 then ensure_newline body ^ Buffer.contents moved else body in
+    Ok ([ { path = file.path; start = main.content_start; stop = main.stop; text = body } ], List.rev !notes)
+
+let thread_card ws main =
   match Workspace.find ws main with
   | None -> Error ("Unknown card " ^ main)
+  | Some (_, (c : Org.card)) when c.block -> Error "A thread's main card must be a heading card"
   | Some (file, card) ->
+      if (Workspace.metadata ws main).thread = None then Error (Printf.sprintf "Card %s is not a thread's main card" main)
+      else Ok (file, card)
+
+let arrange ws ~main ids =
+  match thread_card ws main with
+  | Error e -> Error e
+  | Ok (file, card) -> (
+      let items = conversation_items card in
+      let ancestors = card :: Org.ancestors file card in
+      let rec dup = function x :: tl -> List.mem x tl || dup tl | [] -> false in
+      if dup ids then Error "An item appears twice"
+      else
+        let slot id =
+          match List.find_opt (fun c -> conv_id c = id) items with
+          | Some c -> Ok (Keep c)
+          | None -> (
+              match Workspace.find ws id with
+              | None -> Error ("Unknown card " ^ id)
+              | Some (f, c) ->
+                  if List.exists (fun (a : Org.card) -> a.id = id) ancestors then
+                    Error (Printf.sprintf "Card %s contains the thread" id)
+                  else if f.path = file.path && c.start > card.start && c.stop <= card.stop then
+                    Error (Printf.sprintf "Card %s is already inside the thread" id)
+                  else Ok (Add id))
+        in
+        let rec slots acc = function
+          | [] -> Ok (List.rev acc)
+          | id :: tl -> ( match slot id with Ok s -> slots (s :: acc) tl | Error e -> Error e)
+        in
+        match slots [] ids with Error e -> Error e | Ok s -> rearrange ws file card s)
+
+let compact ws ~main ~count ~summary ~dir labels ~now =
+  match thread_card ws main with
+  | Error e -> Error e
+  | Ok (file, card) ->
       let items = conversation_items card in
       let n = List.length items in
       if count < 1 || count >= n then Error "Compaction must summarize at least one item and keep the rest"
       else
         let summarized = List.filteri (fun i _ -> i < count) items in
-        let id = Ids.fresh ~now ~taken:(taken ws) in
-        let target = function Child c -> c.Org.id | Included k -> k.target in
         let sources =
           List.map
-            (fun i -> let t = target i in Printf.sprintf "[[id:%s][%s]]" t (label (Workspace.title ws t)))
+            (fun i -> let t = conv_id i in Printf.sprintf "[[id:%s][%s]]" t (label (Workspace.title ws t)))
             summarized
         in
         let body = Org_text.of_markdown summary ^ "\n\n" ^ labels.sources ^ ": " ^ String.concat ", " sources in
-        (* A heading inserted among the main card's own transclusion lines would
-           swallow the lines after it, so a summary that replaces a
-           transclusion is itself transcluded and defined after the main card. *)
-        let nested = match summarized with Child _ :: _ -> true | _ -> false in
-        let synthesis ~level =
-          card_text ~level ~title:labels.summary ~properties:[ ("ID", id); kind_property Model.Synthesis ] ~body
-        in
-        let first =
-          if nested then synthesis ~level:(card.level + 1)
-          else Printf.sprintf "#+zk_include: :target %s\n" id
-        in
-        let edits =
-          List.mapi
-            (fun i item ->
-              { path = file.path; start = item_start item; stop = item_stop item; text = (if i = 0 then first else "") })
-            summarized
-        in
-        let archive =
-          (if nested then "" else synthesis ~level:card.level)
-          ^ String.concat ""
-              (List.filter_map (function Child c -> Some (archived file c ~level:card.level) | Included _ -> None) summarized)
-        in
-        let archive_edit =
-          if archive = "" then []
-          else [ { path = file.path; start = card.stop; stop = card.stop; text = prefix_for file.text card.stop ^ archive } ]
-        in
-        Ok (edits @ archive_edit, id)
+        match create ws ~dir ~title:labels.summary ~kind:(Some Model.Synthesis) ~body ~now with
+        | Error e -> Error e
+        | Ok (definition, id, path) -> (
+            let slots = Add id :: List.map (fun c -> Keep c) (List.filteri (fun i _ -> i >= count) items) in
+            match rearrange ws file card slots with
+            | Error e -> Error e
+            | Ok (edits, notes) ->
+                let notes =
+                  { path; anchor = "* " ^ labels.summary;
+                    note = Printf.sprintf "Synthesis of %d item%s that leave the thread" count (if count = 1 then "" else "s") }
+                  :: notes
+                in
+                Ok (definition :: edits, notes, id))

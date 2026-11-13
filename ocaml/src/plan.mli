@@ -59,9 +59,31 @@ val answer :
   Workspace.t -> answer:string -> text:string -> entries:Yojson.Safe.t list ->
   trace_path:string -> labels -> now:float -> (answer, string) result
 
-(** Replace the first [count] conversation items of [main] with a new
-    synthesis card. Summarized nested cards move after the main card,
-    re-leveled; summarized transclusions are removed. Nothing is deleted. *)
+(** A review note: [anchor] is a line of the proposed text of [path]. *)
+type note = { path : string; anchor : string; note : string }
+
+(** A card in a new file [dir/<id>.org]. [kind] [None] makes a plain note.
+    The body is made Org-safe. Returns the edit, the card and its file. *)
+val create :
+  Workspace.t -> dir:string -> title:string -> kind:Model.kind option -> body:string -> now:float ->
+  (edit * string * string, string) result
+
+(** Exact replacements in a card's own text: never in its heading, drawer or
+    nested cards. Each [old] must occur exactly once; an empty [old] fills a
+    blank card. Replacements may not start a heading or a drawer. *)
+val edit : Workspace.t -> id:string -> (string * string) list -> (edit list, string) result
+
+(** Set the conversation items of thread [main] to [ids], in order. Cards
+    leaving the thread move after the main card, unchanged; new ones are
+    transcluded. Org nesting cannot follow a transclusion, so every item up
+    to the last transcluded one is transcluded, its nested card moving after
+    the main card too. Nothing is deleted. *)
+val arrange :
+  Workspace.t -> main:string -> string list -> (edit list * note list, string) result
+
+(** Compaction as a changeset: a synthesis card in [dir/<id>.org] replaces
+    the first [count] items of [main]. Returns its edits, review notes and
+    the synthesis card. *)
 val compact :
-  Workspace.t -> main:string -> count:int -> summary:string -> labels -> now:float ->
-  (edit list * string, string) result
+  Workspace.t -> main:string -> count:int -> summary:string -> dir:string -> labels -> now:float ->
+  (edit list * note list * string, string) result

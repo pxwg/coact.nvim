@@ -236,7 +236,15 @@ let edits_json (edits : Plan.edit list) =
                  (List.filter_map
                     (fun (e : Plan.edit) ->
                       if e.path <> path then None
-                      else Some (`Assoc [ ("range", range t e.start e.stop); ("newText", `String e.text) ]))
+                      else
+                        Some
+                          (`Assoc
+                            [
+                              ("range", range t e.start e.stop);
+                              ("newText", `String e.text);
+                              ("startByte", `Int e.start);
+                              ("stopByte", `Int e.stop);
+                            ]))
                     edits) );
            ])
        paths)
@@ -618,13 +626,86 @@ let answer params =
       ("removed", `Bool result.removed);
     ]
 
+let notes_json (notes : Plan.note list) =
+  `List
+    (List.map
+       (fun (n : Plan.note) -> `Assoc [ ("path", `String n.path); ("anchor", `String n.anchor); ("note", `String n.note) ])
+       notes)
+
 let compact params =
   let ws = analysis () in
   let main = main_param params in
   let count = match int (member "count" params) with Some n -> n | None -> fail "missing count" in
   let summary = Option.value ~default:"" (str (member "summary" params)) in
-  let edits, id = ok_or (Plan.compact ws ~main ~count ~summary (labels params) ~now:(now ())) in
-  `Assoc [ ("edits", edits_json edits); ("synthesis", `String id) ]
+  let edits, notes, id = ok_or (Plan.compact ws ~main ~count ~summary ~dir:!root (labels params) ~now:(now ())) in
+  `Assoc [ ("edits", edits_json edits); ("notes", notes_json notes); ("synthesis", `String id) ]
+
+(* ---- the agent's card tools ---- *)
+
+(* The given thread, else the pinned one. *)
+let thread_param ws params =
+  match str (member "main" params) with
+  | Some m when m <> "" -> m
+  | _ -> (
+      match Thread.pinned ws with
+      | Some t -> t.main
+      | None -> fail "No thread is pinned; give a main card ID")
+
+let thread_view params =
+  let ws = analysis () in
+  ok_or (Query.thread_view ws ~main:(thread_param ws params))
+
+let id_param params = match str (member "id" params) with Some id -> id | None -> fail "missing card id"
+
+let card_read params =
+  ok_or
+    (Query.card_read (analysis ()) ~id:(id_param params)
+       ~offset:(Option.value ~default:1 (int (member "offset" params)))
+       ~limit:(Option.value ~default:200 (int (member "limit" params)))
+       ~raw:(bool (member "raw" params) = Some true))
+
+let card_search params =
+  Query.card_search (analysis ())
+    ~query:(Option.value ~default:"" (str (member "query" params)))
+    ~limit:(Option.value ~default:20 (int (member "limit" params)))
+
+let card_create params =
+  let kind =
+    match str (member "kind" params) with
+    | None | Some "" | Some "note" -> None
+    | Some k -> (
+        match List.assoc_opt k Model.kinds with Some k -> Some k | None -> fail "kind must be user, assistant, synthesis, trace or note")
+  in
+  let edit, id, path =
+    ok_or
+      (Plan.create (analysis ()) ~dir:!root
+         ~title:(Option.value ~default:"" (str (member "title" params)))
+         ~kind ~body:(Option.value ~default:"" (str (member "body" params))) ~now:(now ()))
+  in
+  `Assoc [ ("edits", edits_json [ edit ]); ("id", `String id); ("path", `String path) ]
+
+let card_edit params =
+  let replacements =
+    List.map
+      (fun e ->
+        match (str (member "oldText" e), str (member "newText" e)) with
+        | Some o, Some n -> (o, n)
+        | _ -> fail "each edit needs oldText and newText")
+      (list (member "edits" params))
+  in
+  `Assoc [ ("edits", edits_json (ok_or (Plan.edit (analysis ()) ~id:(id_param params) replacements))) ]
+
+let thread_arrange params =
+  let ws = analysis () in
+  let main = thread_param ws params in
+  let ids = List.filter_map str (list (member "items" params)) in
+  let edits, notes = ok_or (Plan.arrange ws ~main ids) in
+  `Assoc [ ("edits", edits_json edits); ("notes", notes_json notes); ("main", `String main) ]
+
+(* Error diagnostics of the whole workspace, for reports after a change. *)
+let errors _ =
+  let ws = analysis () in
+  diagnostics_json (List.filter Diagnostic.is_error (all_diagnostics ws))
 
 (* Assistant text the user has revised, against the recorded answer. *)
 let human_edits ws (f : Org.file) (c : Org.card) =
@@ -807,6 +888,13 @@ let requests =
     ("coact/decorations", decorations);
     ("coact/trace", trace);
     ("coact/locate", locate);
+    ("coact/thread_view", thread_view);
+    ("coact/card_read", card_read);
+    ("coact/card_search", card_search);
+    ("coact/card_create", card_create);
+    ("coact/card_edit", card_edit);
+    ("coact/thread_arrange", thread_arrange);
+    ("coact/errors", errors);
   ]
 
 let notifications =
@@ -851,6 +939,7 @@ let index dir =
   let shorten n s = if String.length s <= n then s else String.sub s 0 n in
   let card (f : Org.file) (c : Org.card) =
     let meta = Workspace.metadata ws c.id in
+    let top = List.exists (fun (r : Org.card) -> r.id = c.id && r.start = c.start) f.cards in
     let own = Org.own_text f c in
     (* For a thread, the latest question that has text. *)
     let last_question =
@@ -880,6 +969,10 @@ let index dir =
         ("text", `String (shorten 2000 (Conversation.trim_text own)));
         ("last", opt_str last_question);
         ("turns", `Int turns);
+        ("top", `Bool top);
+        (* A root card is found by any text of its subtree. *)
+        ( "subtree",
+          if top then `String (shorten 20000 (Conversation.trim_text (Org.sub f.text c.content_start c.stop))) else `Null );
       ]
   in
   let cards = List.concat_map (fun (f : Org.file) -> List.map (card f) (Org.cards f)) ws.files in

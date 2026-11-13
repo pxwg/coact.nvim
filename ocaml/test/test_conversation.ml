@@ -139,7 +139,10 @@ let%expect_test "submit, answer and compact" =
       docs
   in
   let ws = analyze docs in
-  let edits, synthesis = unwrap (Plan.compact ws ~main:"chat" ~count:2 ~summary:"Monads are monoids." Plan.default_labels ~now:0.) in
+  let edits, notes, synthesis =
+    unwrap (Plan.compact ws ~main:"chat" ~count:2 ~summary:"Monads are monoids." ~dir:"cards" Plan.default_labels ~now:0.)
+  in
+  List.iter (fun (n : Plan.note) -> Printf.printf "note %s | %s | %s\n" (Filename.basename n.path) n.anchor n.note) notes;
   let docs = apply docs edits in
   ids := [ question; answer; draft; synthesis; Option.get r.trace ];
   let ws = analyze docs in
@@ -147,6 +150,7 @@ let%expect_test "submit, answer and compact" =
   let a, _ = Result.get_ok (Conversation.export ws ~main:"chat" options) in
   print_artifact a;
   print_string (mask (List.assoc "trace/chat.org" docs));
+  print_string (mask (List.assoc ("cards/" ^ synthesis ^ ".org") docs));
   let text = List.assoc "c.org" docs in
   let normalize = Str_ids.mask [ question; answer; draft; synthesis; Option.get r.trace ] in
   print_string (normalize text);
@@ -154,6 +158,10 @@ let%expect_test "submit, answer and compact" =
     #0 Q user: What is a monad?
     #0 Q user: What is a monad?
     #1 A assistant: A *monoid* in endofunctors.
+    note 19700101T080000-7741.org | * Summary | Synthesis of 2 items that leave the thread
+    note c.org | #+zk_include: :target 19700101T080000-7741 | Transcluded into the thread: 19700101T080000-7741
+    note c.org | * What is a monad? | Left the thread; the card is kept here
+    note c.org | * Answer | Left the thread; the card is kept here
     #0 S custom/coact.synthesis: Synthesis card \"Summary\" (knowledge distilled from earlier discussion):\n\nMonads are monoids.\n\nSources: [[id:Q][What is a monad?]], [[id:A][Answer]]
     #1 D user: Why endofunctors?
     #+title: Trace: Chat
@@ -173,13 +181,9 @@ let%expect_test "submit, answer and compact" =
     :CONTEXT_KIND: trace
     :END:
     #+coact_trace: :target 19700101T080000-31f2
-    * Chat
-    :PROPERTIES:
-    :ID: chat
-    :THREAD_ID: pi:x
-    :PIN: true
-    :END:
-    ** Summary
+    #+title: Summary
+
+    * Summary
     :PROPERTIES:
     :ID: S
     :CONTEXT_KIND: synthesis
@@ -187,6 +191,13 @@ let%expect_test "submit, answer and compact" =
     Monads are monoids.
 
     Sources: [[id:Q][What is a monad?]], [[id:A][Answer]]
+    * Chat
+    :PROPERTIES:
+    :ID: chat
+    :THREAD_ID: pi:x
+    :PIN: true
+    :END:
+    #+zk_include: :target S
     ** Question
     :PROPERTIES:
     :ID: D
