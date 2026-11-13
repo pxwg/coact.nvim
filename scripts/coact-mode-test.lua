@@ -182,7 +182,7 @@ check(
   first:find("user: What is a monad?", 1, true) ~= nil and select(2, first:gsub("user: What is a monad%?", "")) == 1,
   "the model saw the question once"
 )
-check(first:find("Coact mode", 1, true) ~= nil, "the Coact system prompt section was sent")
+check(first:find("This conversation lives in Org cards", 1, true) ~= nil, "the Coact system prompt section was sent")
 
 -- Language features over the cards.
 local lsp_mod = require("coact.mode.lsp")
@@ -274,11 +274,26 @@ for _, line in ipairs(replay) do
 end
 check(saw_call and saw_result, "the recorded tool call and result were replayed from the trace")
 
--- 4. new files in the workspace are written without review
+-- 4. cards change through the card tools; other new files go to disk
 local created = root .. "/agent-card.org"
 ask("please create " .. created)
-submit("write turn")
-check(vim.uv.fs_stat(created) ~= nil, "the agent created a card file in the workspace directly")
+submit("card write turn")
+check(vim.uv.fs_stat(created) == nil and text():find("card tools", 1, true) ~= nil, "writing a card file is refused")
+local plain = root .. "/notes2.txt"
+ask("please create " .. plain)
+submit("plain write turn")
+check(vim.uv.fs_stat(plain) ~= nil, "other new files in the workspace are written directly")
+ask("please outline")
+submit("outline turn")
+check(text():find('"kind": "assistant"', 1, true) ~= nil, "thread_view outlines the current thread")
+ask("please note Free monads")
+submit("create turn")
+local function cards_titled(title)
+  return vim.tbl_filter(function(path)
+    return vim.tbl_contains(vim.fn.readfile(path), "* " .. title)
+  end, vim.fn.glob(root .. "/*.org", false, true))
+end
+check(#cards_titled("Free monads") == 1, "card_create writes a new card file directly")
 
 -- 5. changes to existing files go through coact.nvim's hunk review
 local patch_session = require("coact.patch_session")
@@ -312,54 +327,72 @@ review("gr")
 check(vim.fn.readfile(outside)[1] == "beta", "a rejected edit left the file unchanged")
 check(text():find("Final answer: the file says .*rejected") ~= nil, "the agent learned the edit was rejected")
 
--- 6. manual compaction, reviewed and accepted
-mode.compact()
-local review_buf
-wait(30000, function()
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    local b = vim.api.nvim_win_get_buf(win)
-    if vim.api.nvim_win_get_config(win).relative ~= "" and vim.bo[b].filetype == "org" then
-      review_buf = b
-      return true
-    end
+local function card_review(decision)
+  wait(30000, function()
+    return patch_session._active_session(buf) ~= nil
+  end, "card review")
+  vim.api.nvim_buf_call(buf, function()
+    vim.fn.maparg(decision, "n", false, true).callback()
+  end)
+end
+local answer_row = find_line("^A monoid in the category of endofunctors%.$")
+local answer_id
+for row = answer_row, 1, -1 do
+  answer_id = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]:match("^:ID: (%S+)")
+  if answer_id then
+    break
   end
-  return false
+end
+ask("please fix " .. answer_id .. " monoid MONOID")
+mode.submit()
+card_review("ga")
+settle("card edit")
+check(text():find("A MONOID in the category", 1, true) ~= nil, "card_edit changes the card after review")
+check(text():find("Accepted 1 change", 1, true) ~= nil, "the agent hears what was accepted")
+
+-- 6. manual compaction, reviewed as hunks; a reason redoes the summary
+local function synthesis_files()
+  return cards_titled("Summary")
+end
+local requests_before = #requests()
+mode.compact()
+wait(30000, function()
+  return patch_session._active_session(buf) ~= nil
 end, "compaction review")
-local summary = table.concat(vim.api.nvim_buf_get_lines(review_buf, 0, -1, false), "\n")
-check(summary:find("SUMMARY", 1, true) ~= nil, "the summary is offered for review")
-vim.api.nvim_buf_call(review_buf, function()
-  vim.fn.maparg("<C-s>", "n", false, true).callback()
-end)
+vim.ui.input = function(_, on_confirm)
+  on_confirm("shorter please")
+end
+card_review("gr")
+wait(30000, function()
+  local all = requests()
+  return #all > requests_before + 1 and joined(all[#all]):find("shorter please", 1, true) ~= nil
+end, "redone summary")
+check(true, "rejecting with a reason redoes the summary with it")
+vim.ui.input = function(_, on_confirm)
+  on_confirm("")
+end
+card_review("ga")
 settle("compaction")
 body = text()
-check(body:find(":CONTEXT_KIND: synthesis", 1, true) ~= nil, "a synthesis card was created")
-check(body:find("Sources: [[id:", 1, true) ~= nil, "the synthesis card links its sources")
+local synthesis = synthesis_files()
+check(#synthesis == 1, "a synthesis card was created in its own file")
+check(
+  table.concat(vim.fn.readfile(synthesis[1]), "\n"):find("Sources: [[id:", 1, true) ~= nil,
+  "the synthesis card links its sources"
+)
+check(body:find("#+zk_include: :target", 1, true) ~= nil, "the synthesis card is transcluded into the thread")
 check(body:find("Echo: Why endofunctors?", 1, true) ~= nil, "summarized cards are kept, not deleted")
 
 -- 7. filling the context window compacts during the run, with review
 ask("fill the context")
 mode.submit()
-local auto_review
 wait(30000, function()
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    local b = vim.api.nvim_win_get_buf(win)
-    if vim.api.nvim_win_get_config(win).relative ~= "" and vim.bo[b].filetype == "org" then
-      auto_review = b
-      return true
-    end
-  end
-  return false
+  return patch_session._active_session(buf) ~= nil
 end, "threshold compaction review")
-check(
-  vim.api.nvim_win_get_config(vim.fn.bufwinid(auto_review)).title[1][1]:find("threshold", 1, true) ~= nil,
-  "threshold compaction asks for review during the run"
-)
-vim.api.nvim_buf_call(auto_review, function()
-  vim.fn.maparg("<C-s>", "n", false, true).callback()
-end)
+check(run.phase() == "running", "threshold compaction asks for review during the run")
+card_review("ga")
 settle("threshold compaction")
-local _, synth = text():gsub(":CONTEXT_KIND: synthesis", "")
-check(synth == 2, "the run's compaction produced a second synthesis card")
+check(#synthesis_files() == 2, "the run's compaction produced a second synthesis card")
 check(text():find("Echo: the context is full", 1, true) ~= nil, "the run finished after compacting")
 
 -- 8. the thread survives a Pi restart through its session id
@@ -371,7 +404,7 @@ submit("resumed turn")
 check(text():find("Echo: After the restart?", 1, true) ~= nil, "the thread continued after restarting Pi")
 local resumed = joined(last_request())
 check(
-  resumed:find("synthesis", 1, true) ~= nil and resumed:find("SUMMARY", 1, true) ~= nil,
+  resumed:find("Synthesis card", 1, true) ~= nil and resumed:find("SUMMARY", 1, true) ~= nil,
   "the compacted thread sends the synthesis card"
 )
 local sessions = vim.fn.glob(root .. "/.coact/sessions/*.jsonl", false, true)
@@ -441,10 +474,12 @@ check(
   "the pinned thread is offered first, with its latest question"
 )
 offered = nil
+local chosen
 vim.ui.select = function(items, _, choose)
   offered = items
   for _, entry in ipairs(items) do
-    if entry.card.title == "What is a monad?" then
+    if entry.text:find("After the restart?", 1, true) then
+      chosen = entry
       return choose(entry)
     end
   end
@@ -454,9 +489,12 @@ wait(10000, function()
   return offered ~= nil and vim.api.nvim_buf_get_name(0) == vim.api.nvim_buf_get_name(buf)
 end, "search")
 check(
-  vim.api.nvim_get_current_line() == "** What is a monad?" or vim.api.nvim_get_current_line() == "* What is a monad?",
-  "search jumps to the card's heading"
+  chosen.card.title == "Monads" and vim.api.nvim_get_current_line() == "* Monads",
+  "search finds a thread by text in its subtree"
 )
+check(#vim.tbl_filter(function(entry)
+  return entry.card.kind == "user" or entry.card.kind == "assistant" or entry.card.kind == "trace" or not entry.card.top
+end, offered) == 0, "search lists only top-level thread, note and synthesis cards")
 
 run.shutdown()
 server:kill("sigterm")

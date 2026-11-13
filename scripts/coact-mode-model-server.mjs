@@ -8,6 +8,9 @@
 //   - "please read <path>"             -> a read tool call
 //   - "please create <path>"           -> a write tool call
 //   - "please edit <path> <old> <new>" -> an edit tool call
+//   - "please outline"                 -> thread_view
+//   - "please fix <id> <old> <new>"    -> card_edit
+//   - "please note <title>"            -> card_create
 //   - "please wait"                    -> a slow stream, for stopping
 //   - "fill the context"               -> usage near the context window
 //   - otherwise                        -> "Echo: <question>"
@@ -30,6 +33,11 @@ function reply(messages) {
   const question = text(last.content);
   const read = question.match(/please read (\S+)/);
   if (read) return { tool: { name: "read", arguments: { path: read[1] } } };
+  if (/please outline/.test(question)) return { tool: { name: "thread_view", arguments: {} } };
+  const fix = question.match(/please fix (\S+) (\S+) (\S+)/);
+  if (fix) return { tool: { name: "card_edit", arguments: { id: fix[1], edits: [{ oldText: fix[2], newText: fix[3] }] } } };
+  const note = question.match(/please note (.+)/);
+  if (note) return { tool: { name: "card_create", arguments: { title: note[1].trim(), body: "Free monads are free.", kind: "synthesis" } } };
   const edit = question.match(/please edit (\S+) (\S+) (\S+)/);
   if (edit) return { tool: { name: "edit", arguments: { path: edit[1], edits: [{ oldText: edit[2], newText: edit[3] }] } } };
   const create = question.match(/please create (\S+)/);
