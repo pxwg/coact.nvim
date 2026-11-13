@@ -41,6 +41,26 @@ The provider layer keeps each backend protocol small and explicit while normaliz
 - `blink.cmp` source where `$` comes from provider skills, `/` opens CLI-style slash commands, and `@` expands Neovim context; `@file:`/`@image:` path selection opens picker integrations instead of blink path candidates.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
 
+## Coact mode
+
+Coact mode holds a whole conversation in Org cards. A pinned main card is the
+conversation: its question and answer cards, transclusions and synthesis
+cards are exported to Pi as native messages before every request, so editing
+an earlier answer changes what the model sees next. Answers and their tool
+traces are written back as cards, compaction becomes a reviewed synthesis
+card, and agent file changes go through Neovim review. An OCaml language
+server built on [ospero-core](https://github.com/pxwg/ospero) checks the card
+structure and computes the export.
+
+```vim
+:CoactMode init      " a chat workspace
+:CoactMode pin       " pin the card under the cursor
+:CoactMode submit    " send its question
+```
+
+Build the server with `:CoactMode build` (OCaml 5, dune, yojson) and see
+`:help coact-mode`.
+
 ## Requirements
 
 - Neovim 0.10 or newer.

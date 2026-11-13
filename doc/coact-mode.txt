@@ -1,0 +1,279 @@
+*coact-mode.txt*        Conversations through a Zettelkasten of Org cards
+
+==============================================================================
+CONTENTS                                                        *coact-mode*
+
+1. Overview                                        |coact-mode-overview|
+2. Requirements                                    |coact-mode-requirements|
+3. Quick start                                     |coact-mode-quickstart|
+4. Cards                                           |coact-mode-cards|
+5. A turn                                          |coact-mode-turn|
+6. Traces                                          |coact-mode-trace|
+7. Compaction                                      |coact-mode-compact|
+8. Agent file changes                              |coact-mode-review|
+9. Commands                                        |coact-mode-commands|
+10. Mappings                                       |coact-mode-mappings|
+11. Configuration                                  |coact-mode-config|
+12. Language server                                |coact-mode-lsp|
+13. Files                                          |coact-mode-files|
+
+==============================================================================
+1. OVERVIEW                                            *coact-mode-overview*
+
+Coact mode is a conversation with an agent held entirely in Org cards. One
+card is pinned as the chat entry, the main card; its nested cards and
+transclusions, in order, are the conversation. Before every model request the
+current cards are exported to Pi as its native messages, so editing an
+earlier question or answer edits what the model sees next. Pi's own history
+records what happened; it never overrides a card you revised.
+
+The parts:
+- `coact-zk-lsp`, an OCaml language server on ospero-core: card syntax,
+  thread policy, diagnostics, navigation, the conversation export and the
+  structural edit plans.
+- `extensions/pi/coact-mode.ts`, loaded into a Pi RPC process per thread: it
+  supplies the exported cards as context, records each run, compacts into
+  reviewed synthesis cards, and routes file writes through Neovim review.
+- `lua/coact/mode/`, the Neovim side: commands, pinning, locking the card
+  during calls, streaming, writing answers and traces back, and reviews.
+
+==============================================================================
+2. REQUIREMENTS                                    *coact-mode-requirements*
+
+- Neovim 0.10 or newer.
+- Pi with `--mode rpc`, `--session-id` and `--session-dir`, and a model.
+- OCaml 5 with dune and yojson to build the server: `:CoactMode build`, or
+  `dune build --root ocaml` in the plugin directory. The ospero-core library
+  is a git submodule at `ocaml/vendor/ospero`.
+
+Run `:checkhealth coact.mode` to verify the setup.
+
+==============================================================================
+3. QUICK START                                      *coact-mode-quickstart*
+
+>vim
+  :CoactMode init          " a workspace with chat.org
+<
+Write a heading and a question under it, then:
+>vim
+  :CoactMode pin           " the heading becomes the pinned main card
+  :CoactMode submit        " the question becomes a user card and is sent
+<
+The answer arrives under the question in an assistant card, linked to its
+trace, followed by an empty question card for the next turn. Edit anything,
+write the next question there, and submit again.
+
+To ask about a passage, select it and use `:'<,'>CoactMode ask`: a new card
+quotes the selection, the selection links to it, and the card is pinned.
+
+`setup()` is optional:
+>lua
+  require("coact.mode").setup({
+    pi = { model = "anthropic/claude-sonnet-4-5" },
+  })
+<
+
+==============================================================================
+4. CARDS                                                  *coact-mode-cards*
+
+A card is an Org heading with an `:ID:` property, or a `#+begin_zk :id ...`
+block. Headings without an ID belong to the enclosing card.
+>org
+  * Monads
+  :PROPERTIES:
+  :ID: 20261113T201500-1a2b
+  :THREAD_ID: pi:0192e7a1-...
+  :PIN: true
+  :END:
+  ** What is a monad?
+  :PROPERTIES:
+  :ID: 20261113T201512-3c4d
+  :CONTEXT_KIND: user
+  :END:
+  What is a monad?
+<
+`:CONTEXT_KIND:` gives the card's role in the conversation:
+
+  user        your message
+  assistant   the agent's message
+  synthesis   knowledge distilled from earlier discussion, sent as user-side
+              material
+  trace       a run record or its readable account; see |coact-mode-trace|
+
+A card without `:CONTEXT_KIND:` in the main card is sent as reference
+material, with a warning. Text of the main card outside its cards is not sent.
+
+`:THREAD_ID:` names the Pi session of a main card and `:PIN:` marks the chat
+entry. Unpinning keeps the thread; pinning the card again resumes it, also
+after restarting Neovim. One card is pinned at a time.
+
+References:
+  `[[id:X][label]]`             a link; it is not expanded
+  `#+zk_include: :target X`     transclude card X at this point
+  `#+coact_trace: :target X`    a readable account of trace record X
+
+The server reports structure problems as diagnostics: duplicate IDs, a pin
+without a thread, two pinned cards, nested threads, unknown references,
+transclusion cycles and broken trace records. Errors withhold the export:
+nothing is sent from cards that do not make sense.
+
+==============================================================================
+5. A TURN                                                  *coact-mode-turn*
+
+`:CoactMode submit` sends the pinned thread, from any of its buffers:
+
+1. The question is the last user card. Text written directly in the main
+   card after its cards becomes a new user card first.
+2. An empty assistant card is added after the question as the answer slot.
+3. The cards are exported. If you revised cards since the last answer, a
+   short diff of the changes precedes the question.
+4. The card buffer is read-only while the call runs. Streaming text and tool
+   activity show under the answer heading.
+5. When Pi settles, the final answer is written into the slot (Markdown that
+   would break the card structure is converted to Org), the run is recorded
+   as trace cards, a new empty question card follows, and the buffer is
+   saved and editable again.
+
+`:CoactMode stop` aborts the call; a partial answer is kept, an empty slot is
+removed.
+
+Answers record their origin: an assistant card you edited is marked with the
+revised icon and the lines you changed are underlined.
+
+==============================================================================
+6. TRACES                                                 *coact-mode-trace*
+
+Every answer links a readable trace card. Both trace cards live in
+`trace/<main-id>.org`:
+- the record holds Pi's session entries of the run verbatim in a
+  `#+begin_src jsonl` block;
+- the readable card consumes it with `#+coact_trace` and is what you see on
+  hover or with `:CoactMode trace`.
+
+In later turns the recorded tool calls and results are replayed before the
+answer they led to, in their original order; the card's current text replaces
+the recorded final answer. Nothing is re-executed.
+
+==============================================================================
+7. COMPACTION                                           *coact-mode-compact*
+
+Compaction turns the earlier part of a thread into a synthesis card:
+
+1. Pi's cut-point search runs over the cards and picks what to keep; the cut
+   is rounded down to whole cards, and the current question is always kept.
+2. One model call rewrites the earlier cards as knowledge, keeping open
+   questions, conflicts and unaccepted interpretations marked as such.
+3. A float shows the summary for review. Edit it if you like, then
+   CTRL-S accepts, `gr` asks for another summary with your instructions, and
+   `q` cancels.
+4. On acceptance a synthesis card linking its sources replaces the
+   summarized cards in the main card; those cards move after the main card,
+   unchanged. Nothing is deleted. The thread, its ID and its pin stay.
+
+`:CoactMode compact [instructions]` compacts between turns. During a run it
+happens when a request fills the model's context window, or when the
+provider reports an overflow, in which case the request is retried after you
+accept. A cancelled or failed compaction changes nothing.
+
+==============================================================================
+8. AGENT FILE CHANGES                                    *coact-mode-review*
+
+The agent's `edit` and `write` tools are Pi's own, with one difference: a new
+file inside the chat workspace is written directly, and every other change
+opens coact.nvim's hunk review (|coact.nvim-patch-review|) before anything
+is written. A partially accepted change is reported to the agent so it reads
+the file again. Pi's bash tool is not sandboxed.
+
+==============================================================================
+9. COMMANDS                                            *coact-mode-commands*
+
+:CoactMode init [dir]           Create a chat workspace (default: a new
+                                directory under `workspace_root`) and open
+                                its chat.org.
+:CoactMode new [title]          A new card at the end of the file. With a
+:'<,'>CoactMode new             range, the card quotes the selection and the
+                                selection links to it. Not pinned.
+:CoactMode ask                  New card (from the selection) and pin it.
+:CoactMode pin                  Pin the card at the cursor; a plain heading
+                                becomes a card. Binds a thread on first pin.
+:CoactMode unpin                Unpin; the thread is kept.
+:CoactMode submit               Send the pinned thread's question.
+:CoactMode stop                 Abort the running call.
+:CoactMode compact [text]       Compact the thread between turns.
+:CoactMode trace                Show the trace under the cursor.
+:CoactMode build                Build the language server with dune.
+:CoactMode status               Show whether a call is running.
+
+==============================================================================
+10. MAPPINGS                                           *coact-mode-mappings*
+
+Buffer-local mappings in workspace Org buffers (`keymaps` in setup):
+
+  <localleader>cs   submit          <localleader>cn   new (also Visual)
+  <localleader>cx   stop            <localleader>ca   ask (also Visual)
+  <localleader>cp   pin             <localleader>cc   compact
+  <localleader>cu   unpin           <localleader>ct   trace
+
+The targets are also available globally:
+  <Plug>(CoactModeSubmit) <Plug>(CoactModeStop) <Plug>(CoactModePin)
+  <Plug>(CoactModeUnpin) <Plug>(CoactModeNew) <Plug>(CoactModeAsk)
+  <Plug>(CoactModeCompact) <Plug>(CoactModeTrace)
+
+==============================================================================
+11. CONFIGURATION                                        *coact-mode-config*
+
+Defaults:
+>lua
+  require("coact.mode").setup({
+    workspace_root = vim.fn.stdpath("data") .. "/coact-mode",
+    lsp = { cmd = nil },  -- default: the built server, else coact-zk-lsp
+    pi = {
+      command = { "pi", "--mode", "rpc" },
+      model = nil,        -- passed as --model
+      args = {},          -- e.g. { "--no-extensions" }
+      env = {},
+    },
+    labels = {            -- titles written into new cards
+      question = "Question", answer = "Answer", summary = "Summary",
+      trace = "Trace", trace_source = "Trace record", sources = "Sources",
+      from = "From", card = "New card",
+    },
+    icons = { ... },
+    keymaps = { submit = "<localleader>cs", ... },  -- false disables
+    compact = { keep_recent_tokens = nil },  -- nil: Pi's default
+    stream = { max_lines = 12 },
+  })
+<
+Other Pi extensions that rewrite the context run after Coact mode's and can
+change what is sent; add `--no-extensions` to `pi.args` to exclude them.
+
+Highlight groups: `CoactModeUser`, `CoactModeAssistant`, `CoactModeSynthesis`,
+`CoactModeTrace`, `CoactModeNote`, `CoactModePin`, `CoactModeRevised`,
+`CoactModeStream`, `CoactModeBusy`.
+
+`require("coact.mode").status()` returns a short string while a call runs,
+for statuslines, and nil otherwise.
+
+==============================================================================
+12. LANGUAGE SERVER                                          *coact-mode-lsp*
+
+`coact-zk-lsp` attaches to Org buffers inside a workspace. It provides
+diagnostics, hover (card summary, readable traces), go to definition for
+links, transclusions and traces, references, document symbols, and
+completion of card IDs after `[[id:` and `:target`, of `CONTEXT_KIND` values
+and of the Coact keywords. The `coact/*` requests used by Coact mode are
+listed in `ocaml/bin/coact_zk_lsp.ml`.
+
+==============================================================================
+13. FILES                                                  *coact-mode-files*
+
+<workspace>/.coact-zk            marks the workspace
+<workspace>/*.org                cards
+<workspace>/trace/<main>.org     trace records and readable traces
+<workspace>/.coact/sessions/     Pi sessions, one per thread
+<workspace>/.coact/threads/      each thread's working directory
+<workspace>/.coact/baselines/    cards as of the last answer, for revision
+                                 notes
+<workspace>/.coact/requests/     exported artifacts handed to Pi
+
+ vim:tw=78:ts=8:ft=help:norl:
