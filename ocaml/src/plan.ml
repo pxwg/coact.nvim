@@ -183,7 +183,8 @@ let new_card ws ~path ?into ~selection ~title labels ~now =
               | Some (c : Org.card) -> Printf.sprintf "%s [[id:%s][%s]]\n" labels.from c.id (label c.title)
               | None -> ""
             in
-            Printf.sprintf "#+begin_quote\n%s\n#+end_quote\n%s" quote from
+            (* A blank line keeps the question its own paragraph. *)
+            Printf.sprintf "#+begin_quote\n%s\n#+end_quote\n%s\n" quote from
       in
       (* An empty last line to write in. *)
       let body = body ^ "\n" in
@@ -244,7 +245,7 @@ let submit ws ~main labels ~now =
         let question = fresh () and answer = fresh () in
         let body = Conversation.trim_text trailing in
         let user =
-          card_text ~level ~title:(Org_text.title_of body)
+          card_text ~level ~title:(let t = Org_text.headline body in if t = "" then labels.question else t)
             ~properties:[ ("ID", question); kind_property Model.User ] ~body
         in
         Ok

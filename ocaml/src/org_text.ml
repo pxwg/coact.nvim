@@ -107,6 +107,31 @@ let of_markdown text =
   let out = List.rev (drop (List.rev (drop out))) in
   String.concat "\n" out
 
+(** The line that best names a message: the first line of its last
+    paragraph outside blocks and keyword lines, where a question written
+    after quoted material sits. *)
+let headline ?(limit = 60) text =
+  let rec go in_block current paragraphs = function
+    | [] -> List.rev (if current = [] then paragraphs else List.rev current :: paragraphs)
+    | l :: rest ->
+        let t = String.lowercase_ascii (String.trim l) in
+        if in_block then go (not (String.starts_with ~prefix:"#+end_" t)) current paragraphs rest
+        else if String.starts_with ~prefix:"#+begin_" t then
+          go true [] (if current = [] then paragraphs else List.rev current :: paragraphs) rest
+        else if String.starts_with ~prefix:"#+" t then go false current paragraphs rest
+        else if t = "" then go false [] (if current = [] then paragraphs else List.rev current :: paragraphs) rest
+        else go false (String.trim l :: current) paragraphs rest
+  in
+  let line =
+    match List.rev (go false [] [] (Line_diff.lines text)) with
+    | (first :: _) :: _ -> first
+    | _ -> ""
+  in
+  if String.length line <= limit then line
+  else
+    let rec cut i = if i > 0 && Char.code line.[i] land 0xC0 = 0x80 then cut (i - 1) else i in
+    String.sub line 0 (cut limit) ^ "…"
+
 (** Plain text of a heading title: first non-blank line, shortened. *)
 let title_of ?(limit = 60) text =
   let line =

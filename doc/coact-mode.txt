@@ -63,6 +63,10 @@ The answer arrives under the question in an assistant card, linked to its
 trace, followed by an empty question card for the next turn. Edit anything,
 write the next question there, and submit again.
 
+After restarting Neovim, `:CoactMode open` lists the threads of every
+workspace, most recent first, and `:CoactMode search` finds any card by its
+title or text. The pinned card stays pinned; submit continues its thread.
+
 To ask about a passage, select it and use `:'<,'>CoactMode ask`: a new card
 in its own file quotes the selection, the selection links to it, and the
 card opens in a vertical split, pinned. Write the question below the quote.
@@ -203,6 +207,13 @@ the file again. Pi's bash tool is not sandboxed.
 :CoactMode stop                 Abort the running call.
 :CoactMode compact [text]       Compact the thread between turns.
 :CoactMode trace                Show the trace under the cursor.
+:CoactMode open                 Pick a thread from any workspace and open
+                                it; the pinned thread first, then by last
+                                activity, with its latest question.
+:CoactMode search               Pick any card of any workspace by title or
+                                text (trace records are left out).
+                                Uses snacks.picker when installed, else
+                                |vim.ui.select()|.
 :CoactMode build                Build the language server with dune.
 :CoactMode status               Show whether a call is running.
 
@@ -220,6 +231,13 @@ The targets are also available globally:
   <Plug>(CoactModeSubmit) <Plug>(CoactModeStop) <Plug>(CoactModePin)
   <Plug>(CoactModeUnpin) <Plug>(CoactModeNew) <Plug>(CoactModeAsk)
   <Plug>(CoactModeCompact) <Plug>(CoactModeTrace)
+  <Plug>(CoactModeOpen) <Plug>(CoactModeSearch)
+
+Open and search work from any buffer; map them globally, e.g.:
+>lua
+  vim.keymap.set("n", "<leader>co", "<Plug>(CoactModeOpen)")
+  vim.keymap.set("n", "<leader>cf", "<Plug>(CoactModeSearch)")
+<
 
 ==============================================================================
 11. CONFIGURATION                                        *coact-mode-config*
@@ -270,6 +288,8 @@ listed in `ocaml/bin/coact_zk_lsp.ml`.
 ==============================================================================
 13. FILES                                                  *coact-mode-files*
 
+<workspace_root>/workspaces.json workspaces created or opened elsewhere,
+                                 so open and search find them
 <workspace>/.coact-zk            marks the workspace
 <workspace>/*.org                cards
 <workspace>/trace/<main>.org     trace records and readable traces

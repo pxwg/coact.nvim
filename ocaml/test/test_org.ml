@@ -89,3 +89,11 @@ let%expect_test "markdown answers become org-safe" =
     let x = 1
     #+end_src
     |}]
+
+let%expect_test "a question after quoted material names its card" =
+  print_endline (Org_text.headline "#+begin_quote\nAfter\n#+end_quote\nFrom [[id:a][Answer]]\n\nWhat does after mean?\nMore detail.\n");
+  print_endline (Org_text.headline "What is a monad?\n");
+  [%expect {|
+    What does after mean?
+    What is a monad?
+    |}]

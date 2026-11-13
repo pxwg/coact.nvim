@@ -2,6 +2,8 @@
 -- language server, and a scripted model server. Run from the plugin root:
 --   nvim --headless -u NONE -c 'set rtp+=.' -l scripts/coact-mode-test.lua
 local plugin = vim.fn.getcwd()
+-- Absolute, so modules still load after the test changes directory.
+vim.opt.rtp:prepend(plugin)
 local tmp = vim.fn.tempname()
 vim.fn.mkdir(tmp, "p")
 local log = tmp .. "/model.log"
@@ -52,6 +54,7 @@ end, "model server")
 local mode = require("coact.mode")
 local run = require("coact.mode.run")
 mode.setup({
+  workspace_root = tmp .. "/workspaces",
   keymaps = false,
   compact = { keep_recent_tokens = 20 },
   pi = {
@@ -407,6 +410,52 @@ side_text = table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n")
 check(
   side_text:find("Echo: What does after mean here?", 1, true) ~= nil,
   "the side discussion is answered in its own file"
+)
+
+-- 10. threads and cards can be found again from outside the workspace
+vim.cmd("only")
+vim.cmd("enew")
+local finder = require("coact.mode.finder")
+local index
+finder.index(function(cards)
+  index = cards
+end)
+wait(10000, function()
+  return index ~= nil
+end, "index")
+local threads = vim.tbl_filter(function(card)
+  return card.thread ~= nil
+end, index)
+check(#threads == 2, "the index finds both threads of the workspace")
+local offered
+vim.ui.select = function(items, _, choose)
+  offered = items
+  choose(items[1])
+end
+mode.open()
+wait(10000, function()
+  return offered ~= nil and vim.api.nvim_buf_get_name(0) == vim.api.nvim_buf_get_name(side)
+end, "open")
+check(
+  offered[1].card.pin and offered[1].label:find("What does after mean here?", 1, true) ~= nil,
+  "the pinned thread is offered first, with its latest question"
+)
+offered = nil
+vim.ui.select = function(items, _, choose)
+  offered = items
+  for _, entry in ipairs(items) do
+    if entry.card.title == "What is a monad?" then
+      return choose(entry)
+    end
+  end
+end
+mode.search()
+wait(10000, function()
+  return offered ~= nil and vim.api.nvim_buf_get_name(0) == vim.api.nvim_buf_get_name(buf)
+end, "search")
+check(
+  vim.api.nvim_get_current_line() == "** What is a monad?" or vim.api.nvim_get_current_line() == "* What is a monad?",
+  "search jumps to the card's heading"
 )
 
 run.shutdown()

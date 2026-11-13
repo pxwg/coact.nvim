@@ -62,7 +62,79 @@ function M.init(dir)
   if vim.uv.fs_stat(main) == nil then
     assert(write_file(main, "#+title: Chat\n"))
   end
+  M.remember(dir)
   return dir, main
+end
+
+-- ---- known workspaces ----
+
+local function registry_path()
+  return vim.fs.joinpath(config.get().workspace_root, "workspaces.json")
+end
+
+local function registered()
+  local ok, list = pcall(vim.json.decode, read_file(registry_path()) or "[]")
+  return ok and type(list) == "table" and list or {}
+end
+
+--- Record a workspace so it can be found again from anywhere.
+-- One spelling per directory: symlinked paths (/var, /private/var) collapse.
+local function canonical(path)
+  return vim.fs.normalize(vim.uv.fs_realpath(path) or path)
+end
+
+function M.remember(root)
+  root = canonical(root)
+  local list, present = {}, false
+  for _, known in ipairs(registered()) do
+    if vim.uv.fs_stat(vim.fs.joinpath(known, M.marker)) then
+      table.insert(list, known)
+      present = present or known == root
+    end
+  end
+  if not present then
+    table.insert(list, root)
+    write_file(registry_path(), vim.json.encode(list))
+  end
+end
+
+--- Every workspace that still exists: registered ones and those under
+--- workspace_root.
+function M.known()
+  local seen, out = {}, {}
+  local function add(root)
+    root = canonical(root)
+    if not seen[root] and vim.uv.fs_stat(vim.fs.joinpath(root, M.marker)) then
+      seen[root] = true
+      table.insert(out, root)
+    end
+  end
+  for _, root in ipairs(registered()) do
+    add(root)
+  end
+  local base = config.get().workspace_root
+  for name, type in vim.fs.dir(base) do
+    if type == "directory" then
+      add(vim.fs.joinpath(base, name))
+    end
+  end
+  return out
+end
+
+--- Last activity of a thread: its Pi session file, if any.
+function M.activity(root, thread)
+  local id = M.session_id(thread)
+  if not id then
+    return nil
+  end
+  local newest
+  for _, file in ipairs(vim.fn.glob(vim.fs.joinpath(M.sessions(root), "*_" .. id .. ".jsonl"), false, true)) do
+    local stat = vim.uv.fs_stat(file)
+    if stat and (not newest or stat.mtime.sec > newest) then
+      newest = stat.mtime.sec
+    end
+  end
+  return newest
 end
 
 function M.state_path(root, ...)

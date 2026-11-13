@@ -234,6 +234,16 @@ function M.build()
   )
 end
 
+--- Pick a thread from any workspace and open it.
+function M.open()
+  require("coact.mode.finder").threads()
+end
+
+--- Search every card of every workspace.
+function M.search()
+  require("coact.mode.finder").cards()
+end
+
 --- A short status for statuslines: nil when idle.
 function M.status()
   local phase = run.status()
@@ -260,6 +270,8 @@ local subcommands = {
     M.compact(#args > 0 and table.concat(args, " ") or nil)
   end,
   trace = M.trace,
+  open = M.open,
+  search = M.search,
   build = M.build,
   status = function()
     notify(M.status() or "idle")
@@ -331,9 +343,11 @@ end
 --- Attach Coact mode to a workspace Org buffer.
 function M.attach(bufnr)
   bufnr = bufnr or current()
-  if not workspace.root(bufnr) then
+  local root = workspace.root(bufnr)
+  if not root then
     return
   end
+  workspace.remember(root)
   local client, err = lsp.attach(bufnr)
   if not client then
     if not M._warned then

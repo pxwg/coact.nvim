@@ -65,6 +65,12 @@ end, "compact the thread")
 plug("<Plug>(CoactModeTrace)", "n", function()
   mode().trace()
 end, "show the trace")
+plug("<Plug>(CoactModeOpen)", "n", function()
+  mode().open()
+end, "open a thread")
+plug("<Plug>(CoactModeSearch)", "n", function()
+  mode().search()
+end, "search cards")
 
 vim.api.nvim_create_autocmd("FileType", {
   group = vim.api.nvim_create_augroup("CoactModeAttach", { clear = true }),

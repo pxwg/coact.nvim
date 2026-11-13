@@ -837,7 +837,59 @@ let handle json =
           | exception Request_failed message -> respond_error id (-32803) message
           | exception e -> respond_error id (-32603) (Printexc.to_string e)))
 
+(* ---- index mode: coact-zk-lsp --index <root> ---- *)
+
+(* Every card of a workspace as JSON, for pickers outside any open buffer. *)
+let index dir =
+  root := normalize dir;
+  let ws = analysis () in
+  let first_line text =
+    Line_diff.lines (Conversation.trim_text text)
+    |> List.find_opt (fun l -> let t = String.trim l in t <> "" && not (String.starts_with ~prefix:"#+" t))
+    |> Option.map String.trim
+  in
+  let shorten n s = if String.length s <= n then s else String.sub s 0 n in
+  let card (f : Org.file) (c : Org.card) =
+    let meta = Workspace.metadata ws c.id in
+    let own = Org.own_text f c in
+    (* For a thread, the latest question that has text. *)
+    let last_question =
+      List.fold_left
+        (fun acc -> function
+          | Org.Card q when (Workspace.metadata ws q.id).kind = Some Model.User -> (
+              match Org_text.headline (Org.own_text f q) with "" -> acc | l -> Some l)
+          | _ -> acc)
+        None c.items
+    in
+    let turns =
+      List.length
+        (List.filter
+           (function Org.Card q -> (Workspace.metadata ws q.id).kind = Some Model.Assistant | _ -> false)
+           c.items)
+    in
+    `Assoc
+      [
+        ("id", `String c.id);
+        ("title", `String c.title);
+        ("kind", opt_str (Option.map Model.kind_name meta.kind));
+        ("thread", opt_str meta.thread);
+        ("pin", `Bool meta.pin);
+        ("path", `String f.path);
+        ("line", member "line" (position f.text c.start));
+        ("preview", opt_str (first_line own));
+        ("text", `String (shorten 2000 (Conversation.trim_text own)));
+        ("last", opt_str last_question);
+        ("turns", `Int turns);
+      ]
+  in
+  let cards = List.concat_map (fun (f : Org.file) -> List.map (card f) (Org.cards f)) ws.files in
+  print_string (J.to_string (`Assoc [ ("root", `String !root); ("cards", `List cards) ]));
+  exit 0
+
 let () =
+  (match Array.to_list Sys.argv with
+  | _ :: "--index" :: dir :: _ -> index dir
+  | _ -> ());
   set_binary_mode_in stdin true;
   set_binary_mode_out stdout true;
   let rec loop () =
