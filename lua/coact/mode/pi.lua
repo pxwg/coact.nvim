@@ -36,7 +36,10 @@ function M.start(opts)
     stderr = {},
     closed = false,
   }, Client)
-  local env = vim.tbl_extend("force", config.get().pi.env or {}, { COACT_MODE_WORKSPACE = opts.root })
+  local env = vim.tbl_extend("force", config.get().pi.env or {}, {
+    COACT_MODE_WORKSPACE = opts.root,
+    COACT_MODE_PROMPT = config.prompt(),
+  })
   local keep = config.get().compact.keep_recent_tokens
   if keep then
     env.COACT_MODE_KEEP_RECENT_TOKENS = tostring(keep)

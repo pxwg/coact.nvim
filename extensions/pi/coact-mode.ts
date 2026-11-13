@@ -15,16 +15,23 @@
  * Neovim and the extension talk over RPC extension-UI "editor" dialogs titled
  * "coact-mode": the prefill is a JSON request, the reply a JSON answer.
  *
+ * Card tools (thread_view, card_read, card_search, card_create, card_edit,
+ * thread_arrange) let the agent work on the cards by ID; Neovim plans them
+ * with the language server and reviews every change to an existing card.
+ *
  * Environment:
  *   COACT_MODE_WORKSPACE           absolute path of the chat workspace; new
- *                                  files there are written directly, every
- *                                  other write is reviewed
+ *                                  files there are written directly, cards
+ *                                  only through the card tools, every other
+ *                                  write is reviewed
+ *   COACT_MODE_PROMPT              the system prompt section; empty for none
  *   COACT_MODE_KEEP_RECENT_TOKENS  recent context kept verbatim when compacting
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	calculateContextTokens,
@@ -42,12 +49,7 @@ const CHANNEL = "coact-mode";
 const SUBMIT = "coact.submit";
 const FINISH = "coact.finish";
 
-const PROMPT = [
-	"You are talking with the user through Coact mode in Neovim. The conversation is a set of Org-mode cards that the user edits freely; the messages you receive are rebuilt from the current cards before every request, so the cards, not your memory of earlier turns, are authoritative.",
-	"A coact.revision message lists what the user changed since your last reply. A coact.synthesis message is knowledge the user distilled from earlier discussion; a coact.note message is reference material.",
-	"Write your final answer in Org markup: '-' for list items, *bold*, ~code~, and #+begin_src/#+end_src blocks for code. Never start a line with '*' followed by a space: that starts a new card. Your final answer is placed into the answer card for you; do not edit the conversation cards to deliver it.",
-	"When you are unsure, or interpretations conflict, say so plainly instead of presenting them as settled.",
-].join("\n\n");
+const PROMPT = process.env.COACT_MODE_PROMPT ?? "";
 
 const SUMMARY_SYSTEM =
 	"You rewrite a conversation as a knowledge card. Do not continue the conversation and do not answer its questions; output only the card's text.";
@@ -278,6 +280,11 @@ async function reviewedWrite(path: string, content: string) {
 	} catch (error: any) {
 		if (error?.code !== "ENOENT") throw error;
 	}
+	if (insideWorkspace(path) && path.endsWith(".org")) {
+		throw new Error(
+			"Cards in the chat workspace change through the card tools (card_create, card_edit, thread_arrange), not by writing their files.",
+		);
+	}
 	if (old === undefined && insideWorkspace(path)) {
 		await mkdir(dirname(path), { recursive: true });
 		await writeFile(path, content, "utf8");
@@ -327,8 +334,105 @@ function reviewedTools(pi: ExtensionAPI) {
 	}
 }
 
+const text = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 1) }], details: undefined });
+
+/** Ask Neovim for a card tool, returning its answer or throwing its error. */
+async function cardCall(ctx: ExtensionContext, op: string, payload: Record<string, unknown>) {
+	uiContext = ctx;
+	if (!run) throw new Error("the card tools work during a Coact turn");
+	return ask(ctx, op, payload);
+}
+
+function changeReport(reply: any) {
+	const lines = [`Accepted ${reply.accepted} change${reply.accepted === 1 ? "" : "s"}, rejected ${reply.rejected}.`];
+	for (const reason of reply.reasons ?? []) lines.push(`Rejected because: ${reason}`);
+	if ((reply.errors ?? []).length > 0) {
+		lines.push("The workspace now has errors:");
+		for (const error of reply.errors) lines.push(`- line ${error.range.start.line + 1}: ${error.message}`);
+	}
+	if (reply.rejected > 0) lines.push("The cards as reviewed are authoritative; read them again before further changes.");
+	return lines.join("\n");
+}
+
+function cardTools(pi: ExtensionAPI) {
+	const query = (method: string) => async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) =>
+		text((await cardCall(ctx, "query", { method, params })).result);
+	pi.registerTool({
+		name: "thread_view",
+		label: "thread_view",
+		description:
+			"Outline of a Coact thread: its items in order with card IDs, kinds, titles and estimated tokens, and the traces each answer replays. No card text. Omit main for the current thread.",
+		parameters: Type.Object({ main: Type.Optional(Type.String({ description: "The thread's main card ID" })) }),
+		execute: query("thread_view"),
+	} as any);
+	pi.registerTool({
+		name: "card_read",
+		label: "card_read",
+		description:
+			"Read one card: metadata, its own text (nested cards appear as one-line placeholders), nested cards, links and backlinks. A trace card reads as a readable account unless raw is true.",
+		parameters: Type.Object({
+			id: Type.String(),
+			offset: Type.Optional(Type.Number({ description: "First line, 1-based" })),
+			limit: Type.Optional(Type.Number({ description: "Lines to read (default 200)" })),
+			raw: Type.Optional(Type.Boolean({ description: "A trace card's raw record" })),
+		}),
+		execute: query("card_read"),
+	} as any);
+	pi.registerTool({
+		name: "card_search",
+		label: "card_search",
+		description: "Find cards of the chat workspace whose title or text contain every word of the query.",
+		parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
+		execute: query("card_search"),
+	} as any);
+	pi.registerTool({
+		name: "card_create",
+		label: "card_create",
+		description:
+			"Create a card in its own file in the chat workspace; it is written directly and its ID returned. It joins no thread until thread_arrange adds it. kind: user (the user's message), assistant (your message), synthesis (knowledge distilled from discussion; mark open questions and interpretations the user has not accepted as such), trace (a process record) or note (default).",
+		parameters: Type.Object({
+			title: Type.String(),
+			body: Type.String({ description: "Org text" }),
+			kind: Type.Optional(Type.String({ description: "user, assistant, synthesis, trace or note" })),
+		}),
+		async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) {
+			const reply = await cardCall(ctx, "create", { params });
+			return text(`Created card ${reply.id}.`);
+		},
+	} as any);
+	pi.registerTool({
+		name: "card_edit",
+		label: "card_edit",
+		description:
+			"Exact text replacements in one card's own text, never its heading, properties or nested cards. Each oldText must occur exactly once in the card; an empty oldText fills a blank card. The user reviews the change and may accept part of it or edit it.",
+		parameters: Type.Object({
+			id: Type.String(),
+			edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
+		}),
+		executionMode: "sequential",
+		async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) {
+			return text(changeReport(await cardCall(ctx, "changeset", { method: "card_edit", params })));
+		},
+	} as any);
+	pi.registerTool({
+		name: "thread_arrange",
+		label: "thread_arrange",
+		description:
+			"Set a thread's items to an ordered list of card IDs. Cards left out leave the thread but are kept; new IDs are transcluded. Omit main for the current thread. The user reviews the change.",
+		parameters: Type.Object({
+			items: Type.Array(Type.String()),
+			main: Type.Optional(Type.String()),
+		}),
+		executionMode: "sequential",
+		async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) {
+			return text(changeReport(await cardCall(ctx, "changeset", { method: "thread_arrange", params })));
+		},
+	} as any);
+}
+
 export default function (pi: ExtensionAPI) {
 	reviewedTools(pi);
+	cardTools(pi);
 
 	pi.registerCommand("coact-submit", {
 		description: "Coact mode: start a run from an exported card artifact (internal)",
@@ -404,7 +508,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		if (!run) return;
+		if (!run || !PROMPT) return;
 		const options: any = event.systemPromptOptions;
 		options.sections = options.sections ?? {};
 		options.sections.coact_mode = PROMPT;

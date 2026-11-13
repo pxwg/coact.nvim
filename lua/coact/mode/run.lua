@@ -178,24 +178,38 @@ function handlers.review(request, reply)
   review.edit(request, reply)
 end
 
+-- The card buffer of the call that is asking.
+local function thread_buf()
+  return state.turn and state.turn.bufnr or state.card_buf
+end
+
+-- Compaction: the server plans a synthesis card replacing the summarized
+-- items; the user reviews it as hunks. Rejecting with a reason redoes the
+-- summary with that reason as the prompt.
 function handlers.compact(request, reply)
-  local bufnr = state.turn and state.turn.bufnr or state.card_buf
-  review.compact(request, function(decision)
-    if decision.decision ~= "accept" then
-      return reply(decision)
+  local bufnr = thread_buf()
+  lsp.request(bufnr, "coact/compact", {
+    main = request.main,
+    count = request.count,
+    summary = request.summary,
+    labels = labels(),
+  }, function(err, plan)
+    if err then
+      return reply({ error = err })
     end
-    lsp.request(bufnr, "coact/compact", {
-      main = request.main,
-      count = request.count,
-      summary = decision.summary,
-      labels = labels(),
-    }, function(err, result)
-      if err then
-        return reply({ error = err })
+    local changes, plan_err = review.changes_of_plan(plan.edits, plan.notes)
+    if not changes then
+      return reply({ error = plan_err })
+    end
+    review.changes(changes, function(result)
+      if result.error then
+        return reply({ error = result.error })
       end
-      local ok, apply_err = lsp.apply(result.edits)
-      if not ok then
-        return reply({ error = apply_err })
+      if result.accepted == 0 then
+        if #result.reasons > 0 then
+          return reply({ decision = "retry", prompt = table.concat(result.reasons, "\n") })
+        end
+        return reply({ decision = "cancel" })
       end
       local running = state.phase == "running"
       lsp.request(bufnr, "coact/artifact", { main = request.main, requireQuestion = running }, function(e, exported)
@@ -205,6 +219,64 @@ function handlers.compact(request, reply)
         workspace.save_baseline(state.root, state.thread, exported.cards)
         ui.decorate(bufnr)
         reply({ decision = "accept", artifactJson = exported.artifactJson })
+      end)
+    end)
+  end)
+end
+
+-- Read-only card tools: thread_view, card_read, card_search.
+local queries = { thread_view = true, card_read = true, card_search = true }
+
+function handlers.query(request, reply)
+  if not queries[request.method] then
+    return reply({ error = "unknown query " .. tostring(request.method) })
+  end
+  lsp.request(thread_buf(), "coact/" .. request.method, request.params or vim.empty_dict(), function(err, result)
+    reply(err and { error = err } or { result = result })
+  end)
+end
+
+-- A new card in the workspace is written without review.
+function handlers.create(request, reply)
+  local bufnr = thread_buf()
+  lsp.request(bufnr, "coact/card_create", request.params or {}, function(err, result)
+    if err then
+      return reply({ error = err })
+    end
+    local ok, apply_err = lsp.apply(result.edits)
+    reply(ok and { id = result.id, path = result.path } or { error = apply_err })
+  end)
+end
+
+-- card_edit and thread_arrange: reviewed as hunks; the cards as reviewed are
+-- the outcome, and the workspace's errors come back with it.
+local changesets = { card_edit = true, thread_arrange = true }
+
+function handlers.changeset(request, reply)
+  if not changesets[request.method] then
+    return reply({ error = "unknown change " .. tostring(request.method) })
+  end
+  local bufnr = thread_buf()
+  lsp.request(bufnr, "coact/" .. request.method, request.params or {}, function(err, plan)
+    if err then
+      return reply({ error = err })
+    end
+    local changes, plan_err = review.changes_of_plan(plan.edits, plan.notes)
+    if not changes then
+      return reply({ error = plan_err })
+    end
+    review.changes(changes, function(result)
+      if result.error then
+        return reply({ error = result.error })
+      end
+      ui.decorate(bufnr)
+      lsp.request(bufnr, "coact/errors", {}, function(_, errors)
+        reply({
+          accepted = result.accepted,
+          rejected = result.rejected,
+          reasons = result.reasons,
+          errors = errors or {},
+        })
       end)
     end)
   end)

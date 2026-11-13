@@ -1,7 +1,19 @@
 -- Coact mode options. Every field is optional; see :help coact-mode-config.
 local M = {}
 
+--- What the model is told about Coact mode, in its system prompt. The card
+--- tools describe themselves.
+M.default_prompt = table.concat({
+  "This conversation lives in Org cards that the user reads and edits in Neovim.",
+  "The messages you receive are rendered from the current cards before each request, so they reflect the user's latest edits, not your earlier output.",
+  "Your final reply becomes the body of a new assistant card.",
+  "The card and thread tools let you inspect the cards and change them; the user reviews every change to an existing card.",
+}, " ")
+
 local defaults = {
+  -- The system prompt section: nil for the default, a string to replace it,
+  -- function(default) returning the text, or false for none.
+  prompt = nil,
   -- Parent directory of chat workspaces created by :CoactMode init.
   workspace_root = vim.fs.joinpath(vim.fn.stdpath("data"), "coact-mode"),
   lsp = {
@@ -81,6 +93,19 @@ end
 
 function M.get()
   return options
+end
+
+--- The prompt section to send, or "" for none.
+function M.prompt()
+  local prompt = options.prompt
+  if prompt == false then
+    return ""
+  elseif type(prompt) == "function" then
+    return tostring(prompt(M.default_prompt) or "")
+  elseif type(prompt) == "string" then
+    return prompt
+  end
+  return M.default_prompt
 end
 
 function M.defaults()
