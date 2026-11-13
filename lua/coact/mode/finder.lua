@@ -162,22 +162,25 @@ local kind_hl = {
   trace = "CoactModeTrace",
 }
 
---- Pick any card by title or text; trace records are left out.
+--- Pick an entry card: a top-level thread, note or synthesis card, found by
+--- any text of its subtree. Conversation and trace cards, nested or moved
+--- out of a thread, do not crowd the list.
 function M.cards()
   M.index(function(cards)
     local icons = config.get().icons
     local items = {}
     for _, card in ipairs(cards) do
-      local record = card.kind == "trace" and (card.text or ""):find("#+begin_src jsonl", 1, true)
-      if not record then
+      if card.top and (card.kind == nil or card.kind == "synthesis") then
         local icon = card.thread and icons.pin or icons[card.kind or "note"] or icons.note
         local detail = table.concat(
           vim.tbl_filter(function(s)
             return s ~= ""
-          end, { card.preview or "", place(card) }),
+          end, { card.last or card.preview or "", place(card) }),
           " · "
         )
-        table.insert(items, item(card, icon, kind_hl[card.kind] or "CoactModeNote", detail))
+        local entry = item(card, icon, kind_hl[card.kind] or "CoactModeNote", detail)
+        entry.text = table.concat({ card.title, card.subtree or card.text or "", place(card) }, " ")
+        table.insert(items, entry)
       end
     end
     if #items == 0 then
