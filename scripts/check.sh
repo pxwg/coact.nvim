@@ -36,6 +36,21 @@ run stylua --check --indent-type Spaces --indent-width 2 \
   scripts/integrations-test.lua lua/coact/side.lua lua/coact/ui/side.lua lua/coact/ui/selection_hints.lua \
   lua/coact/annotations.lua lua/coact/source_map.lua lua/coact/ui/stream_frames.lua \
   scripts/pi-side-test.lua
+run node --check extensions/pi/coact-mode.ts
+run node --check scripts/coact-mode-model-server.mjs
+run stylua --check --indent-type Spaces --indent-width 2 \
+  lua/coact/mode/*.lua plugin/coact_mode.lua scripts/coact-mode-test.lua
+
+# Coact mode: the OCaml server and its tests, then the end-to-end test with
+# real Pi and a scripted model server when both are available.
+if command -v dune >/dev/null 2>&1; then
+  run dune build --root ocaml
+  run dune test --root ocaml
+fi
+if command -v pi >/dev/null 2>&1 && [ -x ocaml/_build/default/bin/coact_zk_lsp.exe ]; then
+  nvim_test scripts/coact-mode-test.lua
+fi
+
 run git diff --check
 
 nvim_test scripts/review-test.lua
