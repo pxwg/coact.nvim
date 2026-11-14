@@ -107,6 +107,19 @@ let final_answer entries =
   | { message; _ } :: _ when role message = Some "assistant" && not (calls_tools message) -> Some message
   | _ -> None
 
+let answered_by entries =
+  List.rev entries
+  |> List.find_map (fun { message; _ } ->
+         match (role message, string_member "model" message) with
+         | Some "assistant", Some model ->
+             let thinking =
+               match string_member "thinkingLevel" message with
+               | Some t -> Some t
+               | None -> string_member "providerThinkingLevel" message
+             in
+             Some (string_member "provider" message, model, thinking)
+         | _ -> None)
+
 let process entries =
   let entries =
     match final_answer entries with

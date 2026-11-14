@@ -18,7 +18,9 @@ function M.command(opts)
   local cmd = vim.deepcopy(pi.command)
   vim.list_extend(cmd, { "--session-dir", opts.session_dir, "--session-id", opts.session_id })
   vim.list_extend(cmd, { "--extension", M.extension_path() })
-  if pi.model then
+  -- The configured model starts new threads; a resumed thread keeps the
+  -- model its session recorded.
+  if pi.model and opts.new_session then
     vim.list_extend(cmd, { "--model", pi.model })
   end
   vim.list_extend(cmd, pi.args or {})

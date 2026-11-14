@@ -179,6 +179,14 @@ server completes both after `/` and `@`, highlights them, and shows what
 they do on hover. Pi's skills and templates are read from Pi when Coact
 mode starts and cached in `<workspace_root>/commands.json`.
 
+Two control commands change the pinned thread itself: `/model` and
+`/thinking` complete like the others, and accepting the completion opens a
+picker and leaves no text in the card. `:CoactMode model` and
+`:CoactMode thinking` do the same. Pi records the choice in the thread's
+session, so it stays when Pi or Neovim restarts; `pi.model` only sets the
+model of new threads. Each answer card shows, after its kind, the model and
+thinking level it was written with, read from its trace.
+
 Directives take effect once, when their card is the question being sent:
 the expansions go to the model just before the question and are kept in
 that turn's trace. Later turns send the line as written. An @context that
@@ -283,6 +291,8 @@ The model is told only a few facts about Coact mode (see `prompt` in
 :CoactMode stop                 Abort the running call.
 :CoactMode compact [text]       Compact the thread between turns.
 :CoactMode trace                Show the trace under the cursor.
+:CoactMode model                Choose the pinned thread's model.
+:CoactMode thinking             Choose its thinking level.
 :CoactMode retitle              Name the pinned thread's cards that still
                                 have default or automatic titles.
 :CoactMode open                 Pick a thread from any workspace and open
@@ -312,6 +322,7 @@ The targets are also available globally:
   <Plug>(CoactModeUnpin) <Plug>(CoactModeNew) <Plug>(CoactModeAsk)
   <Plug>(CoactModeCompact) <Plug>(CoactModeTrace)
   <Plug>(CoactModeOpen) <Plug>(CoactModeSearch) <Plug>(CoactModeRetitle)
+  <Plug>(CoactModeModel) <Plug>(CoactModeThinking)
 
 Open and search work from any buffer; map them globally, e.g.:
 >lua
@@ -330,7 +341,7 @@ Defaults:
     lsp = { cmd = nil },  -- default: the built server, else coact-zk-lsp
     pi = {
       command = { "pi", "--mode", "rpc" },
-      model = nil,        -- passed as --model
+      model = nil,        -- --model for new threads
       args = {},          -- e.g. { "--no-extensions" }
       env = {},
     },
@@ -369,7 +380,8 @@ change what is sent; add `--no-extensions` to `pi.args` to exclude them.
 
 Highlight groups: `CoactModeUser`, `CoactModeAssistant`, `CoactModeSynthesis`,
 `CoactModeTrace`, `CoactModeNote`, `CoactModePin`, `CoactModeRevised`,
-`CoactModeStream`, `CoactModeBusy`.
+`CoactModeStream`, `CoactModeBusy`, `CoactModeCommand`, `CoactModeContext`,
+`CoactModeModel`.
 
 `require("coact.mode").status()` returns a short string while a call runs,
 for statuslines, and nil otherwise.

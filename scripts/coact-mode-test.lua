@@ -620,6 +620,90 @@ check(true, "a finished turn's question and answer are named in the background")
 check(side_text():find("\n** My own title\n", 1, true) ~= nil, "a title set by hand is kept")
 check(side_text():find("Echo: And before?", 1, true) ~= nil, "naming does not disturb the conversation")
 
+-- 12. /model and /thinking: chosen per thread, shown on each answer, kept on resume
+local function side_body_row()
+  local heading
+  for i, line in ipairs(vim.api.nvim_buf_get_lines(side, 0, -1, false)) do
+    if line == "** Question" then
+      heading = i
+    end
+  end
+  return require("coact.mode.lsp").body_row(side, heading)
+end
+local row12 = side_body_row()
+vim.api.nvim_buf_set_lines(side, row12 - 1, row12, false, { "/mo" })
+local function side_request(method, params)
+  local result
+  lsp_mod.request(side, method, params, function(err, value)
+    result = err and { error = err } or (value or vim.NIL)
+  end)
+  wait(5000, function()
+    return result ~= nil
+  end, method)
+  return result
+end
+local controls = side_request("textDocument/completion", lsp_mod.position(side, { row12, 3 }))
+local model_item = vim.tbl_filter(function(item)
+  return item.label == "/model"
+end, controls)[1]
+check(
+  model_item ~= nil and model_item.command.command == "coact.control" and model_item.textEdit.newText == "",
+  "/model completes as a command that leaves no text"
+)
+vim.api.nvim_buf_set_lines(side, row12 - 1, row12, false, { "" })
+local picked
+vim.ui.select = function(items, opts, choose)
+  picked = vim.tbl_map(opts.format_item, items)
+  for _, item in ipairs(items) do
+    if (type(item) == "table" and item.id == "echo-2") or item == "high" then
+      return choose(item)
+    end
+  end
+  choose(nil)
+end
+vim.lsp.commands["coact.control"]({ arguments = { "model" } }, { bufnr = side })
+wait(10000, function()
+  return picked ~= nil and #picked >= 2
+end, "model picker")
+check(#vim.tbl_filter(function(label)
+  return label:find("● coact-test/echo", 1, true) == 1 and not label:find("echo-2", 1, true)
+end, picked) == 1, "the picker marks the thread's current model")
+vim.wait(500)
+picked = nil
+vim.lsp.commands["coact.control"]({ arguments = { "thinking" } }, { bufnr = side })
+wait(10000, function()
+  return picked ~= nil
+end, "thinking picker")
+vim.wait(500)
+row12 = side_body_row()
+vim.api.nvim_buf_set_lines(side, row12 - 1, row12, false, { "Which model now?" })
+mode.submit()
+wait(5000, function()
+  return run.busy()
+end, "model turn")
+settle("model turn")
+check(last_request().model == "echo-2", "the next turn uses the chosen model")
+local function answers()
+  local result = side_request("coact/decorations", { textDocument = { uri = vim.uri_from_bufnr(side) } })
+  return vim.tbl_filter(function(card)
+    return card.kind == "assistant"
+  end, result.cards)
+end
+local shown = answers()
+check(
+  shown[1].model == "echo" and shown[#shown].model == "echo-2" and shown[#shown].thinking == "high",
+  "each answer shows the model and thinking level it was written with"
+)
+run.shutdown()
+row12 = side_body_row()
+vim.api.nvim_buf_set_lines(side, row12 - 1, row12, false, { "And after a restart?" })
+mode.submit()
+wait(5000, function()
+  return run.busy()
+end, "resumed model turn")
+settle("resumed model turn")
+check(last_request().model == "echo-2", "a resumed thread keeps its model")
+
 run.shutdown()
 server:kill("sigterm")
 print("coact-mode end-to-end: all checks passed")

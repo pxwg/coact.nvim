@@ -83,7 +83,7 @@ end
 
 --- Push the registry to every attached server.
 function M.push(bufnr)
-  local params = { commands = load_cache(), contexts = M.contexts }
+  local params = { commands = load_cache(), contexts = M.contexts, controls = require("coact.mode.controls").list }
   local clients = bufnr and { lsp.client(bufnr) } or vim.lsp.get_clients({ name = lsp.name })
   for _, client in ipairs(clients) do
     client:notify("coact/registry", params)

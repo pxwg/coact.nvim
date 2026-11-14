@@ -18,6 +18,7 @@ function M.highlights()
     CoactModeStream = "Comment",
     CoactModeBusy = "DiagnosticWarn",
     CoactModeCommand = "Special",
+    CoactModeModel = "Comment",
     CoactModeContext = "Identifier",
   }
   for group, link in pairs(links) do
@@ -58,6 +59,15 @@ function M.decorate(bufnr)
         table.insert(chunks, { icon .. " " .. (kind or "card"), kinds[kind] or "CoactModeNote" })
         if card.origin == "agent+user" then
           table.insert(chunks, { " " .. icons.revised, "CoactModeRevised" })
+        end
+        -- Who answered: the model and thinking level of this answer.
+        local model = card.model ~= vim.NIL and card.model or nil
+        if model then
+          local thinking = card.thinking ~= vim.NIL and card.thinking or nil
+          table.insert(chunks, {
+            " · " .. model .. ((thinking and thinking ~= "off") and (" · " .. thinking) or ""),
+            "CoactModeModel",
+          })
         end
         vim.api.nvim_buf_set_extmark(bufnr, M.ns, card.line, 0, {
           virt_text = chunks,

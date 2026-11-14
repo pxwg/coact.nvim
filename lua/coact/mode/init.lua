@@ -223,6 +223,21 @@ function M.retitle()
   end)
 end
 
+--- Choose the pinned thread's model or thinking level.
+function M.model()
+  local bufnr = thread_buffer()
+  if bufnr then
+    require("coact.mode.controls").model(bufnr)
+  end
+end
+
+function M.thinking()
+  local bufnr = thread_buffer()
+  if bufnr then
+    require("coact.mode.controls").thinking(bufnr)
+  end
+end
+
 --- Show the readable trace of the card or link under the cursor.
 function M.trace()
   local bufnr = current()
@@ -296,6 +311,8 @@ local subcommands = {
   end,
   trace = M.trace,
   retitle = M.retitle,
+  model = M.model,
+  thinking = M.thinking,
   open = M.open,
   search = M.search,
   build = M.build,
@@ -431,6 +448,14 @@ function M.setup_once()
   })
   require("coact.mode.directives").track(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
   vim.api.nvim_create_autocmd("VimLeavePre", { group = augroup, callback = run.shutdown })
+  -- /model and /thinking completions carry this command; it runs once the
+  -- completion has been accepted.
+  vim.lsp.commands["coact.control"] = function(command, ctx)
+    local name = command.arguments and command.arguments[1]
+    vim.schedule(function()
+      require("coact.mode.controls").run(name, ctx and ctx.bufnr or vim.api.nvim_get_current_buf())
+    end)
+  end
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].filetype == "org" then
       M.attach(bufnr)

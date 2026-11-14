@@ -24,6 +24,10 @@ val text : Yojson.Safe.t -> string
 (** The final answer: the last assistant message, when it calls no tools. *)
 val final_answer : entry list -> Yojson.Safe.t option
 
+(** Who answered: provider, model and thinking level of the last assistant
+    message, as Pi recorded them. *)
+val answered_by : entry list -> (string option * string * string option) option
+
 (** Process messages that precede the final answer: assistant and tool
     result messages in original order. *)
 val process : entry list -> entry list

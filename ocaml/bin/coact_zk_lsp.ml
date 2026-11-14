@@ -148,6 +148,10 @@ let cache : (Workspace.document list * Workspace.t) option ref = ref None
 (* Turn directives known to Neovim: Pi's commands and Neovim contexts. *)
 let registry = ref Directive.empty
 
+(* Control commands: run by Neovim when their completion is accepted, and
+   leave no text behind. *)
+let controls : Directive.entry list ref = ref []
+
 let set_registry params =
   let entries key =
     List.filter_map
@@ -158,7 +162,8 @@ let set_registry params =
         | _ -> None)
       (list (member key params))
   in
-  registry := { Directive.commands = entries "commands"; contexts = entries "contexts" }
+  registry := { Directive.commands = entries "commands"; contexts = entries "contexts" };
+  controls := entries "controls"
 
 (* Directives of the user cards in a file. *)
 let file_directives ws (f : Org.file) =
@@ -570,7 +575,24 @@ let completion params =
   let upper = String.uppercase_ascii (String.trim prefix) in
   let items =
     match (command_at, context_at) with
-    | Some at, _ when !registry.commands <> [] -> directive_items "/" !registry.commands at 3
+    | Some at, _ when !registry.commands <> [] || !controls <> [] ->
+        let start = position text (line_start + at) and stop = position text off in
+        List.map
+          (fun (e : Directive.entry) ->
+            let token = "/" ^ e.name in
+            `Assoc
+              [
+                ("label", `String token);
+                ("filterText", `String token);
+                ("detail", `String e.description);
+                ("kind", `Int 2 (* Method *));
+                ("sortText", `String ("0" ^ e.name));
+                ("textEdit", `Assoc [ ("range", `Assoc [ ("start", start); ("end", stop) ]); ("newText", `String "") ]);
+                ( "command",
+                  `Assoc [ ("title", `String token); ("command", `String "coact.control"); ("arguments", `List [ `String e.name ]) ] );
+              ])
+          !controls
+        @ directive_items "/" !registry.commands at 3
     | _, Some at when !registry.contexts <> [] -> directive_items "@" !registry.contexts at 6
     | _ ->
     if String.starts_with ~prefix:":CONTEXT_KIND:" upper then
@@ -854,20 +876,25 @@ let errors _ =
   diagnostics_json (List.filter Diagnostic.is_error (all_diagnostics ws))
 
 (* Assistant text the user has revised, against the recorded answer. *)
+(* The trace an answer card links to, if any. *)
+let answer_trace ws id =
+  match Workspace.body ws id with
+  | None -> None
+  | Some body ->
+      List.find_map
+        (fun (x : _ Ospero_core.Provenance.located) ->
+          match x.value with
+          | Ospero_core.Observation.Observed.Consume (Frontend.Link { target; _ })
+            when Workspace.kind ws (Ospero_core.Graph.Vertex_id.to_string target) = Some Model.Trace ->
+              Some (Ospero_core.Graph.Vertex_id.to_string target)
+          | _ -> None)
+        body
+
 let human_edits ws (f : Org.file) (c : Org.card) =
   match Workspace.body ws c.id with
   | None -> []
-  | Some body -> (
-      let trace =
-        List.find_map
-          (fun (x : _ Ospero_core.Provenance.located) ->
-            match x.value with
-            | Ospero_core.Observation.Observed.Consume (Frontend.Link { target; _ })
-              when Workspace.kind ws (Ospero_core.Graph.Vertex_id.to_string target) = Some Model.Trace ->
-                Some (Ospero_core.Graph.Vertex_id.to_string target)
-            | _ -> None)
-          body
-      in
+  | Some _ -> (
+      let trace = answer_trace ws c.id in
       match Option.map (Trace.record ws) trace with
       | Some (Ok entries) -> (
           match Trace.final_answer entries with
@@ -932,15 +959,28 @@ let decorations params =
               (List.map
                  (fun (c : Org.card) ->
                    let meta = Workspace.metadata ws c.id in
+                   (* Who answered, from the answer's own trace. *)
+                   let answered =
+                     if meta.kind <> Some Model.Assistant then []
+                     else
+                       match Option.map (Trace.record ws) (answer_trace ws c.id) with
+                       | Some (Ok entries) -> (
+                           match Trace.answered_by entries with
+                           | Some (provider, model, thinking) ->
+                               [ ("provider", opt_str provider); ("model", `String model); ("thinking", opt_str thinking) ]
+                           | None -> [])
+                       | _ -> []
+                   in
                    `Assoc
-                     [
-                       ("id", `String c.id);
-                       ("kind", opt_str (Option.map Model.kind_name meta.kind));
-                       ("line", member "line" (position f.text c.start));
-                       ("pin", `Bool meta.pin);
-                       ("thread", opt_str meta.thread);
-                       ("origin", `String (origin c));
-                     ])
+                     ([
+                        ("id", `String c.id);
+                        ("kind", opt_str (Option.map Model.kind_name meta.kind));
+                        ("line", member "line" (position f.text c.start));
+                        ("pin", `Bool meta.pin);
+                        ("thread", opt_str meta.thread);
+                        ("origin", `String (origin c));
+                      ]
+                     @ answered))
                  cards) );
           ("edited", `List (List.map (fun (s, e) -> range f.text s e) edited));
           ( "directives",

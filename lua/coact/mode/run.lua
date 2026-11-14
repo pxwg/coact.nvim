@@ -404,6 +404,7 @@ local function ensure_pi(root, thread)
     root = root,
     session_dir = workspace.sessions(root),
     session_id = workspace.session_id(thread),
+    new_session = workspace.activity(root, thread) == nil,
     on_event = function(event)
       if state.pi == client then
         on_event(event)
