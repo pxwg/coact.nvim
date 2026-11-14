@@ -211,7 +211,17 @@ let new_card ws ~path ?into ~selection ~title labels ~now =
       in
       (* An empty last line to write in. *)
       let body = body ^ "\n" in
-      let card = card_text ~layout ~level:1 ~title ~properties:[ ("ID", id) ] ~body in
+      (* An asked card starts with a placeholder title, named once the thread
+         has said what it is about; its passage is linked back the same way. *)
+      let title, properties =
+        match (into, source) with
+        | Some _, Some (src : Org.card) ->
+            let title = if selected <> None then labels.card else title in
+            ( title,
+              [ ("ID", id); (Model.auto_title_property, title); (Model.ask_from_property, src.id) ] )
+        | _ -> (title, [ ("ID", id) ])
+      in
+      let card = card_text ~layout ~level:1 ~title ~properties ~body in
       let target, place =
         match into with
         | Some dir ->
@@ -222,13 +232,16 @@ let new_card ws ~path ?into ~selection ~title labels ~now =
             (path, { path; start = at; stop = at; text = separate layout text at ^ card })
       in
       let link =
+        match (into, selection, selected) with
+        | Some _, _, _ -> []
+        | None, selection, selected -> (
         match (selection, selected) with
         | Some (a, b), Some s when not (String.contains s '\n' || String.contains s ']' || String.contains s '[') ->
             [ { path; start = a; stop = b; text = Printf.sprintf "[[id:%s][%s]]" id s } ]
         | Some (_, b), Some _ ->
             let at = Org.line_after text (max 0 (b - 1)) in
             [ { path; start = at; stop = at; text = prefix_for text at ^ Printf.sprintf "[[id:%s][%s]]\n" id (label title) } ]
-        | _ -> []
+        | _ -> [])
       in
       Ok (link @ [ place ], id, target)
 
@@ -271,7 +284,8 @@ let submit ws ~main labels ~now =
         let user =
           let headline = Org_text.headline body in
           let title, auto =
-            if headline = "" then (labels.question, []) else (headline, [ (Model.auto_title_property, headline) ])
+            if headline = "" || String.contains headline '[' then (labels.question, [])
+            else (headline, [ (Model.auto_title_property, headline) ])
           in
           card_text ~layout ~level ~title ~properties:([ ("ID", question); kind_property Model.User ] @ auto) ~body
         in
@@ -322,7 +336,7 @@ let answer ws ~answer ~text ~entries ~trace_path labels ~now =
       if (Workspace.metadata ws card.id).kind <> Some Model.Assistant then
         Error ("Card " ^ answer ^ " is not an assistant card")
       else
-        let body = Org_text.of_markdown text in
+        let body = Org_text.of_markdown ~level:card.level text in
         if String.trim body = "" then
           Ok { edits = [ { path = file.path; start = card.start; stop = card.stop; text = "" } ];
                draft = None; trace = None; removed = true }
@@ -407,8 +421,11 @@ let create ws ~layout ~dir ~title ~kind ~body ~now =
     let id = Ids.fresh ~now ~taken:(taken ws) in
     let path = Filename.concat dir (id ^ ".org") in
     let properties = ("ID", id) :: (match kind with Some k -> [ kind_property k ] | None -> []) in
-    let card = card_text ~layout ~level:1 ~title ~properties ~body:(Org_text.of_markdown body) in
-    Ok ({ path; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card }, id, path)
+    match Org_text.check ~level:1 body with
+    | Error e -> Error e
+    | Ok () ->
+        let card = card_text ~layout ~level:1 ~title ~properties ~body:(Org_text.of_markdown ~level:1 body) in
+        Ok ({ path; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card }, id, path)
 
 (* Offsets of [sub] in [text] within [start, stop). *)
 let occurrences text sub start stop =
@@ -419,15 +436,6 @@ let occurrences text sub start stop =
     else go (i + 1) acc
   in
   go start []
-
-let structural line =
-  let t = String.trim line in
-  let n = String.length line in
-  let rec stars i = if i < n && line.[i] = '*' then stars (i + 1) else i in
-  let s = stars 0 in
-  (s > 0 && (s = n || line.[s] = ' ' || line.[s] = '\t'))
-  || String.uppercase_ascii t = ":PROPERTIES:"
-  || String.uppercase_ascii t = ":END:"
 
 (* The card's own text: between its drawer and its end, around nested cards. *)
 let own_segments (file : Org.file) (card : Org.card) =
@@ -446,8 +454,12 @@ let edit ?(layout = default_layout) ws ~id replacements =
       let segments = own_segments file card in
       let blank = List.for_all (fun (a, b) -> String.trim (Org.sub file.text a b) = "") segments in
       let one (old, rep) =
-        if List.exists structural (Line_diff.lines rep) then
-          Error "A replacement may not contain a heading or a property drawer; create a new card instead"
+        let checked =
+          if card.block && List.exists (fun l -> Org_text.heading_stars l > 0) (Line_diff.lines rep) then
+            Error "A block card cannot contain headings"
+          else Org_text.check ~level:card.level rep
+        in
+        if Result.is_error checked then Error (Result.get_error checked)
         else if old = "" then
           let stop = match segments with (_, b) :: _ -> b | [] -> card.content_start in
           if blank then
@@ -603,7 +615,7 @@ let compact ws ~main ~count ~summary ~dir labels ~now =
             (fun i -> let t = conv_id i in Printf.sprintf "[[id:%s][%s]]" t (label (Workspace.title ws t)))
             summarized
         in
-        let body = Org_text.of_markdown summary ^ "\n\n" ^ labels.sources ^ ": " ^ String.concat ", " sources in
+        let body = Org_text.of_markdown ~level:1 summary ^ "\n\n" ^ labels.sources ^ ": " ^ String.concat ", " sources in
         match create ws ~layout:labels.layout ~dir ~title:labels.summary ~kind:(Some Model.Synthesis) ~body ~now with
         | Error e -> Error e
         | Ok (definition, id, path) -> (
@@ -620,7 +632,7 @@ let compact ws ~main ~count ~summary ~dir labels ~now =
 
 (* ---- semantic titles ---- *)
 
-type title_request = { id : string; kind : Model.kind; text : string; revision : string }
+type title_request = { id : string; kind : string; text : string; revision : string }
 
 let thread_items ws ~main =
   match Workspace.find ws main with
@@ -638,22 +650,40 @@ let automatic labels (card : Org.card) =
   | Some p -> p.value = card.title
   | None -> false
 
+(* A thread main card qualifies only with a title it was given automatically. *)
+let auto_titled (card : Org.card) =
+  match Org.property card Model.auto_title_property with Some p -> p.value = card.title | None -> false
+
 let titleable ws labels (card : Org.card) =
+  let meta = Workspace.metadata ws card.id in
   (not card.block)
-  && (match (Workspace.metadata ws card.id).kind with
-     | Some (Model.User | Model.Assistant | Model.Synthesis) -> true
-     | _ -> false)
-  && automatic labels card
+  &&
+  match meta.kind with
+  | Some (Model.User | Model.Assistant | Model.Synthesis) -> automatic labels card
+  | Some Model.Trace -> false
+  | None -> meta.thread <> None && auto_titled card
+
+(* What a card says, to name it by: a thread by its first items. *)
+let naming_text ws (file : Org.file) (card : Org.card) =
+  let own = Conversation.trim_text (Org.own_text file card) in
+  if own <> "" || (Workspace.metadata ws card.id).kind <> None then own
+  else
+    conversation_items card
+    |> List.filteri (fun i _ -> i < 2)
+    |> List.filter_map (fun item ->
+           match Workspace.find ws (conv_id item) with
+           | Some (f, c) -> Some (Conversation.trim_text (Org.own_text f c))
+           | None -> None)
+    |> String.concat "\n\n"
 
 let title_requests ws labels ids =
   List.filter_map
     (fun id ->
       match Workspace.find ws id with
-      | Some (file, card) when titleable ws labels card -> (
-          let text = Conversation.trim_text (Org.own_text file card) in
-          match (Workspace.metadata ws id).kind with
-          | Some kind when text <> "" -> Some { id; kind; text; revision = revision file card }
-          | _ -> None)
+      | Some (file, card) when titleable ws labels card ->
+          let text = naming_text ws file card in
+          let kind = match (Workspace.metadata ws id).kind with Some k -> Model.kind_name k | None -> "thread" in
+          if text = "" then None else Some { id; kind; text; revision = revision file card }
       | _ -> None)
     (List.sort_uniq compare ids)
 
@@ -699,4 +729,113 @@ let retitle ws labels titles =
                     skipped ))))
     ([], [], []) titles
   |> fun (edits, applied, skipped) -> (edits, List.rev applied, List.rev skipped)
+
+(* ---- linking an asked passage back ---- *)
+
+let ask_source ws ~main =
+  match Workspace.find ws main with
+  | None -> None
+  | Some (_, card) -> (
+      match Org.property card Model.ask_from_property with
+      | Some p when Workspace.mem ws p.value -> Some p.value
+      | _ -> None)
+
+(* The passage quoted when the thread was asked. *)
+let ask_passage ws ~main =
+  let quote text =
+    let lines = String.split_on_char '\n' text in
+    let rec go acc inside = function
+      | [] -> List.rev acc
+      | l :: tl ->
+          let t = String.lowercase_ascii (String.trim l) in
+          if t = "#+begin_quote" then go acc true tl
+          else if t = "#+end_quote" then List.rev acc
+          else go (if inside then Org_text.unescape_block_line l :: acc else acc) inside tl
+    in
+    String.concat "\n" (go [] false lines)
+  in
+  match Workspace.find ws main with
+  | None -> ""
+  | Some (file, card) ->
+      let own = quote (Org.own_text file card) in
+      if own <> "" then own
+      else
+        List.find_map
+          (fun item ->
+            match Workspace.find ws (conv_id item) with
+            | Some (f, c) -> (match quote (Org.own_text f c) with "" -> None | q -> Some q)
+            | None -> None)
+          (conversation_items card)
+        |> Option.value ~default:""
+
+let rec links_to (card : Org.card) id =
+  List.exists (function Org.Link l -> l.target = id | Org.Card c -> links_to c id | _ -> false) card.items
+
+let link_candidate ws ~main =
+  match ask_source ws ~main with
+  | None -> None
+  | Some src -> (
+      match Workspace.find ws src with
+      | Some (_, card) when not (links_to card main) ->
+          let passage = ask_passage ws ~main in
+          if passage = "" then None else Some (src, passage)
+      | _ -> None)
+
+(* Offsets inside #+begin_/#+end_ blocks of a file. *)
+let in_block (text : string) =
+  let n = String.length text in
+  let marks = Array.make (n + 1) false in
+  let rec go pos inside =
+    if pos >= n then ()
+    else
+      let stop = match String.index_from_opt text pos '\n' with Some e -> e | None -> n in
+      let t = String.lowercase_ascii (String.trim (String.sub text pos (stop - pos))) in
+      let begins = String.starts_with ~prefix:"#+begin_" t and ends = String.starts_with ~prefix:"#+end_" t in
+      if inside || begins then for i = pos to stop do marks.(i) <- true done;
+      go (stop + 1) (if begins then true else if ends then false else inside)
+  in
+  go 0 false;
+  marks
+
+(* Whether an offset sits between unmatched $ on its line. *)
+let in_math text at =
+  let start = match String.rindex_from_opt text (max 0 (at - 1)) '\n' with Some i when at > 0 -> i + 1 | _ -> 0 in
+  let count = ref 0 in
+  for i = start to at - 1 do
+    if text.[i] = '$' then incr count
+  done;
+  !count mod 2 = 1
+
+let link_back ws ~main ~anchor =
+  let anchor = String.trim anchor in
+  match ask_source ws ~main with
+  | None -> Error "This thread was not asked from a passage"
+  | Some src -> (
+      match Workspace.find ws src with
+      | None -> Error ("Unknown card " ^ src)
+      | Some (file, card) ->
+          if links_to card main then Error "The passage already links to the thread"
+          else if anchor = "" || String.exists (function '\n' | '\r' | '[' | ']' -> true | _ -> false) anchor then
+            Error "The anchor must be a phrase on one line"
+          else
+            let text = file.text in
+            let blocks = in_block text in
+            let n = String.length anchor in
+            let spans = List.filter_map (function Org.Text s -> Some (s.start, s.stop) | _ -> None) card.items in
+            let hits =
+              List.concat_map
+                (fun (a, b) ->
+                  let rec go i acc =
+                    if i + n > b then List.rev acc
+                    else if String.sub text i n = anchor then go (i + 1) (i :: acc)
+                    else go (i + 1) acc
+                  in
+                  go a [])
+                spans
+              |> List.filter (fun at -> not (blocks.(at) || in_math text at))
+            in
+            match hits with
+            | [ at ] -> Ok ([ { path = file.path; start = at; stop = at + n; text = Printf.sprintf "[[id:%s][%s]]" main anchor } ], src)
+            | [] -> Error (Printf.sprintf "The source card has no plain text %S" anchor)
+            | _ -> Error (Printf.sprintf "%S occurs more than once in the source card" anchor))
 

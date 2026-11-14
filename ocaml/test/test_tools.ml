@@ -127,7 +127,8 @@ let%expect_test "card edits stay in the card's own text" =
   let try_ name r = match r with Ok edits -> print_string (List.assoc "c.org" (apply docs edits)) | Error e -> Printf.printf "%s: %s\n" name e in
   try_ "missing" (Plan.edit ws ~id:"a1" [ ("burritos", "x") ]);
   try_ "nested" (Plan.edit ws ~id:"a1" [ ("nested", "x") ]);
-  try_ "heading" (Plan.edit ws ~id:"a1" [ ("burrito", "x\n* New") ]);
+  try_ "heading" (Plan.edit ws ~id:"a1" [ ("burrito", "x\n** New") ]);
+  try_ "drawer" (Plan.edit ws ~id:"a1" [ ("burrito", "x\n:PROPERTIES:") ]);
   try_ "twice" (Plan.edit ws ~id:"chat" [ ("", "x") ]);
   (match Plan.edit ws ~id:"a1" [ ("*burrito*", "monoid in endofunctors") ] with
   | Ok edits ->
@@ -137,7 +138,8 @@ let%expect_test "card edits stay in the card's own text" =
   [%expect {|
     missing: Card a1 has no text "burritos"
     nested: Card a1 has no text "nested"
-    heading: A replacement may not contain a heading or a property drawer; create a new card instead
+    heading: "** New" would end this card. Section headings in a card at level 2 need at least 3 stars; use '-' for list items
+    drawer: Card text may not contain a property drawer; create a card for that instead
     twice: An empty old text only fills a blank card
     A monad is a monoid in endofunctors.
     |}]
@@ -216,7 +218,7 @@ let%expect_test "created cards get their own file" =
     :CONTEXT_KIND: synthesis
     :END:
 
-    *Idea*
+    ** Idea
     *bold*
     w/Q.org
     |}]
@@ -333,7 +335,7 @@ Kept as named.
   let ws = analyze docs in
   let labels = Plan.default_labels in
   let requests = Plan.title_requests ws labels (Plan.thread_items ws ~main:"chat") in
-  List.iter (fun (r : Plan.title_request) -> Printf.printf "request %s %s\n" r.id (Model.kind_name r.kind)) requests;
+  List.iter (fun (r : Plan.title_request) -> Printf.printf "request %s %s\n" r.id r.kind) requests;
   let rev id = (List.find (fun (r : Plan.title_request) -> r.id = id) requests).revision in
   let edits, applied, skipped =
     Plan.retitle ws labels
@@ -365,5 +367,98 @@ Kept as named.
     Why does the two-point computation give a scale quotient?
     still automatic: 1
     after a hand edit: 0
+    |}]
+
+let%expect_test "an asked passage links back without changing its words" =
+  let source =
+    {|* Notes
+:PROPERTIES:
+:ID: src
+:END:
+The annulus homotopy removes the common scale, see $s$ and [[id:other][scale]].
+The scale quotient follows.
+#+begin_src text
+annulus homotopy
+#+end_src
+|}
+  in
+  let docs = [ ("n.org", source) ] in
+  let ws = analyze docs in
+  let edits, id, path =
+    Result.get_ok
+      (Plan.new_card ws ~path:"n.org" ~into:"w" ~selection:(Some (36, 77)) ~title:None Plan.default_labels ~now:0.)
+  in
+  let docs = apply docs edits in
+  print_string (Str_ids.mask [ id ] (List.assoc path docs));
+  Printf.printf "source unchanged: %b\n" (List.assoc "n.org" docs = source);
+  (* The asked card becomes a thread. *)
+  let docs =
+    List.map
+      (fun (p, t) ->
+        if p <> path then (p, t)
+        else
+          let marker = "\n:END:\n" in
+          let rec find i = if String.sub t i (String.length marker) = marker then i else find (i + 1) in
+          let i = find 0 in
+          (p, String.sub t 0 i ^ "\n:THREAD_ID: pi:t\n:PIN: true" ^ String.sub t i (String.length t - i)))
+      docs
+  in
+  let ws = analyze docs in
+  (match Plan.link_candidate ws ~main:id with
+  | Some (src, passage) -> Printf.printf "candidate %s: %s\n" src passage
+  | None -> print_endline "no candidate");
+  List.iter
+    (fun anchor ->
+      match Plan.link_back ws ~main:id ~anchor with
+      | Ok (edits, _) ->
+          let text = List.assoc "n.org" (apply docs edits) in
+          print_endline (Str_ids.mask [ id ] (List.nth (String.split_on_char '\n' text) 4))
+      | Error e -> Printf.printf "%s: %s\n" anchor e)
+    [ "scale"; "annulus homotopy"; "s$"; "common scale" ];
+  [%expect {|
+    #+title: New card
+
+    * New card
+    :PROPERTIES:
+    :ID: Q
+    :AUTO_TITLE: New card
+    :ASK_FROM: src
+    :END:
+
+    #+begin_quote
+    The annulus homotopy removes the common s
+    #+end_quote
+    From [[id:src][Notes]]
+
+
+    source unchanged: true
+    candidate src: The annulus homotopy removes the common s
+    scale: "scale" occurs more than once in the source card
+    The [[id:Q][annulus homotopy]] removes the common scale, see $s$ and [[id:other][scale]].
+    s$: The source card has no plain text "s$"
+    The annulus homotopy removes the [[id:Q][common scale]], see $s$ and [[id:other][scale]].
+    |}]
+
+let%expect_test "cards may hold section headings below their own" =
+  let ws = analyze docs in
+  (match Plan.edit ws ~id:"a1" [ ("A monad is a *burrito*.", "*** Definition\nA monad is a monoid.") ] with
+  | Ok edits ->
+      let docs = apply docs edits in
+      let ws = analyze docs in
+      print_diagnostics (ws.diagnostics @ Thread.check ws);
+      let _, c = Option.get (Workspace.find ws "a1") in
+      Printf.printf "a1 still holds: %s\n" (String.concat "," (List.filter_map (function Org.Card c -> Some c.id | _ -> None) c.items))
+  | Error e -> print_endline e);
+  (match Plan.create ws ~layout:Plan.default_layout ~dir:"w" ~title:"Idea" ~kind:None ~body:"* item" ~now:0. with
+  | Ok _ -> print_endline "created"
+  | Error e -> print_endline e);
+  print_endline (Org_text.of_markdown ~level:2 "# Overview\n*** Kept\n* bullet\n## Detail");
+  [%expect {|
+    a1 still holds: aside
+    "* item" would end this card. Section headings in a card at level 1 need at least 2 stars; use '-' for list items
+    *** Overview
+    *** Kept
+    - bullet
+    **** Detail
     |}]
 

@@ -28,6 +28,10 @@ val pin_property : string
     heading still reads it, the title counts as automatic. *)
 val auto_title_property : string
 
+(** [ASK_FROM]: on a thread opened by asking about a passage, the card the
+    passage came from. *)
+val ask_from_property : string
+
 val kinds : (string * kind) list
 val kind_name : kind -> string
 val relation_name : relation -> string

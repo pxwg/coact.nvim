@@ -7,6 +7,7 @@ let kind_property = "CONTEXT_KIND"
 let thread_property = "THREAD_ID"
 let pin_property = "PIN"
 let auto_title_property = "AUTO_TITLE"
+let ask_from_property = "ASK_FROM"
 
 let kinds =
   [ ("user", User); ("assistant", Assistant); ("synthesis", Synthesis); ("trace", Trace) ]

@@ -79,7 +79,40 @@ let star_bullet line =
 let inline line =
   line |> replace_pairs ~marker:"**" ~by:"*" |> replace_pairs ~marker:"`" ~by:"~"
 
-let of_markdown text =
+(* Stars of an Org heading line, or 0. *)
+let heading_stars line =
+  let n = String.length line in
+  let rec stars i = if i < n && line.[i] = '*' then stars (i + 1) else i in
+  let s = stars 0 in
+  if s > 0 && (s = n || line.[s] = ' ' || line.[s] = '\t') then s else 0
+
+let drawer_marker line =
+  let t = String.uppercase_ascii (String.trim line) in
+  t = ":PROPERTIES:" || t = ":END:"
+
+(** Text written into a card at [level]: section headings must be deeper
+    than the card's own heading, and no property drawer may appear, since
+    either would change the card structure. Source blocks are not checked. *)
+let check ~level text =
+  let rec go block = function
+    | [] -> Ok ()
+    | l :: rest ->
+        let t = String.lowercase_ascii (String.trim l) in
+        if block then go (not (String.starts_with ~prefix:"#+end_" t)) rest
+        else if String.starts_with ~prefix:"#+begin_" t then go true rest
+        else if drawer_marker l then Error "Card text may not contain a property drawer; create a card for that instead"
+        else
+          let s = heading_stars l in
+          if s > 0 && s <= level then
+            Error
+              (Printf.sprintf
+                 "%S would end this card. Section headings in a card at level %d need at least %d stars; use '-' for list items"
+                 (String.trim l) level (level + 1))
+          else go false rest
+  in
+  go false (Line_diff.lines text)
+
+let of_markdown ?level text =
   let lines = Line_diff.lines text in
   let rec go in_fence acc = function
     | [] ->
@@ -93,12 +126,19 @@ let of_markdown text =
           go true (header :: acc) rest
     | line :: rest when in_fence -> go true (escape_block_line line :: acc) rest
     | line :: rest -> (
-        match heading_line line with
-        | Some title -> go false (("*" ^ title ^ "*") :: acc) rest
-        | None -> (
-            match star_bullet line with
-            | Some item -> go false (("- " ^ inline item) :: acc) rest
-            | None -> go false (inline line :: acc) rest))
+        match (heading_line line, level) with
+        | Some title, Some level ->
+            (* A Markdown heading becomes a section below the card's heading. *)
+            let hashes = let rec n i = if line.[i] = '#' then n (i + 1) else i in n 0 in
+            go false ((String.make (level + hashes) '*' ^ " " ^ inline title) :: acc) rest
+        | Some title, None -> go false (("*" ^ title ^ "*") :: acc) rest
+        | None, _ -> (
+            match (level, heading_stars line) with
+            | Some level, s when s > level -> go false (line :: acc) rest
+            | _ -> (
+                match star_bullet line with
+                | Some item -> go false (("- " ^ inline item) :: acc) rest
+                | None -> go false (inline line :: acc) rest)))
   in
   let out = go false [] lines in
   (* Trim leading and trailing blank lines. *)

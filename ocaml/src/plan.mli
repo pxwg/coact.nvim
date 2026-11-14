@@ -107,7 +107,9 @@ val compact :
     by hand is never replaced. The revision ties a title to the text it was
     made from. *)
 
-type title_request = { id : string; kind : Model.kind; text : string; revision : string }
+(** [kind] is the card's [CONTEXT_KIND], or ["thread"] for a thread main card
+    that was titled automatically. *)
+type title_request = { id : string; kind : string; text : string; revision : string }
 
 (** The card IDs of a thread's items, in order. *)
 val thread_items : Workspace.t -> main:string -> string list
@@ -120,4 +122,19 @@ val title_requests : Workspace.t -> labels -> string list -> title_request list
     Returns the edits, the renamed cards, and the skipped ones with a reason. *)
 val retitle :
   Workspace.t -> labels -> (string * string * string) list -> edit list * string list * (string * string) list
+
+(** {1 Linking an asked passage back}
+
+    A thread opened by asking about a passage records its source card in
+    [ASK_FROM]. Once the thread has said what it is about, a phrase of the
+    passage is wrapped in a link to the thread; the words stay as they were. *)
+
+(** The source card and the quoted passage, while the source does not link
+    to the thread yet. *)
+val link_candidate : Workspace.t -> main:string -> (string * string) option
+
+(** Wrap the one plain-text occurrence of [anchor] in the source card's own
+    text (outside links, blocks and inline math) in a link to [main]. Returns
+    the edit and the source card. *)
+val link_back : Workspace.t -> main:string -> anchor:string -> (edit list * string, string) result
 
