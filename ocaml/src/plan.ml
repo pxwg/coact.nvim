@@ -28,6 +28,13 @@ let ( let* ) = Result.bind
 let ends_with_newline text at = at = 0 || text.[at - 1] = '\n'
 let prefix_for text at = if ends_with_newline text at then "" else "\n"
 
+(* A blank line before a card inserted at [at], so cards read apart. *)
+let blank_before text at =
+  if at = 0 then ""
+  else if at >= 2 && text.[at - 1] = '\n' && text.[at - 2] = '\n' then ""
+  else if text.[at - 1] = '\n' then "\n"
+  else "\n\n"
+
 let ensure_newline s = if s = "" || s.[String.length s - 1] = '\n' then s else s ^ "\n"
 
 let label s = String.map (function '[' | ']' -> ' ' | '\n' -> ' ' | c -> c) s
@@ -251,8 +258,17 @@ let submit ws ~main labels ~now =
         Ok
           (Ready
              {
-               edits = [ { path = file.path; start = region_start; stop = card.stop;
-                           text = prefix_for text region_start ^ user ^ answer_card answer } ];
+               edits =
+                 [
+                   {
+                     path = file.path;
+                     start = region_start;
+                     stop = card.stop;
+                     text =
+                       (if last = None then prefix_for text region_start else blank_before text region_start)
+                       ^ user ^ "\n" ^ answer_card answer;
+                   };
+                 ];
                question;
                answer;
              })
@@ -261,13 +277,14 @@ let submit ws ~main labels ~now =
           let id = fresh () in
           let at = card.stop in
           let user = card_text ~level ~title:labels.question ~properties:[ ("ID", id); kind_property Model.User ] ~body:"\n" in
-          Ok (Draft { edits = [ { path = file.path; start = at; stop = at; text = prefix_for text at ^ user } ]; draft = id })
+          let sep = if items = [] then prefix_for text at else blank_before text at in
+          Ok (Draft { edits = [ { path = file.path; start = at; stop = at; text = sep ^ user } ]; draft = id })
         in
         match List.rev items with
         | Child c :: _ when kind c = Some Model.User && own c <> "" ->
             let answer = fresh () in
             let at = c.stop in
-            Ok (Ready { edits = [ { path = file.path; start = at; stop = at; text = prefix_for text at ^ answer_card answer } ];
+            Ok (Ready { edits = [ { path = file.path; start = at; stop = at; text = blank_before text at ^ answer_card answer } ];
                         question = c.id; answer })
         | Child a :: Child q :: _
           when kind a = Some Model.Assistant && own a = "" && kind q = Some Model.User && own q <> "" ->
@@ -346,7 +363,8 @@ let archived (file : Org.file) (card : Org.card) ~level =
     card_text ~level ~title:card.title ~properties ~body:content
   else
     let delta = card.level - level in
-    let lines = Line_diff.lines (Org.sub text card.start card.stop) in
+    (* Every line kept as written, blank separators included. *)
+    let lines = String.split_on_char '\n' (Org.sub text card.start card.stop) in
     let relevel l =
       let n = String.length l in
       let rec stars i = if i < n && l.[i] = '*' then stars (i + 1) else i in
@@ -355,6 +373,7 @@ let archived (file : Org.file) (card : Org.card) ~level =
       else l
     in
     ensure_newline (String.concat "\n" (List.map relevel lines))
+    |> fun s -> if String.ends_with ~suffix:"\n\n" s then s else s ^ "\n"
 
 type note = { path : string; anchor : string; note : string }
 
@@ -503,7 +522,12 @@ let rearrange ws (file : Org.file) (main : Org.card) slots =
       ^ (if Buffer.length nested = 0 then trailing else "")
       ^ Buffer.contents nested
     in
-    let body = if Buffer.length moved > 0 then ensure_newline body ^ Buffer.contents moved else body in
+    let body =
+      if Buffer.length moved = 0 then body
+      else
+        let body = ensure_newline body in
+        (if String.ends_with ~suffix:"\n\n" body || body = "" then body else body ^ "\n") ^ Buffer.contents moved
+    in
     Ok ([ { path = file.path; start = main.content_start; stop = main.stop; text = body } ], List.rev !notes)
 
 let thread_card ws main =

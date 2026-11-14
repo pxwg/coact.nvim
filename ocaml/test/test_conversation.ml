@@ -205,12 +205,14 @@ let%expect_test "submit, answer and compact" =
     :END:
 
     Why endofunctors?
+
     * What is a monad?
     :PROPERTIES:
     :ID: Q
     :CONTEXT_KIND: user
     :END:
     What is a monad?
+
     * Answer
     :PROPERTIES:
     :ID: A

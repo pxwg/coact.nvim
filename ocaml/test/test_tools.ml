@@ -175,12 +175,14 @@ let%expect_test "arranging a thread keeps every card" =
     :CONTEXT_KIND: user
     :END:
     Why?
+
     * What is a monad?
     :PROPERTIES:
     :ID: q1
     :CONTEXT_KIND: user
     :END:
     What is a monad?
+
     * Answer
     :PROPERTIES:
     :ID: a1
@@ -192,6 +194,7 @@ let%expect_test "arranging a thread keeps every card" =
     :ID: aside
     :END:
     nested
+
     #0 q1 user: What is a monad?
     #1 loose custom/coact.synthesis: Synthesis card \"Loose\" (knowledge distilled from earlier discussion):\n\nFree monads.
     #2 q2 user: Why?
@@ -246,4 +249,43 @@ let%expect_test "turn directives are registered names outside markup" =
     context diagnostics [] "@diagnostics"
     context buffer [] "@buffer"
     context diagnostics [] "@diagnostics"
+    |}]
+
+let%expect_test "new cards are set apart by a blank line" =
+  let docs = [ ("c.org", "* Chat\n:PROPERTIES:\n:ID: chat\n:THREAD_ID: pi:x\n:PIN: true\n:END:\n** Question\n:PROPERTIES:\n:ID: q\n:CONTEXT_KIND: user\n:END:\nHello there\n") ] in
+  let ws = analyze docs in
+  (match Plan.submit ws ~main:"chat" Plan.default_labels ~now:0. with
+  | Ok (Ready { edits; answer; _ }) -> (
+      let docs = apply docs edits in
+      let ws = analyze docs in
+      match Plan.answer ws ~answer ~text:"Hi." ~entries:[] ~trace_path:"t.org" Plan.default_labels ~now:0. with
+      | Ok r -> print_string (Str_ids.mask [ answer; Option.get r.draft ] (List.assoc "c.org" (apply docs r.edits)))
+      | Error e -> print_endline e)
+  | _ -> print_endline "not ready");
+  [%expect {|
+    * Chat
+    :PROPERTIES:
+    :ID: chat
+    :THREAD_ID: pi:x
+    :PIN: true
+    :END:
+    ** Question
+    :PROPERTIES:
+    :ID: q
+    :CONTEXT_KIND: user
+    :END:
+    Hello there
+
+    ** Answer
+    :PROPERTIES:
+    :ID: Q
+    :CONTEXT_KIND: assistant
+    :END:
+    Hi.
+
+    ** Question
+    :PROPERTIES:
+    :ID: A
+    :CONTEXT_KIND: user
+    :END:
     |}]
