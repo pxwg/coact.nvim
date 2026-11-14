@@ -17,6 +17,8 @@ function M.highlights()
     CoactModePin = "DiagnosticWarn",
     CoactModeStream = "Comment",
     CoactModeBusy = "DiagnosticWarn",
+    CoactModeCommand = "Special",
+    CoactModeContext = "Identifier",
   }
   for group, link in pairs(links) do
     vim.api.nvim_set_hl(0, group, { link = link, default = true })
@@ -62,6 +64,25 @@ function M.decorate(bufnr)
           virt_text_pos = "eol",
           hl_mode = "combine",
           priority = 50,
+        })
+      end
+    end
+    for _, directive in ipairs(result.directives or {}) do
+      local line = directive.range.start.line
+      if line < count then
+        local text = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
+        local function col(position)
+          return vim.str_byteindex(
+            text,
+            "utf-16",
+            math.min(position.character, vim.str_utfindex(text, "utf-16")),
+            false
+          )
+        end
+        vim.api.nvim_buf_set_extmark(bufnr, M.ns, line, col(directive.range.start), {
+          end_col = col(directive.range["end"]),
+          hl_group = directive.kind == "command" and "CoactModeCommand" or "CoactModeContext",
+          priority = 70,
         })
       end
     end

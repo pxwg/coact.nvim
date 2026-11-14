@@ -28,7 +28,7 @@
  *   COACT_MODE_KEEP_RECENT_TOKENS  recent context kept verbatim when compacting
  */
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
@@ -101,6 +101,8 @@ type Run = {
 	answer: string;
 	artifact: Artifact;
 	trigger?: string;
+	/** Directives of the question, expanded once: placed before it, kept in the trace. */
+	expansions: Message[];
 	retryAfterCompaction?: boolean;
 	/** This turn's threshold compaction already ran. */
 	compactedThisTurn?: boolean;
@@ -188,6 +190,85 @@ export function runDelta(sessionManager: ExtensionContext["sessionManager"], cur
 		.filter((entry: any) => entry.sourceEntry.type === "message" && entry.messages.length > 0)
 		.map((entry: any) => ({ ...entry.sourceEntry, message: entry.messages[0] }));
 	return { messages, entries };
+}
+
+// ---- turn directives: /skill:name and /template, @context ----
+
+function stripFrontmatter(text: string) {
+	if (!text.startsWith("---")) return text;
+	const end = text.indexOf("\n---", 3);
+	if (end < 0) return text;
+	const next = text.indexOf("\n", end + 4);
+	return next < 0 ? "" : text.slice(next + 1);
+}
+
+/** Pi's prompt-template argument parsing: whitespace-separated, quotes group. */
+export function parseCommandArgs(input: string): string[] {
+	const args: string[] = [];
+	const pattern = /"((?:\\"|[^"])*)"|'([^']*)'|(\S+)/g;
+	for (const match of input.matchAll(pattern)) args.push(match[1]?.replace(/\\"/g, '"') ?? match[2] ?? match[3]);
+	return args;
+}
+
+/** Pi's prompt-template substitution: $1, $@, $ARGUMENTS, ${1:-default}, ${@:2:3}. */
+export function substituteArgs(content: string, args: string[]): string {
+	const all = args.join(" ");
+	return content.replace(
+		/\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
+		(_m, target, fallback, sliceStart, sliceLength, simple) => {
+			if (target) {
+				const value = target === "@" || target === "ARGUMENTS" ? all : args[parseInt(target, 10) - 1];
+				return value ? value : fallback;
+			}
+			if (sliceStart) {
+				const start = Math.max(0, parseInt(sliceStart, 10) - 1);
+				return (sliceLength ? args.slice(start, start + parseInt(sliceLength, 10)) : args.slice(start)).join(" ");
+			}
+			if (simple === "ARGUMENTS" || simple === "@") return all;
+			return args[parseInt(simple, 10) - 1] ?? "";
+		},
+	);
+}
+
+/** Expand /name args as Pi does for a typed prompt: a skill block or a template. */
+function expandCommand(pi: ExtensionAPI, name: string, args: string): Message {
+	const command: any = pi.getCommands().find((c: any) => c.name === name);
+	if (!command) throw new Error(`unknown command /${name}`);
+	let path: string = command.sourceInfo?.path ?? "";
+	if (path && statSync(path).isDirectory()) path = join(path, "SKILL.md");
+	let content: string;
+	if (command.source === "skill") {
+		const body = stripFrontmatter(readFileSync(path, "utf8")).trim();
+		const block = `<skill name="${name.replace(/^skill:/, "")}" location="${path}">\nReferences are relative to ${dirname(path)}.\n\n${body}\n</skill>`;
+		content = args ? `${block}\n\n${args}` : block;
+	} else if (command.source === "prompt") {
+		content = substituteArgs(stripFrontmatter(readFileSync(path, "utf8")), parseCommandArgs(args));
+	} else {
+		throw new Error(`/${name} is not a skill or prompt template; only those run from cards`);
+	}
+	return { role: "custom", customType: "coact.command", content, display: true, details: { name, args }, timestamp: Date.now() };
+}
+
+function expandDirectives(pi: ExtensionAPI, request: any): Message[] {
+	const out: Message[] = [];
+	for (const context of request.contexts ?? []) {
+		out.push({
+			role: "custom",
+			customType: "coact.context",
+			content: `@${context.name}:\n${context.text}`,
+			display: true,
+			details: { name: context.name },
+			timestamp: Date.now(),
+		});
+	}
+	for (const command of request.commands ?? []) out.push(expandCommand(pi, command.name, command.args ?? ""));
+	return out;
+}
+
+/** The run's context: the cards, the question's expansions just before it, then the run. */
+function runContext(current: Run, delta: Message[]) {
+	const messages = current.artifact.messages;
+	return [...messages.slice(0, -1), ...current.expansions, ...messages.slice(-1), ...delta];
 }
 
 function readJson(path: string) {
@@ -444,7 +525,8 @@ export default function (pi: ExtensionAPI) {
 				const invalid = validateArtifact(request.artifact, true);
 				if (invalid) throw new Error(invalid);
 				const artifact = request.artifact as Artifact;
-				run = { submitId: String(request.submitId), answer: String(request.answer), artifact };
+				const expansions = expandDirectives(pi, request);
+				run = { submitId: String(request.submitId), answer: String(request.answer), artifact, expansions };
 				pi.appendEntry(SUBMIT, { submitId: run.submitId, main: artifact.main, question: artifact.question, answer: run.answer });
 				pi.sendUserMessage(textOf(artifact.messages[artifact.messages.length - 1]));
 			} catch (error) {
@@ -474,7 +556,7 @@ export default function (pi: ExtensionAPI) {
 					stopReason: last?.message?.stopReason ?? null,
 					errorMessage: last?.message?.errorMessage ?? null,
 					// A string, so the records reach the trace card verbatim.
-					entriesJson: JSON.stringify(entries),
+					entriesJson: JSON.stringify([...current.expansions, ...entries]),
 				});
 				pi.appendEntry(FINISH, { submitId: current.submitId, answer: current.answer });
 			} catch (error) {
@@ -516,7 +598,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("context", async (_event, ctx) => {
 		if (!run) return;
-		return { messages: [...run.artifact.messages, ...runDelta(ctx.sessionManager, run).messages] as any };
+		return { messages: runContext(run, runDelta(ctx.sessionManager, run).messages) as any };
 	});
 
 	/** Compact during a run; the accepted cards become the run's new baseline. */

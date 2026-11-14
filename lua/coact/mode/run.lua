@@ -412,6 +412,12 @@ local function ensure_pi(root, thread)
     return nil, err
   end
   state.pi, state.thread, state.root = client, thread, root
+  -- The commands this thread's Pi offers, for /command completion.
+  client:request("get_commands", {}, function(commands_err, data)
+    if not commands_err and data then
+      require("coact.mode.directives").set_commands(data.commands)
+    end
+  end)
   return client
 end
 
@@ -455,10 +461,26 @@ function M.submit(bufnr)
           if not client then
             return notify("could not start Pi: " .. tostring(start_err), vim.log.levels.ERROR)
           end
+          -- Directives of the question take effect now: @contexts are read
+          -- here, /commands are expanded by Pi.
+          local commands, contexts = {}, {}
+          for _, directive in ipairs(exported.directives or {}) do
+            if directive.kind == "command" then
+              table.insert(commands, { name = directive.name, args = directive.args })
+            else
+              local text, context_err = require("coact.mode.directives").resolve_context(directive.name)
+              if not text then
+                return notify("not sent: " .. context_err, vim.log.levels.ERROR)
+              end
+              table.insert(contexts, { name = directive.name, text = text })
+            end
+          end
           local submit_id = tostring(os.time()) .. "-" .. tostring(vim.uv.hrtime() % 1000000)
           local request = workspace.request_file(root, submit_id, exported.artifactJson, {
             submitId = submit_id,
             answer = plan.answer,
+            commands = commands,
+            contexts = contexts,
           })
           lsp.locate(card.bufnr, plan.answer, function(_, _, row)
             state.phase = "running"

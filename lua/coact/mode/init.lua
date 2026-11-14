@@ -358,6 +358,7 @@ function M.attach(bufnr)
   end
   keymaps(bufnr)
   ui.schedule(bufnr)
+  require("coact.mode.directives").refresh(vim.fn.getcwd())
 end
 
 local augroup = vim.api.nvim_create_augroup("CoactMode", { clear = true })
@@ -390,10 +391,19 @@ function M.setup_once()
     callback = function(event)
       local client = vim.lsp.get_client_by_id(event.data.client_id)
       if client and client.name == lsp.name then
+        require("coact.mode.directives").push(event.buf)
         ui.schedule(event.buf)
       end
     end,
   })
+  -- @contexts resolve in the code window used last.
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+    group = augroup,
+    callback = function(event)
+      require("coact.mode.directives").track(event.buf, vim.api.nvim_get_current_win())
+    end,
+  })
+  require("coact.mode.directives").track(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
   vim.api.nvim_create_autocmd("VimLeavePre", { group = augroup, callback = run.shutdown })
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].filetype == "org" then
