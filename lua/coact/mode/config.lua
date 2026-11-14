@@ -30,6 +30,12 @@ local defaults = {
     args = {},
     env = {},
   },
+  -- Layout of generated cards: a blank line before each card's heading,
+  -- and between its property drawer and its body.
+  layout = {
+    blank_before_heading = true,
+    blank_after_drawer = true,
+  },
   -- Titles and labels written into new cards.
   labels = {
     question = "Question",
@@ -93,6 +99,11 @@ end
 
 function M.get()
   return options
+end
+
+--- Card titles and layout, as the server takes them.
+function M.labels()
+  return vim.tbl_extend("force", options.labels, { layout = options.layout })
 end
 
 --- The prompt section to send, or "" for none.

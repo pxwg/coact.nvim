@@ -4,8 +4,15 @@
 
 type edit = { path : string; start : int; stop : int; text : string }
 
-(** Display labels written into new cards. *)
+(** How generated cards are laid out: a blank line before each card's
+    heading, and between its drawer and its body. *)
+type layout = { blank_before_heading : bool; blank_after_drawer : bool }
+
+val default_layout : layout
+
+(** Display labels and the layout of new cards. *)
 type labels = {
+  layout : layout;
   question : string;
   answer : string;
   summary : string;
@@ -69,13 +76,13 @@ type note = { path : string; anchor : string; note : string }
 (** A card in a new file [dir/<id>.org]. [kind] [None] makes a plain note.
     The body is made Org-safe. Returns the edit, the card and its file. *)
 val create :
-  Workspace.t -> dir:string -> title:string -> kind:Model.kind option -> body:string -> now:float ->
+  Workspace.t -> layout:layout -> dir:string -> title:string -> kind:Model.kind option -> body:string -> now:float ->
   (edit * string * string, string) result
 
 (** Exact replacements in a card's own text: never in its heading, drawer or
     nested cards. Each [old] must occur exactly once; an empty [old] fills a
     blank card. Replacements may not start a heading or a drawer. *)
-val edit : Workspace.t -> id:string -> (string * string) list -> (edit list, string) result
+val edit : ?layout:layout -> Workspace.t -> id:string -> (string * string) list -> (edit list, string) result
 
 (** Set the conversation items of thread [main] to [ids], in order. Cards
     leaving the thread move after the main card, unchanged; new ones are
@@ -83,7 +90,7 @@ val edit : Workspace.t -> id:string -> (string * string) list -> (edit list, str
     to the last transcluded one is transcluded, its nested card moving after
     the main card too. Nothing is deleted. *)
 val arrange :
-  Workspace.t -> main:string -> string list -> (edit list * note list, string) result
+  ?layout:layout -> Workspace.t -> main:string -> string list -> (edit list * note list, string) result
 
 (** Compaction as a changeset: a synthesis card in [dir/<id>.org] replaces
     the first [count] items of [main]. Returns its edits, review notes and

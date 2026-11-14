@@ -204,7 +204,7 @@ let%expect_test "arranging a thread keeps every card" =
 
 let%expect_test "created cards get their own file" =
   let ws = analyze docs in
-  let edit, id, path = Result.get_ok (Plan.create ws ~dir:"w" ~title:"Free\nmonads" ~kind:(Some Model.Synthesis) ~body:"# Idea\n**bold**" ~now:0.) in
+  let edit, id, path = Result.get_ok (Plan.create ws ~layout:Plan.default_layout ~dir:"w" ~title:"Free\nmonads" ~kind:(Some Model.Synthesis) ~body:"# Idea\n**bold**" ~now:0.) in
   print_string (Str_ids.mask [ id ] edit.text);
   print_endline (Str_ids.mask [ id ] path);
   [%expect {|
@@ -215,6 +215,7 @@ let%expect_test "created cards get their own file" =
     :ID: Q
     :CONTEXT_KIND: synthesis
     :END:
+
     *Idea*
     *bold*
     w/Q.org
@@ -281,6 +282,7 @@ let%expect_test "new cards are set apart by a blank line" =
     :ID: Q
     :CONTEXT_KIND: assistant
     :END:
+
     Hi.
 
     ** Question

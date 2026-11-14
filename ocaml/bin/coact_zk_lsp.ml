@@ -270,12 +270,22 @@ let edits_json (edits : Plan.edit list) =
            ])
        paths)
 
+let layout params =
+  let l = member "layout" (member "labels" params) in
+  let get k d = Option.value ~default:d (bool (member k l)) in
+  let d = Plan.default_layout in
+  {
+    Plan.blank_before_heading = get "blank_before_heading" d.blank_before_heading;
+    blank_after_drawer = get "blank_after_drawer" d.blank_after_drawer;
+  }
+
 let labels params =
   let l = member "labels" params in
   let get k d = Option.value ~default:d (str (member k l)) in
   let d = Plan.default_labels in
   {
-    Plan.question = get "question" d.question;
+    Plan.layout = layout params;
+    question = get "question" d.question;
     answer = get "answer" d.answer;
     summary = get "summary" d.summary;
     trace = get "trace" d.trace;
@@ -775,7 +785,7 @@ let card_create params =
   in
   let edit, id, path =
     ok_or
-      (Plan.create (analysis ()) ~dir:!root
+      (Plan.create (analysis ()) ~layout:(layout params) ~dir:!root
          ~title:(Option.value ~default:"" (str (member "title" params)))
          ~kind ~body:(Option.value ~default:"" (str (member "body" params))) ~now:(now ()))
   in
@@ -790,13 +800,13 @@ let card_edit params =
         | _ -> fail "each edit needs oldText and newText")
       (list (member "edits" params))
   in
-  `Assoc [ ("edits", edits_json (ok_or (Plan.edit (analysis ()) ~id:(id_param params) replacements))) ]
+  `Assoc [ ("edits", edits_json (ok_or (Plan.edit ~layout:(layout params) (analysis ()) ~id:(id_param params) replacements))) ]
 
 let thread_arrange params =
   let ws = analysis () in
   let main = thread_param ws params in
   let ids = List.filter_map str (list (member "items" params)) in
-  let edits, notes = ok_or (Plan.arrange ws ~main ids) in
+  let edits, notes = ok_or (Plan.arrange ~layout:(layout params) ws ~main ids) in
   `Assoc [ ("edits", edits_json edits); ("notes", notes_json notes); ("main", `String main) ]
 
 (* Error diagnostics of the whole workspace, for reports after a change. *)

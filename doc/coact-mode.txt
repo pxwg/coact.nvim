@@ -303,6 +303,10 @@ Defaults:
       args = {},          -- e.g. { "--no-extensions" }
       env = {},
     },
+    layout = {            -- generated cards
+      blank_before_heading = true,  -- a blank line before each card
+      blank_after_drawer = true,    -- and between :END: and its body
+    },
     labels = {            -- titles written into new cards
       question = "Question", answer = "Answer", summary = "Summary",
       trace = "Trace", trace_source = "Trace record", sources = "Sources",

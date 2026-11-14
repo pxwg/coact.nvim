@@ -155,6 +155,27 @@ function M.apply(files)
   return true
 end
 
+--- The first body line of the card whose heading is at row (1-based):
+--- after its drawer, and after the blank line the layout puts there.
+function M.body_row(bufnr, row)
+  local count = vim.api.nvim_buf_line_count(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, row, math.min(count, row + 40), false)
+  local body = row + 1
+  if (lines[1] or ""):match("^%s*:PROPERTIES:%s*$") then
+    for i, line in ipairs(lines) do
+      if line:match("^%s*:END:%s*$") then
+        body = row + i + 1
+        break
+      end
+    end
+  end
+  local next_line = vim.api.nvim_buf_get_lines(bufnr, body - 1, body, false)[1]
+  if config.get().layout.blank_after_drawer and next_line == "" and body < count then
+    body = body + 1
+  end
+  return math.min(body, count)
+end
+
 --- Locate a card: callback(err, bufnr, row) with a 1-based row.
 function M.locate(bufnr, id, callback)
   M.request(bufnr, "coact/locate", { id = id }, function(err, location)

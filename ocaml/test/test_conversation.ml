@@ -171,6 +171,7 @@ let%expect_test "submit, answer and compact" =
     :ID: 19700101T080000-31f2
     :CONTEXT_KIND: trace
     :END:
+
     #+begin_src jsonl
     {"type":"message","id":"r1","message":{"role":"assistant","content":[{"type":"text","text":"A *monoid* in endofunctors."}],"api":"x","provider":"p","model":"m","usage":{},"stopReason":"stop","timestamp":5}}
     #+end_src
@@ -180,6 +181,7 @@ let%expect_test "submit, answer and compact" =
     :ID: T
     :CONTEXT_KIND: trace
     :END:
+
     #+coact_trace: :target 19700101T080000-31f2
     #+title: Summary
 
@@ -188,6 +190,7 @@ let%expect_test "submit, answer and compact" =
     :ID: S
     :CONTEXT_KIND: synthesis
     :END:
+
     Monads are monoids.
 
     Sources: [[id:Q][What is a monad?]], [[id:A][Answer]]
@@ -204,6 +207,7 @@ let%expect_test "submit, answer and compact" =
     :CONTEXT_KIND: user
     :END:
 
+
     Why endofunctors?
 
     * What is a monad?
@@ -211,6 +215,7 @@ let%expect_test "submit, answer and compact" =
     :ID: Q
     :CONTEXT_KIND: user
     :END:
+
     What is a monad?
 
     * Answer
@@ -218,6 +223,7 @@ let%expect_test "submit, answer and compact" =
     :ID: A
     :CONTEXT_KIND: assistant
     :END:
+
     [[id:T][Trace]]
     A *monoid* in endofunctors.
     |}]

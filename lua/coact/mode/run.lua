@@ -26,7 +26,7 @@ local function notify(message, level)
 end
 
 local function labels()
-  return config.get().labels
+  return config.labels()
 end
 
 -- ---- call-time read-only cards ----
@@ -122,9 +122,7 @@ local function focus_card(bufnr, id)
     if win == -1 then
       return
     end
-    -- Heading, drawer of three lines, then the body.
-    local body = math.min(row + 5, vim.api.nvim_buf_line_count(target))
-    vim.api.nvim_win_set_cursor(win, { body, 0 })
+    vim.api.nvim_win_set_cursor(win, { lsp.body_row(target, row), 0 })
   end)
 end
 
@@ -239,7 +237,8 @@ end
 -- A new card in the workspace is written without review.
 function handlers.create(request, reply)
   local bufnr = thread_buf()
-  lsp.request(bufnr, "coact/card_create", request.params or {}, function(err, result)
+  local params = vim.tbl_extend("force", request.params or {}, { labels = labels() })
+  lsp.request(bufnr, "coact/card_create", params, function(err, result)
     if err then
       return reply({ error = err })
     end
@@ -257,7 +256,8 @@ function handlers.changeset(request, reply)
     return reply({ error = "unknown change " .. tostring(request.method) })
   end
   local bufnr = thread_buf()
-  lsp.request(bufnr, "coact/" .. request.method, request.params or {}, function(err, plan)
+  local params = vim.tbl_extend("force", request.params or {}, { labels = labels() })
+  lsp.request(bufnr, "coact/" .. request.method, params, function(err, plan)
     if err then
       return reply({ error = err })
     end

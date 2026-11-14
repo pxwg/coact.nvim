@@ -45,9 +45,7 @@ local function card_body(bufnr, id)
     if vim.api.nvim_get_current_buf() ~= target then
       vim.api.nvim_set_current_buf(target)
     end
-    -- Heading, then a drawer of :PROPERTIES:, :ID: and :END:.
-    local last = vim.api.nvim_buf_line_count(target)
-    vim.api.nvim_win_set_cursor(0, { math.min(row + 4, last), 0 })
+    vim.api.nvim_win_set_cursor(0, { lsp.body_row(target, row), 0 })
   end)
 end
 
@@ -73,7 +71,7 @@ local function create(bufnr, opts, new_file, callback)
     range = selection_range(bufnr, opts.range),
     title = opts.title,
     newFile = new_file,
-    labels = config.get().labels,
+    labels = config.labels(),
   }
   lsp.request(bufnr, "coact/new", params, function(err, result)
     if err then

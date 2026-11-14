@@ -1,6 +1,11 @@
 type edit = { path : string; start : int; stop : int; text : string }
 
+type layout = { blank_before_heading : bool; blank_after_drawer : bool }
+
+let default_layout = { blank_before_heading = true; blank_after_drawer = true }
+
 type labels = {
+  layout : layout;
   question : string;
   answer : string;
   summary : string;
@@ -13,6 +18,7 @@ type labels = {
 
 let default_labels =
   {
+    layout = default_layout;
     question = "Question";
     answer = "Answer";
     summary = "Summary";
@@ -28,21 +34,30 @@ let ( let* ) = Result.bind
 let ends_with_newline text at = at = 0 || text.[at - 1] = '\n'
 let prefix_for text at = if ends_with_newline text at then "" else "\n"
 
-(* A blank line before a card inserted at [at], so cards read apart. *)
-let blank_before text at =
+(* Layout of generated cards, one rule for all of them:
+   - [card_text] lays out a card: heading, drawer, a blank line when
+     [blank_after_drawer], then the body;
+   - [separate] joins a card to the text before it, adding a blank line when
+     [blank_before_heading] and the text does not already end with one;
+   - [gap] is the same between two generated cards. *)
+let separate layout text at =
   if at = 0 then ""
+  else if not layout.blank_before_heading then if text.[at - 1] = '\n' then "" else "\n"
   else if at >= 2 && text.[at - 1] = '\n' && text.[at - 2] = '\n' then ""
   else if text.[at - 1] = '\n' then "\n"
   else "\n\n"
+
+let gap layout = if layout.blank_before_heading then "\n" else ""
+let after_drawer layout = if layout.blank_after_drawer then "\n" else ""
 
 let ensure_newline s = if s = "" || s.[String.length s - 1] = '\n' then s else s ^ "\n"
 
 let label s = String.map (function '[' | ']' -> ' ' | '\n' -> ' ' | c -> c) s
 
-let card_text ~level ~title ~properties ~body =
+let card_text ~layout ~level ~title ~properties ~body =
   let props = List.map (fun (k, v) -> Printf.sprintf ":%s: %s\n" k v) properties in
-  Printf.sprintf "%s %s\n:PROPERTIES:\n%s:END:\n%s" (String.make (max 1 level) '*') title
-    (String.concat "" props) (ensure_newline body)
+  Printf.sprintf "%s %s\n:PROPERTIES:\n%s:END:\n%s%s" (String.make (max 1 level) '*') title
+    (String.concat "" props) (after_drawer layout) (ensure_newline body)
 
 let taken ws id = Workspace.mem ws id
 
@@ -165,6 +180,7 @@ let unpin ws ~path ~offset =
               Ok (edits, id)))
 
 let new_card ws ~path ?into ~selection ~title labels ~now =
+  let layout = labels.layout in
   match Workspace.file ws path with
   | None -> Error "This file is not part of the chat workspace"
   | Some file ->
@@ -195,7 +211,7 @@ let new_card ws ~path ?into ~selection ~title labels ~now =
       in
       (* An empty last line to write in. *)
       let body = body ^ "\n" in
-      let card = card_text ~level:1 ~title ~properties:[ ("ID", id) ] ~body in
+      let card = card_text ~layout ~level:1 ~title ~properties:[ ("ID", id) ] ~body in
       let target, place =
         match into with
         | Some dir ->
@@ -203,7 +219,7 @@ let new_card ws ~path ?into ~selection ~title labels ~now =
             (target, { path = target; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card })
         | None ->
             let at = String.length text in
-            (path, { path; start = at; stop = at; text = prefix_for text at ^ "\n" ^ card })
+            (path, { path; start = at; stop = at; text = separate layout text at ^ card })
       in
       let link =
         match (selection, selected) with
@@ -233,6 +249,7 @@ let item_start = function Child c -> c.Org.start | Included k -> k.span.start
 let kind_property kind = (Model.kind_property, Model.kind_name kind)
 
 let submit ws ~main labels ~now =
+  let layout = labels.layout in
   match Workspace.find ws main with
   | None -> Error ("Unknown card " ^ main)
   | Some (file, card) -> (
@@ -240,7 +257,7 @@ let submit ws ~main labels ~now =
       let fresh = Ids.supply ~now ~taken:(taken ws) in
       let level = card.level + 1 in
       let answer_card id =
-        card_text ~level ~title:labels.answer ~properties:[ ("ID", id); kind_property Model.Assistant ] ~body:""
+        card_text ~layout ~level ~title:labels.answer ~properties:[ ("ID", id); kind_property Model.Assistant ] ~body:""
       in
       let items = conversation_items card in
       let last = match List.rev items with x :: _ -> Some x | [] -> None in
@@ -252,7 +269,7 @@ let submit ws ~main labels ~now =
         let question = fresh () and answer = fresh () in
         let body = Conversation.trim_text trailing in
         let user =
-          card_text ~level ~title:(let t = Org_text.headline body in if t = "" then labels.question else t)
+          card_text ~layout ~level ~title:(let t = Org_text.headline body in if t = "" then labels.question else t)
             ~properties:[ ("ID", question); kind_property Model.User ] ~body
         in
         Ok
@@ -265,8 +282,8 @@ let submit ws ~main labels ~now =
                      start = region_start;
                      stop = card.stop;
                      text =
-                       (if last = None then prefix_for text region_start else blank_before text region_start)
-                       ^ user ^ "\n" ^ answer_card answer;
+                       (if last = None then prefix_for text region_start else separate layout text region_start)
+                       ^ user ^ gap layout ^ answer_card answer;
                    };
                  ];
                question;
@@ -276,15 +293,15 @@ let submit ws ~main labels ~now =
         let draft () =
           let id = fresh () in
           let at = card.stop in
-          let user = card_text ~level ~title:labels.question ~properties:[ ("ID", id); kind_property Model.User ] ~body:"\n" in
-          let sep = if items = [] then prefix_for text at else blank_before text at in
+          let user = card_text ~layout ~level ~title:labels.question ~properties:[ ("ID", id); kind_property Model.User ] ~body:"\n" in
+          let sep = if items = [] then prefix_for text at else separate layout text at in
           Ok (Draft { edits = [ { path = file.path; start = at; stop = at; text = sep ^ user } ]; draft = id })
         in
         match List.rev items with
         | Child c :: _ when kind c = Some Model.User && own c <> "" ->
             let answer = fresh () in
             let at = c.stop in
-            Ok (Ready { edits = [ { path = file.path; start = at; stop = at; text = blank_before text at ^ answer_card answer } ];
+            Ok (Ready { edits = [ { path = file.path; start = at; stop = at; text = separate layout text at ^ answer_card answer } ];
                         question = c.id; answer })
         | Child a :: Child q :: _
           when kind a = Some Model.Assistant && own a = "" && kind q = Some Model.User && own q <> "" ->
@@ -295,6 +312,7 @@ let submit ws ~main labels ~now =
 type answer = { edits : edit list; draft : string option; trace : string option; removed : bool }
 
 let answer ws ~answer ~text ~entries ~trace_path labels ~now =
+  let layout = labels.layout in
   match Workspace.find ws answer with
   | None -> Error ("The answer card " ^ answer ^ " no longer exists")
   | Some (file, card) ->
@@ -315,21 +333,21 @@ let answer ws ~answer ~text ~entries ~trace_path labels ~now =
                 match Thread.main_of ws card.id with Some t -> Workspace.title ws t.main | None -> card.title
               in
               let record =
-                card_text ~level:1 ~title:(Printf.sprintf "%s: %s" labels.trace_source main_title)
+                card_text ~layout ~level:1 ~title:(Printf.sprintf "%s: %s" labels.trace_source main_title)
                   ~properties:[ ("ID", source); kind_property Model.Trace ]
                   ~body:(Trace.block entries)
               in
               let account =
-                card_text ~level:1 ~title:(Printf.sprintf "%s: %s" labels.trace main_title)
+                card_text ~layout ~level:1 ~title:(Printf.sprintf "%s: %s" labels.trace main_title)
                   ~properties:[ ("ID", readable); kind_property Model.Trace ]
                   ~body:(Printf.sprintf "#+coact_trace: :target %s" source)
               in
-              let cards = record ^ "\n" ^ account in
+              let cards = record ^ gap layout ^ account in
               let edit =
                 match Workspace.file ws trace_path with
                 | Some f ->
                     let at = String.length f.text in
-                    { path = trace_path; start = at; stop = at; text = prefix_for f.text at ^ "\n" ^ cards }
+                    { path = trace_path; start = at; stop = at; text = separate layout f.text at ^ cards }
                 | None ->
                     { path = trace_path; start = 0; stop = 0;
                       text = Printf.sprintf "#+title: %s: %s\n\n%s" labels.trace main_title cards }
@@ -339,10 +357,10 @@ let answer ws ~answer ~text ~entries ~trace_path labels ~now =
           let link = match trace with Some id -> Printf.sprintf "[[id:%s][%s]]\n" id labels.trace | None -> "" in
           let draft = fresh () in
           let next =
-            card_text ~level:card.level ~title:labels.question
+            card_text ~layout ~level:card.level ~title:labels.question
               ~properties:[ ("ID", draft); kind_property Model.User ] ~body:"\n"
           in
-          let replacement = link ^ ensure_newline body ^ "\n" ^ next in
+          let replacement = after_drawer layout ^ link ^ ensure_newline body ^ gap layout ^ next in
           let start = card.content_start in
           let replacement = prefix_for file.text start ^ replacement in
           Ok
@@ -354,13 +372,13 @@ let answer ws ~answer ~text ~entries ~trace_path labels ~now =
             }
 
 (* Re-level a nested subtree so its top heading sits at [level]. *)
-let archived (file : Org.file) (card : Org.card) ~level =
+let archived ~layout (file : Org.file) (card : Org.card) ~level =
   let text = file.text in
   if card.block then
     let end_line = line_start text (max card.content_start (card.stop - 1)) in
     let content = Org.sub text card.content_start end_line in
     let properties = ("ID", card.id) :: List.map (fun (p : Org.property) -> (p.key, p.value)) card.properties in
-    card_text ~level ~title:card.title ~properties ~body:content
+    card_text ~layout ~level ~title:card.title ~properties ~body:content
   else
     let delta = card.level - level in
     (* Every line kept as written, blank separators included. *)
@@ -373,20 +391,20 @@ let archived (file : Org.file) (card : Org.card) ~level =
       else l
     in
     ensure_newline (String.concat "\n" (List.map relevel lines))
-    |> fun s -> if String.ends_with ~suffix:"\n\n" s then s else s ^ "\n"
+    |> fun s -> if String.ends_with ~suffix:"\n\n" s then s else s ^ gap layout
 
 type note = { path : string; anchor : string; note : string }
 
 let one_line s = String.map (function '\n' | '\r' | '\t' -> ' ' | c -> c) (String.trim s)
 
-let create ws ~dir ~title ~kind ~body ~now =
+let create ws ~layout ~dir ~title ~kind ~body ~now =
   let title = one_line title in
   if title = "" then Error "A card needs a title"
   else
     let id = Ids.fresh ~now ~taken:(taken ws) in
     let path = Filename.concat dir (id ^ ".org") in
     let properties = ("ID", id) :: (match kind with Some k -> [ kind_property k ] | None -> []) in
-    let card = card_text ~level:1 ~title ~properties ~body:(Org_text.of_markdown body) in
+    let card = card_text ~layout ~level:1 ~title ~properties ~body:(Org_text.of_markdown body) in
     Ok ({ path; start = 0; stop = 0; text = Printf.sprintf "#+title: %s\n\n%s" title card }, id, path)
 
 (* Offsets of [sub] in [text] within [start, stop). *)
@@ -418,7 +436,7 @@ let own_segments (file : Org.file) (card : Org.card) =
   in
   List.filter (fun (a, b) -> b > a) (segments card.content_start children)
 
-let edit ws ~id replacements =
+let edit ?(layout = default_layout) ws ~id replacements =
   match Workspace.find ws id with
   | None -> Error ("Unknown card " ^ id)
   | Some (file, card) ->
@@ -428,7 +446,9 @@ let edit ws ~id replacements =
         if List.exists structural (Line_diff.lines rep) then
           Error "A replacement may not contain a heading or a property drawer; create a new card instead"
         else if old = "" then
-          if blank then Ok { path = file.path; start = card.content_start; stop = card.content_start; text = ensure_newline rep }
+          let stop = match segments with (_, b) :: _ -> b | [] -> card.content_start in
+          if blank then
+            Ok { path = file.path; start = card.content_start; stop; text = after_drawer layout ^ ensure_newline rep ^ gap layout }
           else Error "An empty old text only fills a blank card"
         else
           match List.concat_map (fun (a, b) -> occurrences file.text old a b) segments with
@@ -461,7 +481,7 @@ let same a b = item_start a = item_start b
 
 let first_line s = match Line_diff.lines s with l :: _ -> l | [] -> ""
 
-let rearrange ws (file : Org.file) (main : Org.card) slots =
+let rearrange ~layout ws (file : Org.file) (main : Org.card) slots =
   let text = file.text in
   let items = conversation_items main in
   let kept = List.filter_map (function Keep c -> Some c | Add _ -> None) slots in
@@ -490,7 +510,7 @@ let rearrange ws (file : Org.file) (main : Org.card) slots =
   let note anchor n = if anchor <> "" then notes := { path = file.path; anchor; note = n } :: !notes in
   let includes = Buffer.create 128 and nested = Buffer.create 1024 and moved = Buffer.create 1024 in
   let move_out (c : Org.card) message =
-    let card = archived file c ~level in
+    let card = archived ~layout file c ~level in
     note (first_line card) message;
     Buffer.add_string moved card
   in
@@ -506,7 +526,7 @@ let rearrange ws (file : Org.file) (main : Org.card) slots =
             note line ("Now transcluded: " ^ c.title);
             move_out c "Defined here, after the thread, and transcluded into it"
         | Keep (Included _) -> ())
-      else match slot with Keep (Child c) -> Buffer.add_string nested (archived file c ~level:(level + 1)) | _ -> ())
+      else match slot with Keep (Child c) -> Buffer.add_string nested (archived ~layout file c ~level:(level + 1)) | _ -> ())
     slots;
   List.iter
     (function
@@ -526,7 +546,7 @@ let rearrange ws (file : Org.file) (main : Org.card) slots =
       if Buffer.length moved = 0 then body
       else
         let body = ensure_newline body in
-        (if String.ends_with ~suffix:"\n\n" body || body = "" then body else body ^ "\n") ^ Buffer.contents moved
+        (if String.ends_with ~suffix:"\n\n" body || body = "" then body else body ^ gap layout) ^ Buffer.contents moved
     in
     Ok ([ { path = file.path; start = main.content_start; stop = main.stop; text = body } ], List.rev !notes)
 
@@ -538,7 +558,7 @@ let thread_card ws main =
       if (Workspace.metadata ws main).thread = None then Error (Printf.sprintf "Card %s is not a thread's main card" main)
       else Ok (file, card)
 
-let arrange ws ~main ids =
+let arrange ?(layout = default_layout) ws ~main ids =
   match thread_card ws main with
   | Error e -> Error e
   | Ok (file, card) -> (
@@ -564,7 +584,7 @@ let arrange ws ~main ids =
           | [] -> Ok (List.rev acc)
           | id :: tl -> ( match slot id with Ok s -> slots (s :: acc) tl | Error e -> Error e)
         in
-        match slots [] ids with Error e -> Error e | Ok s -> rearrange ws file card s)
+        match slots [] ids with Error e -> Error e | Ok s -> rearrange ~layout ws file card s)
 
 let compact ws ~main ~count ~summary ~dir labels ~now =
   match thread_card ws main with
@@ -581,11 +601,11 @@ let compact ws ~main ~count ~summary ~dir labels ~now =
             summarized
         in
         let body = Org_text.of_markdown summary ^ "\n\n" ^ labels.sources ^ ": " ^ String.concat ", " sources in
-        match create ws ~dir ~title:labels.summary ~kind:(Some Model.Synthesis) ~body ~now with
+        match create ws ~layout:labels.layout ~dir ~title:labels.summary ~kind:(Some Model.Synthesis) ~body ~now with
         | Error e -> Error e
         | Ok (definition, id, path) -> (
             let slots = Add id :: List.map (fun c -> Keep c) (List.filteri (fun i _ -> i >= count) items) in
-            match rearrange ws file card slots with
+            match rearrange ~layout:labels.layout ws file card slots with
             | Error e -> Error e
             | Ok (edits, notes) ->
                 let notes =

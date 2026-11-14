@@ -165,11 +165,9 @@ local function ask(question)
   if not heading then
     fail("no question card to write in")
   end
-  local row = heading
-  while lines[row] ~= ":END:" do
-    row = row + 1
-  end
-  vim.api.nvim_buf_set_lines(buf, row, row + 1, false, { question })
+  -- Where Coact mode puts the cursor: below the drawer and its blank line.
+  local body = require("coact.mode.lsp").body_row(buf, heading)
+  vim.api.nvim_buf_set_lines(buf, body - 1, body, false, { question })
 end
 
 -- 1. pin the card, then send its text as the first question
@@ -182,10 +180,21 @@ local thread = text():match(":THREAD_ID: (pi:[%w-]+)")
 check(thread ~= nil, "pin binds a thread id")
 submit("first turn")
 local body = text()
-check(body:find(":CONTEXT_KIND: user\n:END:\nWhat is a monad?", 1, true) ~= nil, "the question became a user card")
+check(body:find(":CONTEXT_KIND: user\n:END:\n\nWhat is a monad?", 1, true) ~= nil, "the question became a user card")
 check(body:find("Echo: What is a monad?", 1, true) ~= nil, "the answer was written into its card")
 check(body:find("%[%[id:[^%]]+%]%[Trace%]%]") ~= nil, "the answer links its trace")
 check(vim.bo[buf].modifiable, "the card is editable again")
+check(
+  body:find(":CONTEXT_KIND: assistant\n:END:\n\n[[id:", 1, true) ~= nil
+    and body:find("\n\n** Question\n", 1, true) ~= nil,
+  "generated cards are set apart by blank lines"
+)
+local function waiting_line()
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  return vim.api.nvim_buf_get_lines(buf, cursor - 2, cursor - 1, false)[1] == ""
+    and vim.api.nvim_buf_get_lines(buf, cursor - 3, cursor - 2, false)[1] == ":END:"
+end
+check(vim.wait(3000, waiting_line, 20), "the cursor waits below the next question's drawer and blank line")
 check(not vim.bo[buf].modified, "the card file is saved")
 local traces = vim.fn.glob(root .. "/trace/*.org", false, true)
 check(#traces == 1, "a trace file was written")
