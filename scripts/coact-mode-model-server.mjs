@@ -32,7 +32,9 @@ function reply(messages) {
   if (/Name each card below/.test(all)) {
     const names = {};
     for (const m of all.matchAll(/<card id="([^"]+)" kind="([^"]+)">/g)) names[m[1]] = "Titled " + m[2];
-    return { text: JSON.stringify(names) };
+    const passage = all.match(/<passage>\n([^\n]*)/);
+    const anchor = passage ? passage[1].trim().split(/\s+/)[0] : undefined;
+    return { text: JSON.stringify({ titles: names, anchor }) };
   }
   if (/<conversation>/.test(all)) return { text: "SUMMARY: monads were discussed; open question: why endofunctors?" };
   if (last.role === "tool") return { text: "Final answer: the file says " + text(last.content).trim() };

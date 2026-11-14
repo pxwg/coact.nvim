@@ -161,8 +161,19 @@ function M.ask(opts)
         return notify(err, vim.log.levels.ERROR)
       end
       M.pin({ row, 0 }, function()
-        vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(target), 0 })
-        notify("write your question in this card, then submit")
+        local last = vim.api.nvim_buf_line_count(target)
+        vim.api.nvim_win_set_cursor(0, { last, 0 })
+        -- Ask now: a question, or nothing to have the passage explained.
+        vim.ui.input({ prompt = "Ask about the passage (empty: send it as is, Esc: write later): " }, function(question)
+          if question == nil then
+            return notify("write your question in this card, then submit")
+          end
+          if vim.trim(question) ~= "" then
+            local line = vim.api.nvim_buf_get_lines(target, last - 1, last, false)[1]
+            vim.api.nvim_buf_set_lines(target, line == "" and last - 1 or last, last, false, { question })
+          end
+          run.submit(target)
+        end)
       end)
     end)
   end)

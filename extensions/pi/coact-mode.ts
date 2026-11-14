@@ -283,7 +283,12 @@ const TITLE_INSTRUCTIONS = [
 	"- assistant card: its central conclusion or mechanism.",
 	"- synthesis card: the knowledge it states, as a proposition that stands alone.",
 	"Keep the card's own terms exactly; do not replace a technical term with a looser one. Write in the card's language. Keep titles short (at most about twelve words or twenty CJK characters), without markup or a final period.",
-	'Reply with one JSON object mapping each card id to its title, e.g. {"id1": "...", "id2": "..."}.',
+	'Reply with one JSON object: {"titles": {"id1": "...", "id2": "..."}}.',
+].join("\n");
+
+const ANCHOR_INSTRUCTIONS = [
+	"The cards discuss the passage below, quoted from a note. Also pick \"anchor\": a short phrase copied exactly from the passage, on one line, naming what the discussion is about; the note will link that phrase to the discussion.",
+	'Add it to the JSON object: {"titles": {...}, "anchor": "..."}.',
 ].join("\n");
 
 function titleModel(ctx: ExtensionContext) {
@@ -297,16 +302,20 @@ function titleModel(ctx: ExtensionContext) {
 	return ctx.model;
 }
 
-/** One background call naming cards ({ id, kind, text, revision }[]). */
-async function nameCards(ctx: ExtensionContext, cards: any[]) {
-	const body = cards
-		.map((card) => `<card id="${card.id}" kind="${card.kind}">\n${String(card.text).slice(0, 4000)}\n</card>`)
-		.join("\n\n");
+/** One background call naming cards ({ id, kind, text, revision }[]) and,
+ * for an asked thread, picking the phrase of its passage to link back. */
+async function nameCards(ctx: ExtensionContext, cards: any[], link?: { passage: string }) {
+	const parts = [TITLE_INSTRUCTIONS];
+	if (link) parts.push(ANCHOR_INSTRUCTIONS, `<passage>\n${String(link.passage).slice(0, 4000)}\n</passage>`);
+	parts.push(
+		cards.map((card) => `<card id="${card.id}" kind="${card.kind}">\n${String(card.text).slice(0, 4000)}\n</card>`).join("\n\n"),
+	);
+	const body = parts.join("\n\n");
 	const response: any = await ctx.modelRegistry.complete(
 		titleModel(ctx),
 		{
 			systemPrompt: TITLE_SYSTEM,
-			messages: [{ role: "user", content: [{ type: "text", text: `${TITLE_INSTRUCTIONS}\n\n${body}` }], timestamp: Date.now() }],
+			messages: [{ role: "user", content: [{ type: "text", text: body }], timestamp: Date.now() }],
 		} as any,
 		{ maxTokens: 2048 } as any,
 	);
@@ -319,10 +328,14 @@ async function nameCards(ctx: ExtensionContext, cards: any[]) {
 		.join("");
 	const json = text.match(/\{[\s\S]*\}/);
 	if (!json) throw new Error("the naming call returned no JSON");
-	const names = JSON.parse(json[0]);
-	return cards
-		.filter((card) => typeof names[card.id] === "string")
-		.map((card) => ({ id: card.id, revision: card.revision, title: names[card.id] }));
+	const reply = JSON.parse(json[0]);
+	const names = reply && typeof reply.titles === "object" && reply.titles ? reply.titles : reply;
+	return {
+		titles: cards
+			.filter((card) => typeof names[card.id] === "string")
+			.map((card) => ({ id: card.id, revision: card.revision, title: names[card.id] })),
+		anchor: link && typeof reply.anchor === "string" ? reply.anchor : undefined,
+	};
 }
 
 function readJson(path: string) {
@@ -527,7 +540,7 @@ function cardTools(pi: ExtensionAPI) {
 			"Create a card in its own file in the chat workspace; it is written directly and its ID returned. It joins no thread until thread_arrange adds it. kind: user (the user's message), assistant (your message), synthesis (knowledge distilled from discussion; mark open questions and interpretations the user has not accepted as such), trace (a process record) or note (default).",
 		parameters: Type.Object({
 			title: Type.String(),
-			body: Type.String({ description: "Org text" }),
+			body: Type.String({ description: "Org text; section headings use two or more stars, and no property drawer" }),
 			kind: Type.Optional(Type.String({ description: "user, assistant, synthesis, trace or note" })),
 		}),
 		async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) {
@@ -539,7 +552,7 @@ function cardTools(pi: ExtensionAPI) {
 		name: "card_edit",
 		label: "card_edit",
 		description:
-			"Exact text replacements in one card's own text, never its heading, properties or nested cards. Each oldText must occur exactly once in the card; an empty oldText fills a blank card. The user reviews the change and may accept part of it or edit it.",
+			"Exact text replacements in one card's own text, never its heading, properties or nested cards. Each oldText must occur exactly once in the card; an empty oldText fills a blank card. newText may contain section headings with more stars than the card's own heading, but no heading at or above its level and no property drawer. The user reviews the change and may accept part of it or edit it.",
 		parameters: Type.Object({
 			id: Type.String(),
 			edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
@@ -625,14 +638,16 @@ export default function (pi: ExtensionAPI) {
 		description: "Coact mode: name cards by what they discuss, in the background (internal)",
 		handler: async (args, ctx) => {
 			let titles: any[] = [];
+			let anchor: string | undefined;
 			let error: string | undefined;
+			const request = readJson(args.trim());
 			try {
-				titles = await nameCards(ctx, readJson(args.trim()).cards ?? []);
+				({ titles, anchor } = await nameCards(ctx, request.cards ?? [], request.link ?? undefined));
 			} catch (e) {
 				error = e instanceof Error ? e.message : String(e);
 			}
 			try {
-				await ask(ctx, "titles", { titles, error });
+				await ask(ctx, "titles", { titles, anchor, main: request.link?.main, error });
 			} catch {
 				// Neovim went away; titles are optional.
 			}

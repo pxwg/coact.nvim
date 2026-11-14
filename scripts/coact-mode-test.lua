@@ -497,6 +497,10 @@ check(#sessions == 1, "one Pi session file holds the thread")
 vim.api.nvim_set_current_buf(buf)
 local wins = #vim.api.nvim_list_wins()
 local row = find_line("^Echo: After the restart%?$")
+-- Ask at once: the question goes into the new card and is sent.
+vim.ui.input = function(_, on_confirm)
+  on_confirm("What does after mean here?")
+end
 mode.ask({ range = { { row, 6 }, { row, 10 } } })
 local side
 wait(10000, function()
@@ -512,16 +516,23 @@ check(
   "the new card has its own file in the workspace"
 )
 check(side_text:find("#+begin_quote\nAfter\n#+end_quote", 1, true) ~= nil, "the card quotes the selection")
+check(side_text:find("\n* New card\n", 1, true) ~= nil, "the asked card starts with a placeholder title")
 check(
-  text():find("Echo: [[id:", 1, true) ~= nil and text():find(":PIN: false", 1, true) ~= nil,
-  "the selection links to it and the old card is unpinned"
+  text():find("Echo: After the restart?", 1, true) ~= nil and text():find(":PIN: false", 1, true) ~= nil,
+  "asking leaves the passage as it was and unpins the old card"
 )
-vim.api.nvim_buf_set_lines(side, -1, -1, false, { "What does after mean here?" })
-mode.submit()
+vim.ui.input = function(_, on_confirm)
+  on_confirm("")
+end
 wait(5000, function()
   return run.busy()
 end, "side submission")
 settle("side turn")
+local side_id = side_text:match(":ID: (%S+)")
+wait(10000, function()
+  return text():find("Echo: [[id:" .. side_id .. "][After]] the restart?", 1, true) ~= nil
+end, "link back")
+check(true, "after the first answer, a phrase of the passage links to the thread, words unchanged")
 side_text = table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n")
 check(
   side_text:find("Echo: What does after mean here?", 1, true) ~= nil,

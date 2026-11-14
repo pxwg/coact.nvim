@@ -167,7 +167,8 @@ function handlers.finish(request, reply)
     save_baseline(turn.bufnr, turn.main, state.thread)
     require("coact.mode.titles").queue(
       turn.bufnr,
-      result.removed and { turn.question } or { turn.question, turn.answer }
+      result.removed and { turn.question, turn.main } or { turn.question, turn.answer, turn.main },
+      turn.main
     )
     if result.draft and result.draft ~= vim.NIL then
       focus_card(turn.bufnr, result.draft)

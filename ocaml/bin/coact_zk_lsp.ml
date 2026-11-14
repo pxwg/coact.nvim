@@ -846,7 +846,7 @@ let title_candidates params =
          `Assoc
            [
              ("id", `String r.id);
-             ("kind", `String (Model.kind_name r.kind));
+             ("kind", `String r.kind);
              ("text", `String r.text);
              ("revision", `String r.revision);
            ])
@@ -869,6 +869,20 @@ let retitle params =
       ( "skipped",
         `List (List.map (fun (i, why) -> `Assoc [ ("id", `String i); ("reason", `String why) ]) skipped) );
     ]
+
+let link_candidate params =
+  let ws = analysis () in
+  let main = main_param params in
+  match Plan.link_candidate ws ~main with
+  | Some (source, passage) ->
+      `Assoc [ ("main", `String main); ("source", `String source); ("passage", `String passage) ]
+  | None -> `Null
+
+let link_back params =
+  let ws = analysis () in
+  let anchor = Option.value ~default:"" (str (member "anchor" params)) in
+  let edits, source = ok_or (Plan.link_back ws ~main:(main_param params) ~anchor) in
+  `Assoc [ ("edits", edits_json edits); ("source", `String source) ]
 
 (* Error diagnostics of the whole workspace, for reports after a change. *)
 let errors _ =
@@ -1089,6 +1103,8 @@ let requests =
     ("coact/errors", errors);
     ("coact/title_candidates", title_candidates);
     ("coact/retitle", retitle);
+    ("coact/link_candidate", link_candidate);
+    ("coact/link_back", link_back);
   ]
 
 let notifications =

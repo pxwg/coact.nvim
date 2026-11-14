@@ -80,6 +80,9 @@ local defaults = {
     -- How :CoactMode ask opens the new card's file: an Ex command taking the
     -- path ("vsplit", "split", "tabedit", "edit") or a function(path).
     open = "vsplit",
+    -- After an asked thread's first answer, link a phrase of the passage to
+    -- it; the words of the passage stay as they were.
+    link = true,
   },
   compact = {
     -- Recent context kept verbatim when compacting (Pi's keepRecentTokens);
