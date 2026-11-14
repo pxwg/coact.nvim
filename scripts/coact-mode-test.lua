@@ -51,6 +51,16 @@ wait(5000, function()
   return url ~= nil
 end, "model server")
 
+-- A skill for /skill:coact-test.
+vim.fn.mkdir(tmp .. "/skills/coact-test", "p")
+vim.fn.writefile({
+  "---",
+  "name: coact-test",
+  "description: A skill for the Coact mode test",
+  "---",
+  "SKILL BODY: answer in haiku.",
+}, tmp .. "/skills/coact-test/SKILL.md")
+
 local mode = require("coact.mode")
 local run = require("coact.mode.run")
 mode.setup({
@@ -64,6 +74,8 @@ mode.setup({
       "--extension",
       plugin .. "/scripts/coact-mode-test-provider.ts",
       "--no-skills",
+      "--skill",
+      tmp .. "/skills/coact-test",
       "--no-context-files",
       "--no-prompt-templates",
     },
@@ -256,6 +268,63 @@ settle("stopped turn")
 check(
   text():find("Waiting", 1, true) ~= nil and text():find("one word after another", 1, true) == nil,
   "stopping keeps the partial answer"
+)
+
+-- Directives: /skill and @context complete, expand once, and are traced.
+local code = tmp .. "/project/code.lua"
+vim.fn.mkdir(tmp .. "/project", "p")
+vim.fn.writefile({ "local answer = 42" }, code)
+vim.cmd("split " .. vim.fn.fnameescape(code))
+vim.cmd("wincmd p")
+check(vim.api.nvim_get_current_buf() == buf, "back in the card buffer")
+wait(15000, function()
+  local cache = vim.fn.glob(tmp .. "/workspaces/commands.json")
+  return cache ~= "" and table.concat(vim.fn.readfile(cache), ""):find("skill:coact-test", 1, true) ~= nil
+end, "command registry")
+local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+local question_row
+for i, l in ipairs(lines) do
+  if l == "** Question" then
+    question_row = i
+  end
+end
+while lines[question_row] ~= ":END:" do
+  question_row = question_row + 1
+end
+vim.api.nvim_buf_set_lines(buf, question_row, question_row + 1, false, { "/sk" })
+local slash = request_sync("textDocument/completion", lsp_mod.position(buf, { question_row + 1, 3 }))
+check(#vim.tbl_filter(function(item)
+  return item.label == "/skill:coact-test"
+end, slash) == 1, "/ completes Pi skills at the start of a line")
+vim.api.nvim_buf_set_lines(buf, question_row, question_row + 1, false, { "see @buf" })
+local at = request_sync("textDocument/completion", lsp_mod.position(buf, { question_row + 1, 8 }))
+check(#vim.tbl_filter(function(item)
+  return item.label == "@buffer"
+end, at) == 1, "@ completes Neovim contexts")
+vim.api.nvim_buf_set_lines(
+  buf,
+  question_row,
+  question_row + 1,
+  false,
+  { "/skill:coact-test briefly", "What does @buffer say?" }
+)
+submit("directive turn")
+local directive_request = joined(last_request())
+check(directive_request:find("SKILL BODY: answer in haiku.", 1, true) ~= nil, "the skill was expanded for this turn")
+check(directive_request:find("local answer = 42", 1, true) ~= nil, "@buffer read the code window used last")
+local decorated = request_sync("coact/decorations", { textDocument = { uri = vim.uri_from_bufnr(buf) } })
+check(#decorated.directives >= 2, "directives are highlighted in the question card")
+local traced = table.concat(vim.fn.readfile(vim.fn.glob(root .. "/trace/*.org", false, true)[1]), "\n")
+check(
+  traced:find("coact.command", 1, true) ~= nil and traced:find("coact.context", 1, true) ~= nil,
+  "the expansions are kept in the trace"
+)
+ask("And now?")
+submit("after directive turn")
+local after = joined(last_request())
+check(
+  after:find("SKILL BODY", 1, true) == nil and after:find("local answer = 42", 1, true) == nil,
+  "directives take effect only once"
 )
 
 -- 3. a tool call is recorded in the trace and replayed in later turns
