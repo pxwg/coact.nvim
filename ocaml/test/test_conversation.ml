@@ -214,6 +214,7 @@ let%expect_test "submit, answer and compact" =
     :PROPERTIES:
     :ID: Q
     :CONTEXT_KIND: user
+    :AUTO_TITLE: What is a monad?
     :END:
 
     What is a monad?

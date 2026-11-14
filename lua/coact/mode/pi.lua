@@ -39,6 +39,7 @@ function M.start(opts)
   local env = vim.tbl_extend("force", config.get().pi.env or {}, {
     COACT_MODE_WORKSPACE = opts.root,
     COACT_MODE_PROMPT = config.prompt(),
+    COACT_MODE_TITLE_MODEL = config.get().titles.model,
   })
   local keep = config.get().compact.keep_recent_tokens
   if keep then

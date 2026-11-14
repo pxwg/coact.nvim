@@ -269,8 +269,11 @@ let submit ws ~main labels ~now =
         let question = fresh () and answer = fresh () in
         let body = Conversation.trim_text trailing in
         let user =
-          card_text ~layout ~level ~title:(let t = Org_text.headline body in if t = "" then labels.question else t)
-            ~properties:[ ("ID", question); kind_property Model.User ] ~body
+          let headline = Org_text.headline body in
+          let title, auto =
+            if headline = "" then (labels.question, []) else (headline, [ (Model.auto_title_property, headline) ])
+          in
+          card_text ~layout ~level ~title ~properties:([ ("ID", question); kind_property Model.User ] @ auto) ~body
         in
         Ok
           (Ready
@@ -614,3 +617,86 @@ let compact ws ~main ~count ~summary ~dir labels ~now =
                   :: notes
                 in
                 Ok (definition :: edits, notes, id))
+
+(* ---- semantic titles ---- *)
+
+type title_request = { id : string; kind : Model.kind; text : string; revision : string }
+
+let thread_items ws ~main =
+  match Workspace.find ws main with
+  | Some (_, card) -> List.map conv_id (conversation_items card)
+  | None -> []
+
+let revision (file : Org.file) (card : Org.card) =
+  Digest.to_hex (Digest.string (String.trim (Org.own_text file card)))
+
+(* Still titled by default, or by a background call and not by hand. *)
+let automatic labels (card : Org.card) =
+  List.mem card.title [ ""; labels.question; labels.answer; labels.summary ]
+  ||
+  match Org.property card Model.auto_title_property with
+  | Some p -> p.value = card.title
+  | None -> false
+
+let titleable ws labels (card : Org.card) =
+  (not card.block)
+  && (match (Workspace.metadata ws card.id).kind with
+     | Some (Model.User | Model.Assistant | Model.Synthesis) -> true
+     | _ -> false)
+  && automatic labels card
+
+let title_requests ws labels ids =
+  List.filter_map
+    (fun id ->
+      match Workspace.find ws id with
+      | Some (file, card) when titleable ws labels card -> (
+          let text = Conversation.trim_text (Org.own_text file card) in
+          match (Workspace.metadata ws id).kind with
+          | Some kind when text <> "" -> Some { id; kind; text; revision = revision file card }
+          | _ -> None)
+      | _ -> None)
+    (List.sort_uniq compare ids)
+
+let clean_title s =
+  let s = one_line s in
+  let n = String.length s in
+  let rec lead i = if i < n && (s.[i] = '*' || s.[i] = '#' || s.[i] = ' ') then lead (i + 1) else i in
+  let s = String.trim (String.sub s (lead 0) (n - lead 0)) in
+  let n = String.length s in
+  let s = if n >= 2 && ((s.[0] = '"' && s.[n - 1] = '"') || (s.[0] = '\'' && s.[n - 1] = '\'')) then String.sub s 1 (n - 2) else s in
+  (* A trailing :word: would read as Org tags. *)
+  let rec untag s = if s <> "" && s.[String.length s - 1] = ':' then untag (String.sub s 0 (String.length s - 1)) else s in
+  let s = String.trim (untag (String.trim s)) in
+  if String.length s <= 120 then s
+  else
+    let rec cut i = if i > 0 && Char.code s.[i] land 0xC0 = 0x80 then cut (i - 1) else i in
+    String.sub s 0 (cut 120)
+
+let retitle ws labels titles =
+  let seen = Hashtbl.create 8 in
+  List.fold_left
+    (fun (edits, applied, skipped) (id, rev, title) ->
+      let title = clean_title title in
+      let skip why = (edits, applied, (id, why) :: skipped) in
+      if Hashtbl.mem seen id then skip "named twice"
+      else (
+        Hashtbl.add seen id ();
+        match Workspace.find ws id with
+        | None -> skip "the card no longer exists"
+        | Some (file, card) ->
+            if not (titleable ws labels card) then skip "the title was set by hand"
+            else if revision file card <> rev then skip "the card changed while it was named"
+            else if title = "" then skip "no title was given"
+            else if title = card.title then (edits, applied, skipped)
+            else (
+              match set_card_properties file card [ (Model.auto_title_property, title) ] with
+              | Error e -> skip e
+              | Ok properties ->
+                  let s = card.title_span in
+                  let text = if s.start > 0 && file.text.[s.start - 1] = '*' then " " ^ title else title in
+                  ( ({ path = file.path; start = s.start; stop = s.stop; text } :: properties) @ edits,
+                    id :: applied,
+                    skipped ))))
+    ([], [], []) titles
+  |> fun (edits, applied, skipped) -> (edits, List.rev applied, List.rev skipped)
+

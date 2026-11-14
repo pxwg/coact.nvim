@@ -30,6 +30,13 @@ local defaults = {
     args = {},
     env = {},
   },
+  -- Semantic titles: after a turn, a background call names its cards by
+  -- what they discuss. Titles set by hand are never replaced.
+  titles = {
+    enabled = true,
+    -- "provider/id" of the naming model; nil uses the thread's model.
+    model = nil,
+  },
   -- Layout of generated cards: a blank line before each card's heading,
   -- and between its property drawer and its body.
   layout = {

@@ -13,6 +13,7 @@
 //   - "please note <title>"            -> card_create
 //   - "please wait"                    -> a slow stream, for stopping
 //   - "fill the context"               -> usage near the context window
+//   - a card-naming request            -> "Titled <kind>" for each card
 //   - otherwise                        -> "Echo: <question>"
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -28,6 +29,11 @@ function text(content) {
 function reply(messages) {
   const last = messages[messages.length - 1] ?? {};
   const all = messages.map((m) => text(m.content)).join("\n");
+  if (/Name each card below/.test(all)) {
+    const names = {};
+    for (const m of all.matchAll(/<card id="([^"]+)" kind="([^"]+)">/g)) names[m[1]] = "Titled " + m[2];
+    return { text: JSON.stringify(names) };
+  }
   if (/<conversation>/.test(all)) return { text: "SUMMARY: monads were discussed; open question: why endofunctors?" };
   if (last.role === "tool") return { text: "Final answer: the file says " + text(last.content).trim() };
   const question = text(last.content);

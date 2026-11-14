@@ -24,6 +24,10 @@ val kind_property : string
 val thread_property : string
 val pin_property : string
 
+(** [AUTO_TITLE]: the title a background call gave the card. While the
+    heading still reads it, the title counts as automatic. *)
+val auto_title_property : string
+
 val kinds : (string * kind) list
 val kind_name : kind -> string
 val relation_name : relation -> string

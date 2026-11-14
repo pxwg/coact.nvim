@@ -291,3 +291,79 @@ let%expect_test "new cards are set apart by a blank line" =
     :CONTEXT_KIND: user
     :END:
     |}]
+
+let%expect_test "semantic titles spare cards named by hand" =
+  let chat =
+    {|* Chat
+:PROPERTIES:
+:ID: chat
+:THREAD_ID: pi:x
+:PIN: true
+:END:
+** Question
+:PROPERTIES:
+:ID: q
+:CONTEXT_KIND: user
+:END:
+Why does the two-point computation give a scale quotient?
+
+** Answer
+:PROPERTIES:
+:ID: a
+:CONTEXT_KIND: assistant
+:END:
+The annulus homotopy removes the common scale.
+
+** My own name
+:PROPERTIES:
+:ID: m
+:CONTEXT_KIND: assistant
+:END:
+Kept as named.
+
+** Question
+:PROPERTIES:
+:ID: draft
+:CONTEXT_KIND: user
+:END:
+
+|}
+  in
+  let docs = [ ("c.org", chat) ] in
+  let ws = analyze docs in
+  let labels = Plan.default_labels in
+  let requests = Plan.title_requests ws labels (Plan.thread_items ws ~main:"chat") in
+  List.iter (fun (r : Plan.title_request) -> Printf.printf "request %s %s\n" r.id (Model.kind_name r.kind)) requests;
+  let rev id = (List.find (fun (r : Plan.title_request) -> r.id = id) requests).revision in
+  let edits, applied, skipped =
+    Plan.retitle ws labels
+      [ ("q", rev "q", "** Why a scale quotient?"); ("a", "stale", "Annulus homotopy"); ("m", "x", "Renamed:") ]
+  in
+  List.iter (fun (id, why) -> Printf.printf "skipped %s: %s\n" id why) skipped;
+  Printf.printf "applied %s\n" (String.concat "," applied);
+  let docs = apply docs edits in
+  let text = List.assoc "c.org" docs in
+  print_string (String.concat "\n" (List.filteri (fun i _ -> i >= 6 && i < 13) (String.split_on_char '\n' text)));
+  print_newline ();
+  (* An automatic title can be renamed again; once edited by hand it stays. *)
+  let ws = analyze docs in
+  Printf.printf "still automatic: %d\n" (List.length (Plan.title_requests ws labels [ "q" ]));
+  let docs = [ ("c.org", String.concat "\n" (List.map (fun l -> if l = "** Why a scale quotient?" then "** Mine" else l) (String.split_on_char '\n' text))) ] in
+  Printf.printf "after a hand edit: %d\n" (List.length (Plan.title_requests (analyze docs) labels [ "q" ]));
+  [%expect {|
+    request a assistant
+    request q user
+    skipped a: the card changed while it was named
+    skipped m: the title was set by hand
+    applied q
+    ** Why a scale quotient?
+    :PROPERTIES:
+    :ID: q
+    :CONTEXT_KIND: user
+    :AUTO_TITLE: Why a scale quotient?
+    :END:
+    Why does the two-point computation give a scale quotient?
+    still automatic: 1
+    after a hand edit: 0
+    |}]
+

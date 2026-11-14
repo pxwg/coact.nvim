@@ -25,6 +25,8 @@
  *                                  only through the card tools, every other
  *                                  write is reviewed
  *   COACT_MODE_PROMPT              the system prompt section; empty for none
+ *   COACT_MODE_TITLE_MODEL         "provider/id" naming cards; default: the
+ *                                  thread's model
  *   COACT_MODE_KEEP_RECENT_TOKENS  recent context kept verbatim when compacting
  */
 
@@ -269,6 +271,58 @@ function expandDirectives(pi: ExtensionAPI, request: any): Message[] {
 function runContext(current: Run, delta: Message[]) {
 	const messages = current.artifact.messages;
 	return [...messages.slice(0, -1), ...current.expansions, ...messages.slice(-1), ...delta];
+}
+
+// ---- semantic titles ----
+
+const TITLE_SYSTEM = "You name the cards of a long discussion so a reader can find them. Output only JSON.";
+
+const TITLE_INSTRUCTIONS = [
+	"Name each card below. Name each card by what it discusses, not by who wrote it: the title is an index, not a summary.",
+	"- user card: the object asked about and what is asked of it.",
+	"- assistant card: its central conclusion or mechanism.",
+	"- synthesis card: the knowledge it states, as a proposition that stands alone.",
+	"Keep the card's own terms exactly; do not replace a technical term with a looser one. Write in the card's language. Keep titles short (at most about twelve words or twenty CJK characters), without markup or a final period.",
+	'Reply with one JSON object mapping each card id to its title, e.g. {"id1": "...", "id2": "..."}.',
+].join("\n");
+
+function titleModel(ctx: ExtensionContext) {
+	const spec = process.env.COACT_MODE_TITLE_MODEL;
+	const slash = spec ? spec.indexOf("/") : -1;
+	if (spec && slash > 0) {
+		const model = (ctx.modelRegistry as any).find(spec.slice(0, slash), spec.slice(slash + 1));
+		if (model) return model;
+	}
+	if (!ctx.model) throw new Error("no model is selected");
+	return ctx.model;
+}
+
+/** One background call naming cards ({ id, kind, text, revision }[]). */
+async function nameCards(ctx: ExtensionContext, cards: any[]) {
+	const body = cards
+		.map((card) => `<card id="${card.id}" kind="${card.kind}">\n${String(card.text).slice(0, 4000)}\n</card>`)
+		.join("\n\n");
+	const response: any = await ctx.modelRegistry.complete(
+		titleModel(ctx),
+		{
+			systemPrompt: TITLE_SYSTEM,
+			messages: [{ role: "user", content: [{ type: "text", text: `${TITLE_INSTRUCTIONS}\n\n${body}` }], timestamp: Date.now() }],
+		} as any,
+		{ maxTokens: 2048 } as any,
+	);
+	if (response.stopReason === "error" || response.stopReason === "aborted") {
+		throw new Error(response.errorMessage || "the naming call failed");
+	}
+	const text = (response.content ?? [])
+		.filter((block: any) => block?.type === "text")
+		.map((block: any) => block.text)
+		.join("");
+	const json = text.match(/\{[\s\S]*\}/);
+	if (!json) throw new Error("the naming call returned no JSON");
+	const names = JSON.parse(json[0]);
+	return cards
+		.filter((card) => typeof names[card.id] === "string")
+		.map((card) => ({ id: card.id, revision: card.revision, title: names[card.id] }));
 }
 
 function readJson(path: string) {
@@ -563,6 +617,24 @@ export default function (pi: ExtensionAPI) {
 				await report(ctx, "finish", error);
 			} finally {
 				if (run === current) run = undefined;
+			}
+		},
+	});
+
+	pi.registerCommand("coact-title", {
+		description: "Coact mode: name cards by what they discuss, in the background (internal)",
+		handler: async (args, ctx) => {
+			let titles: any[] = [];
+			let error: string | undefined;
+			try {
+				titles = await nameCards(ctx, readJson(args.trim()).cards ?? []);
+			} catch (e) {
+				error = e instanceof Error ? e.message : String(e);
+			}
+			try {
+				await ask(ctx, "titles", { titles, error });
+			} catch {
+				// Neovim went away; titles are optional.
 			}
 		},
 	});

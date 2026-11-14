@@ -165,6 +165,10 @@ function handlers.finish(request, reply)
       notify("no answer was produced", vim.log.levels.WARN)
     end
     save_baseline(turn.bufnr, turn.main, state.thread)
+    require("coact.mode.titles").queue(
+      turn.bufnr,
+      result.removed and { turn.question } or { turn.question, turn.answer }
+    )
     if result.draft and result.draft ~= vim.NIL then
       focus_card(turn.bufnr, result.draft)
     end
@@ -216,6 +220,7 @@ function handlers.compact(request, reply)
         end
         workspace.save_baseline(state.root, state.thread, exported.cards)
         ui.decorate(bufnr)
+        require("coact.mode.titles").queue(bufnr, { plan.synthesis })
         reply({ decision = "accept", artifactJson = exported.artifactJson })
       end)
     end)
@@ -280,6 +285,10 @@ function handlers.changeset(request, reply)
       end)
     end)
   end)
+end
+
+function handlers.titles(request, reply)
+  require("coact.mode.titles").apply(request, reply)
 end
 
 function handlers.compacted(request, reply)
@@ -488,6 +497,7 @@ function M.submit(bufnr)
             state.turn = {
               submit_id = submit_id,
               main = card.id,
+              question = plan.question,
               answer = plan.answer,
               bufnr = card.bufnr,
               row = row or 1,
@@ -575,6 +585,16 @@ function M.thread_changed(thread)
     state.pi = nil
     state.thread = nil
   end
+end
+
+--- The running Pi of the current thread, if any.
+function M.client()
+  return state.pi and state.pi:is_running() and state.pi or nil
+end
+
+--- Pi for a thread, started or reused: client or nil, err.
+function M.ensure(root, thread)
+  return ensure_pi(root, thread)
 end
 
 --- The active thread's card buffer, for commands run from other buffers.

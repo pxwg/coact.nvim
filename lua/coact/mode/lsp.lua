@@ -129,7 +129,8 @@ end
 --- Apply plan edits ({uri, path, version, exists, edits}[]) and save the
 --- touched workspace files. Refuses buffers that changed since planning.
 --- Returns true or nil, err.
-function M.apply(files)
+--- With opts.keep_unsaved, a buffer that had unsaved changes stays unsaved.
+function M.apply(files, opts)
   local targets = {}
   for _, file in ipairs(files or {}) do
     local bufnr = vim.fn.bufadd(file.path)
@@ -140,7 +141,7 @@ function M.apply(files)
     if vim.bo[bufnr].modified and (file.version == nil or file.version == vim.NIL) then
       return nil, ("%s has unsaved changes the server has not seen"):format(vim.fn.fnamemodify(file.path, ":~:."))
     end
-    table.insert(targets, { bufnr = bufnr, file = file })
+    table.insert(targets, { bufnr = bufnr, file = file, modified = vim.bo[bufnr].modified })
   end
   for _, target in ipairs(targets) do
     local bufnr, file = target.bufnr, target.file
@@ -150,7 +151,9 @@ function M.apply(files)
     M.with_modifiable(bufnr, function()
       vim.lsp.util.apply_text_edits(file.edits, bufnr, "utf-16")
     end)
-    save(bufnr)
+    if not (opts and opts.keep_unsaved and target.modified) then
+      save(bufnr)
+    end
   end
   return true
 end

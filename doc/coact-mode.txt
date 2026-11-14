@@ -10,6 +10,7 @@ CONTENTS                                                        *coact-mode*
 5. A turn                                          |coact-mode-turn|
 6. Traces                                          |coact-mode-trace|
 6a. Directives                                     |coact-mode-directives|
+6b. Semantic titles                                |coact-mode-titles|
 7. Compaction                                      |coact-mode-compact|
 8. Agent tools and changes                          |coact-mode-review|
 9. Commands                                        |coact-mode-commands|
@@ -184,6 +185,34 @@ that turn's trace. Later turns send the line as written. An @context that
 has nothing to add stops the turn before anything is sent.
 
 ==============================================================================
+6b. SEMANTIC TITLES                                     *coact-mode-titles*
+
+Cards are created as "Question" and "Answer". When a turn finishes, a
+background call names its question and answer by what they discuss; a
+compaction's synthesis card is named the same way. The kind icon already
+says who wrote a card, so the heading can say what it is about:
+>org
+  ** 两点计算为何对共同正实尺度取商
+  :PROPERTIES:
+  :ID: ...
+  :CONTEXT_KIND: user
+  :AUTO_TITLE: 两点计算为何对共同正实尺度取商
+  :END:
+<
+`:AUTO_TITLE:` records the title the call gave. A card is renamed only while
+its heading is a default label, empty, or still equal to `:AUTO_TITLE:`, and
+only if its text is unchanged since the call started. Editing the heading
+makes the title yours: it is never replaced. Thread main cards, notes and
+cards the agent titled are not renamed. A failed call leaves the title as
+it was and never holds up a turn. Titles are not sent to the model as part
+of the conversation.
+
+`:CoactMode retitle` names every card of the pinned thread that qualifies,
+for example older threads or cards whose text you changed. Set
+`titles.enabled = false` to turn the background call off and `titles.model`
+to name cards with another model.
+
+==============================================================================
 7. COMPACTION                                           *coact-mode-compact*
 
 Compaction turns the earlier part of a thread into a synthesis card:
@@ -254,6 +283,8 @@ The model is told only a few facts about Coact mode (see `prompt` in
 :CoactMode stop                 Abort the running call.
 :CoactMode compact [text]       Compact the thread between turns.
 :CoactMode trace                Show the trace under the cursor.
+:CoactMode retitle              Name the pinned thread's cards that still
+                                have default or automatic titles.
 :CoactMode open                 Pick a thread from any workspace and open
                                 it; the pinned thread first, then by last
                                 activity, with its latest question.
@@ -280,7 +311,7 @@ The targets are also available globally:
   <Plug>(CoactModeSubmit) <Plug>(CoactModeStop) <Plug>(CoactModePin)
   <Plug>(CoactModeUnpin) <Plug>(CoactModeNew) <Plug>(CoactModeAsk)
   <Plug>(CoactModeCompact) <Plug>(CoactModeTrace)
-  <Plug>(CoactModeOpen) <Plug>(CoactModeSearch)
+  <Plug>(CoactModeOpen) <Plug>(CoactModeSearch) <Plug>(CoactModeRetitle)
 
 Open and search work from any buffer; map them globally, e.g.:
 >lua
@@ -302,6 +333,10 @@ Defaults:
       model = nil,        -- passed as --model
       args = {},          -- e.g. { "--no-extensions" }
       env = {},
+    },
+    titles = {            -- |coact-mode-titles|
+      enabled = true,
+      model = nil,        -- "provider/id"; nil: the thread's model
     },
     layout = {            -- generated cards
       blank_before_heading = true,  -- a blank line before each card

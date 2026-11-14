@@ -809,6 +809,45 @@ let thread_arrange params =
   let edits, notes = ok_or (Plan.arrange ~layout:(layout params) ws ~main ids) in
   `Assoc [ ("edits", edits_json edits); ("notes", notes_json notes); ("main", `String main) ]
 
+(* ---- semantic titles ---- *)
+
+let title_candidates params =
+  let ws = analysis () in
+  let ids =
+    match member "ids" params with
+    | `List (_ :: _ as l) -> List.filter_map str l
+    | _ -> Plan.thread_items ws ~main:(thread_param ws params)
+  in
+  `List
+    (List.map
+       (fun (r : Plan.title_request) ->
+         `Assoc
+           [
+             ("id", `String r.id);
+             ("kind", `String (Model.kind_name r.kind));
+             ("text", `String r.text);
+             ("revision", `String r.revision);
+           ])
+       (Plan.title_requests ws (labels params) ids))
+
+let retitle params =
+  let titles =
+    List.filter_map
+      (fun t ->
+        match (str (member "id" t), str (member "revision" t), str (member "title" t)) with
+        | Some i, Some r, Some ti -> Some (i, r, ti)
+        | _ -> None)
+      (list (member "titles" params))
+  in
+  let edits, applied, skipped = Plan.retitle (analysis ()) (labels params) titles in
+  `Assoc
+    [
+      ("edits", edits_json edits);
+      ("applied", `List (List.map (fun i -> `String i) applied));
+      ( "skipped",
+        `List (List.map (fun (i, why) -> `Assoc [ ("id", `String i); ("reason", `String why) ]) skipped) );
+    ]
+
 (* Error diagnostics of the whole workspace, for reports after a change. *)
 let errors _ =
   let ws = analysis () in
@@ -1008,6 +1047,8 @@ let requests =
     ("coact/card_edit", card_edit);
     ("coact/thread_arrange", thread_arrange);
     ("coact/errors", errors);
+    ("coact/title_candidates", title_candidates);
+    ("coact/retitle", retitle);
   ]
 
 let notifications =

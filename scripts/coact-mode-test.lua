@@ -66,6 +66,8 @@ local run = require("coact.mode.run")
 mode.setup({
   workspace_root = tmp .. "/workspaces",
   keymaps = false,
+  -- Section 11 turns semantic titles on; earlier sections find cards by title.
+  titles = { enabled = false },
   compact = { keep_recent_tokens = 20 },
   pi = {
     model = "coact-test/echo",
@@ -180,7 +182,10 @@ local thread = text():match(":THREAD_ID: (pi:[%w-]+)")
 check(thread ~= nil, "pin binds a thread id")
 submit("first turn")
 local body = text()
-check(body:find(":CONTEXT_KIND: user\n:END:\n\nWhat is a monad?", 1, true) ~= nil, "the question became a user card")
+check(
+  body:find(":CONTEXT_KIND: user\n:AUTO_TITLE: What is a monad?\n:END:\n\nWhat is a monad?", 1, true) ~= nil,
+  "the question became a user card"
+)
 check(body:find("Echo: What is a monad?", 1, true) ~= nil, "the answer was written into its card")
 check(body:find("%[%[id:[^%]]+%]%[Trace%]%]") ~= nil, "the answer links its trace")
 check(vim.bo[buf].modifiable, "the card is editable again")
@@ -573,6 +578,47 @@ check(
 check(#vim.tbl_filter(function(entry)
   return entry.card.kind == "user" or entry.card.kind == "assistant" or entry.card.kind == "trace" or not entry.card.top
 end, offered) == 0, "search lists only top-level thread, note and synthesis cards")
+
+-- 11. semantic titles: cards are named in the background, never over a hand
+require("coact.mode.config").get().titles.enabled = true
+vim.api.nvim_set_current_buf(side)
+local function side_text()
+  return table.concat(vim.api.nvim_buf_get_lines(side, 0, -1, false), "\n")
+end
+local function count(pattern)
+  return select(2, side_text():gsub(pattern, ""))
+end
+mode.retitle()
+wait(20000, function()
+  return count("\n%*%* Titled user\n") == 1 and count("\n%*%* Titled assistant\n") == 1
+end, "retitle")
+check(true, "retitle names the thread's question and answer by meaning")
+check(side_text():find(":AUTO_TITLE: Titled assistant", 1, true) ~= nil, "an automatic title is marked in the drawer")
+local side_lines = vim.api.nvim_buf_get_lines(side, 0, -1, false)
+for i, line in ipairs(side_lines) do
+  if line == "** Titled assistant" then
+    vim.api.nvim_buf_set_lines(side, i - 1, i, false, { "** My own title" })
+  end
+end
+local draft_heading
+for i, line in ipairs(vim.api.nvim_buf_get_lines(side, 0, -1, false)) do
+  if line == "** Question" then
+    draft_heading = i
+  end
+end
+local draft_body = require("coact.mode.lsp").body_row(side, draft_heading)
+vim.api.nvim_buf_set_lines(side, draft_body - 1, draft_body, false, { "And before?" })
+mode.submit()
+wait(5000, function()
+  return run.busy()
+end, "titled turn")
+settle("titled turn")
+wait(20000, function()
+  return count("\n%*%* Titled user\n") == 2 and count("\n%*%* Titled assistant\n") == 1
+end, "background titles after a turn")
+check(true, "a finished turn's question and answer are named in the background")
+check(side_text():find("\n** My own title\n", 1, true) ~= nil, "a title set by hand is kept")
+check(side_text():find("Echo: And before?", 1, true) ~= nil, "naming does not disturb the conversation")
 
 run.shutdown()
 server:kill("sigterm")

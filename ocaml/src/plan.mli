@@ -98,3 +98,26 @@ val arrange :
 val compact :
   Workspace.t -> main:string -> count:int -> summary:string -> dir:string -> labels -> now:float ->
   (edit list * note list * string, string) result
+
+(** {1 Semantic titles}
+
+    Conversation and synthesis cards are named by what they discuss, in the
+    background. A card qualifies while its heading is a default label, empty,
+    or still the title a background call gave it ([AUTO_TITLE]); a title set
+    by hand is never replaced. The revision ties a title to the text it was
+    made from. *)
+
+type title_request = { id : string; kind : Model.kind; text : string; revision : string }
+
+(** The card IDs of a thread's items, in order. *)
+val thread_items : Workspace.t -> main:string -> string list
+
+(** The cards among [ids] that qualify and have text. *)
+val title_requests : Workspace.t -> labels -> string list -> title_request list
+
+(** Apply [(id, revision, title)] where the card still qualifies and its text
+    is unchanged: the heading takes the title, [AUTO_TITLE] records it.
+    Returns the edits, the renamed cards, and the skipped ones with a reason. *)
+val retitle :
+  Workspace.t -> labels -> (string * string * string) list -> edit list * string list * (string * string) list
+

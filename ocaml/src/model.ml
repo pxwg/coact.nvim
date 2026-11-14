@@ -6,6 +6,7 @@ let default_metadata = { kind = None; thread = None; pin = false }
 let kind_property = "CONTEXT_KIND"
 let thread_property = "THREAD_ID"
 let pin_property = "PIN"
+let auto_title_property = "AUTO_TITLE"
 
 let kinds =
   [ ("user", User); ("assistant", Assistant); ("synthesis", Synthesis); ("trace", Trace) ]

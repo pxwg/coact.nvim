@@ -196,6 +196,33 @@ function M.compact(instructions)
   end
 end
 
+--- Name the pinned thread's cards that still have default or automatic titles.
+function M.retitle()
+  local bufnr = thread_buffer()
+  if not bufnr then
+    return
+  end
+  run.pinned(bufnr, function(err, card)
+    if err then
+      return notify(err, vim.log.levels.ERROR)
+    end
+    lsp.request(card.bufnr, "coact/title_candidates", { main = card.id, labels = config.labels() }, function(e, cards)
+      if e then
+        return notify(e, vim.log.levels.ERROR)
+      end
+      if #cards == 0 then
+        return notify("no card of this thread waits for a title")
+      end
+      local client, start_err = run.ensure(workspace.root(card.bufnr), card.thread)
+      if not client then
+        return notify("could not start Pi: " .. tostring(start_err), vim.log.levels.ERROR)
+      end
+      require("coact.mode.titles").send(card.bufnr, cards, client)
+      notify(("naming %d card%s…"):format(#cards, #cards == 1 and "" or "s"))
+    end)
+  end)
+end
+
 --- Show the readable trace of the card or link under the cursor.
 function M.trace()
   local bufnr = current()
@@ -268,6 +295,7 @@ local subcommands = {
     M.compact(#args > 0 and table.concat(args, " ") or nil)
   end,
   trace = M.trace,
+  retitle = M.retitle,
   open = M.open,
   search = M.search,
   build = M.build,
