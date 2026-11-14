@@ -62,6 +62,8 @@ local defaults = {
     note = "󰎚",
     pin = "󰐃",
     revised = "󰏫",
+    -- Sign-column mark on lines you changed in an answer.
+    edited = "▎",
     busy = "󰔟",
   },
   -- Buffer-local mappings in workspace Org buffers; false disables one, or

@@ -145,7 +145,8 @@ nothing is sent from cards that do not make sense.
 removed.
 
 Answers record their origin: an assistant card you edited is marked with the
-revised icon and the lines you changed are underlined.
+revised icon and the lines you changed carry a mark in the sign column, like
+a diff hunk.
 
 ==============================================================================
 6. TRACES                                                 *coact-mode-trace*

@@ -269,6 +269,25 @@ check(
   origins["agent+user"] == 1 and #decorations.edited == 1,
   "the revised answer is marked as agent+user with its edited line"
 )
+local mode_ui = require("coact.mode.ui")
+local edited_row = decorations.edited[1].start.line
+mode_ui.decorate(buf)
+wait(3000, function()
+  local marks = vim.api.nvim_buf_get_extmarks(
+    buf,
+    mode_ui.ns,
+    { edited_row, 0 },
+    { edited_row, -1 },
+    { details = true }
+  )
+  for _, mark in ipairs(marks) do
+    local details = mark[4]
+    if details.sign_text and details.sign_hl_group == "CoactModeRevised" and not details.hl_group then
+      return true
+    end
+  end
+  return false
+end, "the edited line carries a sign-column mark instead of an underline")
 
 -- Stop a slow answer: the partial text is kept.
 ask("please wait")

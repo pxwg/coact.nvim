@@ -24,7 +24,8 @@ function M.highlights()
   for group, link in pairs(links) do
     vim.api.nvim_set_hl(0, group, { link = link, default = true })
   end
-  vim.api.nvim_set_hl(0, "CoactModeRevised", { underdotted = true, default = true })
+  local changed = vim.fn.hlexists("Changed") == 1 and "Changed" or "DiffChange"
+  vim.api.nvim_set_hl(0, "CoactModeRevised", { link = changed, default = true })
 end
 
 local kinds = {
@@ -99,10 +100,9 @@ function M.decorate(bufnr)
     for _, range in ipairs(result.edited or {}) do
       local line = range.start.line
       if line < count then
-        local text = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
         vim.api.nvim_buf_set_extmark(bufnr, M.ns, line, 0, {
-          end_col = #text,
-          hl_group = "CoactModeRevised",
+          sign_text = icons.edited,
+          sign_hl_group = "CoactModeRevised",
           priority = 60,
         })
       end
