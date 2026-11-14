@@ -9,6 +9,7 @@ CONTENTS                                                        *coact-mode*
 4. Cards                                           |coact-mode-cards|
 5. A turn                                          |coact-mode-turn|
 6. Traces                                          |coact-mode-trace|
+6a. Directives                                     |coact-mode-directives|
 7. Compaction                                      |coact-mode-compact|
 8. Agent tools and changes                          |coact-mode-review|
 9. Commands                                        |coact-mode-commands|
@@ -158,6 +159,29 @@ Every answer links a readable trace card. Both trace cards live in
 In later turns the recorded tool calls and results are replayed before the
 answer they led to, in their original order; the card's current text replaces
 the recorded final answer. Nothing is re-executed.
+
+==============================================================================
+6a. DIRECTIVES                                      *coact-mode-directives*
+
+A user card can carry directives for the turn it is sent in:
+
+  /skill:name args    at the start of a line: a Pi skill, expanded as Pi
+                      expands a typed /skill command
+  /template args      at the start of a line: a Pi prompt template
+  @context            Neovim context from the code window used last:
+                      @buffer, @selection, @cursor, @diagnostics,
+                      @quickfix, @buffers, @cwd
+
+Only names Pi or Neovim offers count; paths, /emphasis/ and Typst @labels
+stay text, as does anything in source blocks, `$...$` math or links. The
+server completes both after `/` and `@`, highlights them, and shows what
+they do on hover. Pi's skills and templates are read from Pi when Coact
+mode starts and cached in `<workspace_root>/commands.json`.
+
+Directives take effect once, when their card is the question being sent:
+the expansions go to the model just before the question and are kept in
+that turn's trace. Later turns send the line as written. An @context that
+has nothing to add stops the turn before anything is sent.
 
 ==============================================================================
 7. COMPACTION                                           *coact-mode-compact*

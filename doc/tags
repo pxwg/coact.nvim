@@ -5,6 +5,7 @@ coact-mode-cards	coact-mode.txt	/*coact-mode-cards*
 coact-mode-commands	coact-mode.txt	/*coact-mode-commands*
 coact-mode-compact	coact-mode.txt	/*coact-mode-compact*
 coact-mode-config	coact-mode.txt	/*coact-mode-config*
+coact-mode-directives	coact-mode.txt	/*coact-mode-directives*
 coact-mode-files	coact-mode.txt	/*coact-mode-files*
 coact-mode-lsp	coact-mode.txt	/*coact-mode-lsp*
 coact-mode-mappings	coact-mode.txt	/*coact-mode-mappings*
