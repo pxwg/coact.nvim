@@ -59,6 +59,10 @@ val answer :
   Workspace.t -> answer:string -> text:string -> entries:Yojson.Safe.t list ->
   trace_path:string -> labels -> now:float -> (answer, string) result
 
+(** The byte ranges of a card's own text: after its drawer, around nested
+    cards, before a block card's end line. *)
+val own_segments : Org.file -> Org.card -> (int * int) list
+
 (** A review note: [anchor] is a line of the proposed text of [path]. *)
 type note = { path : string; anchor : string; note : string }
 

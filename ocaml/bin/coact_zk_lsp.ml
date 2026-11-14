@@ -145,6 +145,27 @@ let documents () =
 
 let cache : (Workspace.document list * Workspace.t) option ref = ref None
 
+(* Turn directives known to Neovim: Pi's commands and Neovim contexts. *)
+let registry = ref Directive.empty
+
+let set_registry params =
+  let entries key =
+    List.filter_map
+      (fun e ->
+        match str (member "name" e) with
+        | Some name when name <> "" ->
+            Some { Directive.name; description = Option.value ~default:"" (str (member "description" e)) }
+        | _ -> None)
+      (list (member key params))
+  in
+  registry := { Directive.commands = entries "commands"; contexts = entries "contexts" }
+
+(* Directives of the user cards in a file. *)
+let file_directives ws (f : Org.file) =
+  List.concat_map
+    (fun (c : Org.card) -> if Workspace.kind ws c.id = Some Model.User then Directive.in_card !registry f c else [])
+    (Org.cards f)
+
 let analysis () =
   let docs = documents () in
   match !cache with
@@ -383,9 +404,37 @@ let card_markdown ws id =
       in
       header ^ thread ^ "\n\n" ^ body
 
+let directive_hover ws path off =
+  match Workspace.file ws path with
+  | None -> None
+  | Some f ->
+      List.find_map
+        (fun (d : Directive.t) ->
+          if d.start <= off && off < d.stop then
+            let token = (match d.kind with Command -> "/" | Context -> "@") ^ d.name in
+            let what = Directive.describe !registry d in
+            Some
+              (`Assoc
+                 [
+                   ( "contents",
+                     `Assoc
+                       [
+                         ("kind", `String "markdown");
+                         ( "value",
+                           `String
+                             (Printf.sprintf "**%s** · %s%s\n\nTakes effect once, when this card is the question being sent."
+                                token (Directive.kind_name d.kind) (if what = "" then "" else "\n\n" ^ what)) );
+                       ] );
+                 ])
+          else None)
+        (file_directives ws f)
+
 let hover params =
   let path, off = doc_offset params in
   let ws = analysis () in
+  match directive_hover ws path off with
+  | Some h -> h
+  | None ->
   let id =
     match target_at ws path off with
     | Some t when Workspace.mem ws t.target -> Some t.target
@@ -475,8 +524,45 @@ let completion params =
           (Org.cards f))
       ws.files
   in
+  let directive_items sigil (entries : Directive.entry list) at kind =
+    let start = position text (line_start + at) and stop = position text off in
+    List.map
+      (fun (e : Directive.entry) ->
+        let token = sigil ^ e.name in
+        `Assoc
+          [
+            ("label", `String token);
+            ("filterText", `String token);
+            ("detail", `String e.description);
+            ("kind", `Int kind);
+            ("textEdit", `Assoc [ ("range", `Assoc [ ("start", start); ("end", stop) ]); ("newText", `String (token ^ " ")) ]);
+          ])
+      entries
+  in
+  let token_chars ok s = String.for_all ok s in
+  let command_at =
+    let lead = let rec go i = if i < String.length prefix && (prefix.[i] = ' ' || prefix.[i] = '\t') then go (i + 1) else i in go 0 in
+    if lead < String.length prefix && prefix.[lead] = '/'
+       && token_chars (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | ':' | '-' -> true | _ -> false)
+            (String.sub prefix (lead + 1) (String.length prefix - lead - 1))
+    then Some lead
+    else None
+  in
+  let context_at =
+    match String.rindex_opt prefix '@' with
+    | Some i
+      when (i = 0 || prefix.[i - 1] = ' ' || prefix.[i - 1] = '\t' || prefix.[i - 1] = '(')
+           && token_chars (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' -> true | _ -> false)
+                (String.sub prefix (i + 1) (String.length prefix - i - 1)) ->
+        Some i
+    | _ -> None
+  in
   let upper = String.uppercase_ascii (String.trim prefix) in
   let items =
+    match (command_at, context_at) with
+    | Some at, _ when !registry.commands <> [] -> directive_items "/" !registry.commands at 3
+    | _, Some at when !registry.contexts <> [] -> directive_items "@" !registry.contexts at 6
+    | _ ->
     if String.starts_with ~prefix:":CONTEXT_KIND:" upper then
       List.map (fun (name, _) -> `Assoc [ ("label", `String name); ("kind", `Int 20) ]) Model.kinds
     else if String.starts_with ~prefix:":PIN:" upper then
@@ -593,9 +679,20 @@ let artifact params =
       (* The artifact travels as a string so Neovim hands Pi exactly these
          messages; only the card texts are read on the way. *)
       let json = Conversation.to_json a in
+      let directives =
+        match Option.bind a.question (Workspace.find ws) with
+        | Some (f, c) ->
+            List.map
+              (fun (d : Directive.t) ->
+                `Assoc
+                  [ ("kind", `String (Directive.kind_name d.kind)); ("name", `String d.name); ("args", `String d.args) ])
+              (Directive.in_card !registry f c)
+        | None -> []
+      in
       `Assoc
         [
           ("ok", `Bool true);
+          ("directives", `List directives);
           ("artifactJson", `String (J.to_string json));
           ("cards", member "cards" json);
           ("diagnostics", diagnostics_json ds);
@@ -797,6 +894,12 @@ let decorations params =
                      ])
                  cards) );
           ("edited", `List (List.map (fun (s, e) -> range f.text s e) edited));
+          ( "directives",
+            `List
+              (List.map
+                 (fun (d : Directive.t) ->
+                   `Assoc [ ("range", range f.text d.start d.stop); ("kind", `String (Directive.kind_name d.kind)) ])
+                 (file_directives ws f)) );
         ]
 
 let trace params =
@@ -840,7 +943,7 @@ let initialize params =
             ("definitionProvider", `Bool true);
             ("referencesProvider", `Bool true);
             ("documentSymbolProvider", `Bool true);
-            ("completionProvider", `Assoc [ ("triggerCharacters", `List [ `String ":"; `String "+" ]) ]);
+            ("completionProvider", `Assoc [ ("triggerCharacters", `List [ `String ":"; `String "+"; `String "/"; `String "@" ]) ]);
           ] );
       ("serverInfo", `Assoc [ ("name", `String "coact-zk-lsp"); ("version", `String "0.1.0") ]);
     ]
@@ -905,6 +1008,7 @@ let notifications =
     ("textDocument/didSave", fun _ -> publish ());
     ("workspace/didChangeWatchedFiles", fun _ -> publish ());
     ("coact/refresh", fun _ -> publish ());
+    ("coact/registry", set_registry);
   ]
 
 let handle json =

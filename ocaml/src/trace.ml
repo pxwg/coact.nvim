@@ -160,6 +160,16 @@ let readable entries =
                 [ Printf.sprintf "- stopped (%s)%s" r
                     (match string_member "errorMessage" message with Some m -> ": " ^ shorten m | None -> "") ]
             | _ -> [])
+      | Some "custom" -> (
+          let name =
+            match member "details" message with
+            | Some d -> Option.value ~default:"" (string_member "name" d)
+            | None -> ""
+          in
+          match string_member "customType" message with
+          | Some "coact.command" -> [ Printf.sprintf "- ran /%s (%d characters)" name (String.length (text message)) ]
+          | Some "coact.context" -> [ Printf.sprintf "- added @%s (%d characters)" name (String.length (text message)) ]
+          | _ -> [])
       | Some "toolResult" ->
           let name = Option.value ~default:"tool" (string_member "toolName" message) in
           let status = match member "isError" message with Some (`Bool true) -> "error" | _ -> "ok" in

@@ -216,3 +216,34 @@ let%expect_test "created cards get their own file" =
     *bold*
     w/Q.org
     |}]
+
+let%expect_test "turn directives are registered names outside markup" =
+  let registry =
+    {
+      Directive.commands = [ { name = "skill:typst"; description = "Typst style" } ];
+      contexts = [ { name = "diagnostics"; description = "" }; { name = "buffer"; description = "" } ];
+    }
+  in
+  let text =
+    String.concat "\n"
+      [
+        "/skill:typst please";
+        "/Users/me/file.org is a path, /italic/ too";
+        "see @diagnostics and @buffer, not @label or $x @diagnostics$ or [[id:a][@buffer]]";
+        "mail me@diagnostics.org, or @diagnostics.";
+        "#+begin_src sh";
+        "/skill:typst";
+        "#+end_src";
+        "/skill:unknown x";
+      ]
+  in
+  List.iter
+    (fun (d : Directive.t) ->
+      Printf.printf "%s %s [%s] %S\n" (Directive.kind_name d.kind) d.name d.args (String.sub text d.start (d.stop - d.start)))
+    (Directive.scan registry ~base:0 text);
+  [%expect {|
+    command skill:typst [please] "/skill:typst"
+    context diagnostics [] "@diagnostics"
+    context buffer [] "@buffer"
+    context diagnostics [] "@diagnostics"
+    |}]
